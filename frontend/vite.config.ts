@@ -15,11 +15,12 @@ export default defineConfig({
     alias: {
       '@shared': path.resolve(__dirname, '../shared/src'),
       '@': path.resolve(__dirname, './src'),
-    },
-  },
-  css: {
-    postcss: {
-      plugins: [],
+      '@/app': path.resolve(__dirname, './src/app'),
+      '@/components': path.resolve(__dirname, './src/components'),
+      '@/lib': path.resolve(__dirname, './src/lib'),
+      '@/hooks': path.resolve(__dirname, './src/hooks'),
+      '@/stores': path.resolve(__dirname, './src/stores'),
+      '@/types': path.resolve(__dirname, './src/types'),
     },
   },
 });
