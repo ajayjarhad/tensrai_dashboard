@@ -150,6 +150,9 @@ logs
 # Biome
 .biome/
 
+# Bun
+.bun-cache/
+
 # Temporary files
 *.tmp
 *.temp
