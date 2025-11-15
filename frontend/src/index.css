@@ -1,1 +1,171 @@
-/* Global styles will go here */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* High-contrast monochromatic design system */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+
+    /* Card surfaces with subtle contrast */
+    --card: 0 0% 97%;
+    --card-foreground: 0 0% 3%;
+
+    /* Popover overlays */
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+
+    /* Primary actions - high contrast */
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+
+    /* Secondary elements */
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 9%;
+
+    /* Muted elements */
+    --muted: 0 0% 94%;
+    --muted-foreground: 0 0% 20%;
+
+    /* Accent elements */
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 98%;
+
+    /* Interactive elements */
+    --destructive: 0 0% 0%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Borders - high contrast for industrial clarity */
+    --border: 0 0% 20%;
+    --input: 0 0% 13%;
+    --ring: 0 0% 0%;
+
+    /* Robot status colors - monochromatic with high contrast */
+    --status-online: 0 0% 30%; /* Dark gray for online */
+    --status-offline: 0 0% 70%; /* Light gray for offline */
+    --status-warning: 0 0% 50%; /* Medium gray for warning */
+    --status-error: 0 0% 0%; /* Black for errors */
+    --status-active: 0 0% 20%; /* Very dark for active */
+
+    /* Safety-critical colors - WCAG AAA compliant */
+    --safety-estop: 0 0% 0%; /* Black for emergency stop */
+    --safety-caution: 0 0% 40%; /* Medium-dark for caution */
+    --safety-safe: 0 0% 25%; /* Dark for safe status */
+
+    /* Telemetry visualization colors */
+    --telemetry-battery: 0 0% 35%; /* Dark gray for battery */
+    --telemetry-signal: 0 0% 45%; /* Medium gray for signal */
+    --telemetry-temperature: 0 0% 55%; /* Lighter gray for temperature */
+
+    /* Accessibility-focused radius */
+    --radius: 0.25rem;
+
+    /* Typography settings */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+      "Noto Sans", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo,
+      monospace;
+  }
+
+  .dark {
+    /* Dark mode - inverted for industrial environments */
+    --background: 0 0% 3%;
+    --foreground: 0 0% 98%;
+
+    --card: 0 0% 6%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 0 0% 3%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 0 0% 11%;
+    --muted-foreground: 0 0% 64%;
+
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 0% 95%;
+    --destructive-foreground: 0 0% 0%;
+
+    --border: 0 0% 15%;
+    --input: 0 0% 10%;
+    --ring: 0 0% 83%;
+
+    /* Robot status colors in dark mode */
+    --status-online: 0 0% 85%; /* Light gray for online */
+    --status-offline: 0 0% 40%; /* Dark gray for offline */
+    --status-warning: 0 0% 60%; /* Medium gray for warning */
+    --status-error: 0 0% 100%; /* White for errors */
+    --status-active: 0 0% 90%; /* Very light for active */
+
+    /* Safety colors in dark mode */
+    --safety-estop: 0 0% 100%; /* White for emergency stop */
+    --safety-caution: 0 0% 75%; /* Light gray for caution */
+    --safety-safe: 0 0% 85%; /* Very light for safe status */
+
+    /* Telemetry colors in dark mode */
+    --telemetry-battery: 0 0% 80%; /* Light gray for battery */
+    --telemetry-signal: 0 0% 70%; /* Medium-light gray for signal */
+    --telemetry-temperature: 0 0% 60%; /* Medium gray for temperature */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* High-contrast mode support for industrial environments */
+@media (prefers-contrast: high) {
+  :root {
+    --border: 0 0% 0%;
+    --ring: 0 0% 0%;
+    --status-error: 0 0% 0%;
+    --safety-estop: 0 0% 0%;
+  }
+
+  .dark {
+    --border: 0 0% 100%;
+    --ring: 0 0% 100%;
+    --status-error: 0 0% 100%;
+    --safety-estop: 0 0% 100%;
+  }
+}
+
+/* Reduced motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Focus styles for keyboard navigation */
+@layer utilities {
+  .focus-ring {
+    @apply focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background;
+  }
+
+  .safety-critical {
+    @apply focus:ring-4 focus:ring-red-500 focus:ring-offset-4;
+  }
+
+  .high-contrast-border {
+    @apply border-2 border-current;
+  }
+}

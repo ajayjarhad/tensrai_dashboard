@@ -6,6 +6,7 @@ yarn-error.log*
 pnpm-debug.log*
 bun.lockb
 package-lock.json
+yarn.lock
 
 # Production builds
 dist/
