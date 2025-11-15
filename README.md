@@ -137,10 +137,7 @@ tensrai_dashboard/
 ### Shared Types
 Located in `shared/src/types.ts`:
 - `Robot` - Robot metadata and status
-- `Waypoint` - Navigation waypoints
 - `Mission` - Mission management
-- `Telemetry` - Real-time data structures
-- `Alert` - System alerts and notifications
 
 ### Backend API
 - REST endpoints for CRUD operations
@@ -188,18 +185,7 @@ FRONTEND_URL=http://localhost:5173
 - Check git hooks if issues arise
 - Use workspace protocol for internal dependencies
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with quality checks
-4. Submit a pull request
-
 All commits are automatically validated with:
 - TypeScript type checking
 - Biome linting and formatting
 - Build validation
-
-## 📄 License
-
-ISC License - see LICENSE file for details.
