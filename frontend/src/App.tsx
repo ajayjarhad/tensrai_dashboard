@@ -1,7 +1,9 @@
+import { EmergencyHeader } from '@/features/emergency-stop';
+
 function App() {
   return (
-    <div>
-      <h1>Robot Dashboard</h1>
+    <div className="min-h-screen bg-background">
+      <EmergencyHeader />
     </div>
   );
 }
