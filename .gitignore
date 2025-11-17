@@ -160,3 +160,4 @@ logs
 
 # OpenSpec
 openspec
+/generated/prisma

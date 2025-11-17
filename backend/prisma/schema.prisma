@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  username          String    @unique
+  email             String    @unique
+  passwordHash      String    
+  tempPasswordHash  String?   @db.String
+  tempPasswordExpiry DateTime?
+  role              Role      @default(USER)
+  displayName       String?
+  mustResetPassword Boolean   @default(false)
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([role])
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  role      String   // Capture role for future RBAC enablement
+  action    String   // login, reset, user_created, etc.
+  timestamp DateTime @default(now())
+  metadata  Json?    // Additional context
+
+  @@index([userId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+enum Role {
+  ADMIN
+  USER
+}

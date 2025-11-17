@@ -1,0 +1,103 @@
+services:
+  # OpenTelemetry Collector
+  otel-collector:
+    image: signoz/signoz-otel-collector:0.111.24
+    command:
+      - "--config=/etc/otel-collector-config.yaml"
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP http receiver
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+    depends_on:
+      - clickhouse
+      - signoz-frontend
+    networks:
+      - signoz-backend
+
+  # ClickHouse Database
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.12-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - signoz-clickhouse-data:/var/lib/clickhouse
+      - ./config/clickhouse-config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./config/clickhouse-users.xml:/etc/clickhouse-server/users.d/users.xml
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz-backend
+
+  # Signoz Application (Frontend + Query Service)
+  signoz-frontend:
+    image: signoz/signoz:v0.76.2
+    environment:
+      - STORAGE=clickhouse
+      - CLICKHOUSE_ADDRESS=clickhouse:9000
+      - LOG_LEVEL=info
+      - AUTH_TYPE="multi-tenant"
+      - REACT_APP_USER_ACCESS_KEY_ENABLED=false
+      - REACT_APP_ANONYMOUS_ACCESS_ENABLED=true
+    ports:
+      - "3301:3301" # Frontend
+      - "8080:8080" # Query Service API
+      - "7180:7180" # GRPC
+      - "9090:9090" # HTTP
+    depends_on:
+      - clickhouse
+    networks:
+      - signoz-backend
+
+  # AlertManager
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    networks:
+      - signoz-backend
+
+  # Optional: Redis for caching (not required for basic setup)
+  redis:
+    image: redis:7.2.5-alpine
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    volumes:
+      - signoz-redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz-backend
+
+networks:
+  signoz-backend:
+    driver: bridge
+
+volumes:
+  signoz-clickhouse-data:
+    driver: local
+  signoz-redis-data:
+    driver: local

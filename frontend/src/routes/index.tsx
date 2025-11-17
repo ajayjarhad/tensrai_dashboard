@@ -1,0 +1,211 @@
+import { UserManagement } from '@/features/admin/components';
+import { LoginForm, ResetPasswordForm } from '@/features/auth/components';
+import { useAuth, useAuthStore } from '@/stores/auth';
+import {
+  Navigate,
+  Outlet,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  redirect,
+} from '@tanstack/react-router';
+import { PERMISSIONS } from '@tensrai/shared';
+import React from 'react';
+
+const rootRoute = createRootRoute({
+  component: () => {
+    const { checkAuth } = useAuth();
+    React.useEffect(() => {
+      checkAuth();
+    }, [checkAuth]);
+
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <Outlet />
+      </div>
+    );
+  },
+});
+
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/',
+  component: () => {
+    const { user, isAuthenticated } = useAuth();
+
+    if (!isAuthenticated) {
+      return <Navigate to="/auth/login" replace />;
+    }
+
+    if (user?.mustResetPassword) {
+      return <Navigate to="/auth/reset-password" replace />;
+    }
+
+    return (
+      <div className="container mx-auto px-4 py-8">
+        <h1 className="text-2xl font-bold mb-6 text-foreground">Tensrai Dashboard</h1>
+        <div className="space-y-4">
+          <div className="p-4 border border-border rounded-lg bg-card">
+            <h2 className="text-lg font-semibold mb-2 text-foreground">Welcome back!</h2>
+            <p className="text-muted-foreground">Hello, {user?.displayName || user?.username}!</p>
+          </div>
+
+          {user?.role === 'ADMIN' && (
+            <div className="p-4 border border-border rounded-lg bg-secondary">
+              <h3 className="font-semibold text-foreground">Admin Access</h3>
+              <p className="text-muted-foreground text-sm">You have administrative privileges.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  },
+});
+
+const authRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/auth',
+});
+
+const loginRoute = createRoute({
+  getParentRoute: () => authRoute,
+  path: '/login',
+  component: () => {
+    const { isAuthenticated } = useAuth();
+
+    if (isAuthenticated) {
+      throw redirect({
+        to: '/',
+      });
+    }
+
+    return <LoginForm />;
+  },
+});
+
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => authRoute,
+  path: '/reset-password',
+  component: () => {
+    const { isAuthenticated } = useAuth();
+
+    if (!isAuthenticated) {
+      throw redirect({
+        to: '/auth/login',
+      });
+    }
+
+    return <ResetPasswordForm />;
+  },
+});
+
+const adminRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin',
+  beforeLoad: () => {
+    const { hasPermission, isAuthenticated } = useAuthStore.getState();
+
+    if (!isAuthenticated) {
+      throw redirect({
+        to: '/auth/login',
+      });
+    }
+
+    if (!hasPermission(PERMISSIONS.USER_MANAGEMENT)) {
+      throw redirect({
+        to: '/unauthorized',
+      });
+    }
+  },
+});
+
+const userManagementRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: '/users',
+  component: () => {
+    return <UserManagement />;
+  },
+});
+
+const unauthorizedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/unauthorized',
+  component: () => {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="max-w-md w-full text-center p-8">
+          <div className="mb-4">
+            <svg
+              className="mx-auto h-12 w-12 text-destructive"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
+              />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold text-foreground mb-2">Access Denied</h1>
+          <p className="text-muted-foreground mb-6">
+            You don't have permission to access this page.
+          </p>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => window.history.back()}
+              className="w-full px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors focus-ring"
+            >
+              Go Back
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = '/';
+              }}
+              className="w-full px-4 py-2 bg-secondary text-secondary-foreground rounded hover:bg-secondary/80 transition-colors focus-ring"
+            >
+              Home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  },
+});
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  authRoute.addChildren([loginRoute, resetPasswordRoute]),
+  adminRoute.addChildren([userManagementRoute]),
+  unauthorizedRoute,
+]);
+
+export const router = createRouter({
+  routeTree,
+  defaultPreload: 'intent',
+  defaultNotFoundComponent: () => (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="text-center">
+        <h1 className="text-4xl font-bold text-foreground mb-4">404</h1>
+        <p className="text-muted-foreground mb-4">Page not found</p>
+        <button
+          type="button"
+          onClick={() => window.history.back()}
+          className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 focus-ring"
+        >
+          Go Back
+        </button>
+      </div>
+    </div>
+  ),
+});
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router;
+  }
+}

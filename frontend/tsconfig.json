@@ -12,15 +12,10 @@
     "allowImportingTsExtensions": true,
     "types": ["vite/client"],
     "noEmit": true,
+    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@/app/*": ["./src/app/*"],
-      "@/components/*": ["./src/components/*"],
-      "@/lib/*": ["./src/lib/*"],
-      "@/features/*": ["./src/features/*"],
-      "@/hooks/*": ["./src/hooks/*"],
-      "@/stores/*": ["./src/stores/*"],
-      "@/types/*": ["./src/types/*"]
+      "@shared/*": ["../shared/src/*"]
     }
   },
   "include": ["src"],

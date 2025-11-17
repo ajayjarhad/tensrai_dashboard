@@ -12,7 +12,6 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
 
     const handleButtonClick = () => {
       setIsEngaged(!isEngaged);
-      console.log(`Emergency ${isEngaged ? 'released' : 'engaged'}`);
     };
 
     return (
@@ -29,12 +28,7 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
         {...props}
       >
         <div className="flex items-center space-x-4">
-          <h1
-            className="text-2xl font-bold tracking-tight text-foreground"
-            style={{ fontFamily: 'Inter, system-ui, sans-serif' }}
-          >
-            Tensrai
-          </h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground font-sans">Tensrai</h1>
         </div>
 
         <div className="flex items-center space-x-4">
@@ -43,7 +37,7 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
             variant="destructive"
             size="lg"
             onClick={handleButtonClick}
-            className="w-44 h-12 px-6 font-bold text-lg uppercase tracking-wide justify-center"
+            className="w-44 h-12 px-6 font-bold text-lg uppercase tracking-wide justify-center safety-critical"
           >
             <AlertTriangle className="w-5 h-5 mr-2" />
             {isEngaged ? 'Release' : 'Emergency'}

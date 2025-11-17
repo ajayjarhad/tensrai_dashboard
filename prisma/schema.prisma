@@ -1,0 +1,133 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// User model for authentication
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  name      String?
+  image     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Additional fields for our application
+  role                  String   @default("USER")
+  displayName           String?
+  mustResetPassword     Boolean  @default(false)
+  tempPasswordHash      String?
+  tempPasswordExpiry    DateTime?
+  isActive              Boolean  @default(true)
+
+  // Relations
+  accounts    Account[]
+  sessions    Session[]
+  robots      Robot[]
+  operations  Operation[]
+
+  @@map("users")
+}
+
+// Account model for OAuth and social providers
+model Account {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// Session model for authentication
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken String   @unique
+  userId       String   @db.ObjectId
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// Verification model for email verification
+model Verification {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  identifier String
+  value      String
+  expires    DateTime
+
+  @@unique([identifier, value])
+  @@map("verifications")
+}
+
+// Robot model for dashboard
+model Robot {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  status      String   @default("inactive")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  ownerId     String   @db.ObjectId
+
+  // Robot configuration
+  type         String
+  model        String?
+  serialNumber String?
+  lastSeen     DateTime?
+
+  // Relations
+  owner      User         @relation(fields: [ownerId], references: [id])
+  operations Operation[]
+
+  @@map("robots")
+}
+
+// Operation model for robot actions
+model Operation {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  robotId     String   @db.ObjectId
+  operatorId  String   @db.ObjectId
+
+  // Operation details
+  type        String
+  parameters  Json?
+  result      Json?
+  error       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  // Relations
+  robot     Robot @relation(fields: [robotId], references: [id])
+  operator  User  @relation(fields: [operatorId], references: [id])
+
+  @@map("operations")
+}
