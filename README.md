@@ -32,6 +32,17 @@ bun run prepare
 bun run dev
 ```
 
+### Seed baseline users
+
+Provision default admin/operator accounts for local testing:
+
+```bash
+cd backend
+bun run seed
+```
+
+Override the generated credentials by exporting `SEED_ADMIN_*` / `SEED_USER_*` env vars before running the command (see `backend/scripts/seed.ts`).
+
 ### Development Workflow
 
 ```bash
@@ -170,6 +181,29 @@ NODE_ENV=production
 PORT=3001          # Backend port
 FRONTEND_URL=http://localhost:5173
 ```
+
+## 📈 Observability (OpenTelemetry + SigNoz)
+
+Run the bundled SigNoz stack and stream backend traces via OTLP:
+
+1. **Start SigNoz locally**
+   ```bash
+   cd infra/signoz
+   docker compose up -d
+   ```
+   SigNoz UI is available at http://localhost:3301 (collector listening on gRPC `4317`).
+
+2. **Configure the backend** – add the following to `backend/.env` (or your process env):
+   ```env
+   OTEL_SERVICE_NAME=tensrai-backend
+   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+   # Optional: send custom headers, e.g. tokens -> key=value,key2=value2
+   # OTEL_EXPORTER_OTLP_HEADERS=x-scope-orgID=tensrai
+   ```
+
+3. **Start the backend** – `bun run dev:backend` (or `bun run dev`). The `src/otel.ts` bootstrap sends all Fastify auto-instrumented traces to the SigNoz collector automatically.
+
+Check SigNoz → Traces to confirm data is arriving. Use `docker compose logs -f otel-collector` for troubleshooting.
 
 ## 🔍 Troubleshooting
 

@@ -1,0 +1,85 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Jaeger receiver for compatibility
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:14250
+      thrift_compact:
+        endpoint: 0.0.0.0:6831
+
+  # Prometheus receiver for metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          static_configs:
+            - targets: ['0.0.0.0:8888', '0.0.0.0:8889']
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 50
+
+  # Memory limiter for preventing OOM
+  memory_limiter:
+    limit_mib: 512
+
+exporters:
+  # SigNoz ClickHouse exporter
+  clickhouse:
+    endpoint: tcp://clickhouse:9000
+    database: signoz
+    username: signoz
+    password: password
+    traces_table_name: signoz_traces.distributed_signoz_indexed_spans
+    metrics_table_name: signoz_metrics.distributed_signoz_metrics_index
+    logs_table_name: signoz_logs.distributed_signoz_logs_index
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Export metrics to Prometheus
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    const_labels:
+      environment: "development"
+      service: "tensrai-dashboard"
+
+  # Jaeger exporter for compatibility
+  jaeger:
+    endpoint: jaeger-all-in-one:14250
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse, jaeger]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse, prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]

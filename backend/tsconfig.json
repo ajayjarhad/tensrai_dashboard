@@ -4,12 +4,17 @@
     "composite": true,
     "rootDir": "./src",
     "outDir": "./dist",
-    "module": "ESNext",
-    "moduleResolution": "node",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
     "target": "ES2022",
     "lib": ["ES2022"],
     "types": ["node"],
-    "noUncheckedIndexedAccess": false
+    "verbatimModuleSyntax": false,
+    "noUncheckedIndexedAccess": false,
+    "paths": {
+      "@tensrai/shared": ["./src/types/shared-shim.d.ts"],
+      "@tensrai/shared/*": ["./src/types/shared-shim.d.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

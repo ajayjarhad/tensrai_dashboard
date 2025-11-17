@@ -52,7 +52,7 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
-        // Robot-specific high-contrast status colors
+
         status: {
           online: 'hsl(var(--status-online))',
           offline: 'hsl(var(--status-offline))',
@@ -60,13 +60,13 @@ const config: Config = {
           error: 'hsl(var(--status-error))',
           active: 'hsl(var(--status-active))',
         },
-        // Safety-critical colors
+
         safety: {
           estop: 'hsl(var(--safety-estop))',
           caution: 'hsl(var(--safety-caution))',
           safe: 'hsl(var(--safety-safe))',
         },
-        // Industrial colors for telemetry
+
         telemetry: {
           battery: 'hsl(var(--telemetry-battery))',
           signal: 'hsl(var(--telemetry-signal))',
@@ -90,7 +90,7 @@ const config: Config = {
         xl: ['1.25rem', { lineHeight: '1.75rem' }],
         '2xl': ['1.5rem', { lineHeight: '2rem' }],
         '3xl': ['1.875rem', { lineHeight: '2.25rem' }],
-        // Accessibility-focused larger fonts
+
         '4xl': ['2.25rem', { lineHeight: '2.5rem' }],
         '5xl': ['3rem', { lineHeight: '1' }],
       },

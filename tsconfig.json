@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
     // Base TypeScript Configuration
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node", // avoid bundler resolver deprecation warnings for now
 
     // Strict Type Checking
     "strict": true,
@@ -23,6 +24,7 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
+    "ignoreDeprecations": "5.0",
 
     // Additional Checks
     "noUnusedLocals": true,

@@ -15,8 +15,34 @@ export function formatRobotStatus(status: string): string {
 }
 
 export function meetsWCAG_AA(foreground: string, background: string): boolean {
-  // TODO: Implement proper WCAG contrast ratio calculation
-  return foreground !== background;
+  // Simple WCAG AA contrast checker for grayscale values
+  // Returns true if contrast ratio is >= 4.5:1
+  try {
+    // Extract lightness values from HSL strings (format: "0 0% XX%")
+    const getLightness = (color: string): number => {
+      const match = color.match(/(\d+)%/);
+      return match ? Number.parseInt(match[1], 10) : 50;
+    };
+
+    const fgLightness = getLightness(foreground);
+    const bgLightness = getLightness(background);
+
+    // Calculate relative luminance (simplified for grayscale)
+    const getLuminance = (lightness: number): number => {
+      const normalized = lightness / 100;
+      return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+
+    const L1 = getLuminance(fgLightness) + 0.05;
+    const L2 = getLuminance(bgLightness) + 0.05;
+
+    const contrast = L1 / L2 >= L2 / L1 ? L1 / L2 : L2 / L1;
+
+    return contrast >= 4.5;
+  } catch {
+    // Fallback: assume good contrast if colors are different
+    return foreground !== background;
+  }
 }
 
 export function debounce<T extends (...args: any[]) => any>(
