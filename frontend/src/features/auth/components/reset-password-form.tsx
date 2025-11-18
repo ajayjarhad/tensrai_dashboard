@@ -1,7 +1,11 @@
 import { useNavigate } from '@tanstack/react-router';
 import type { ResetPasswordInput } from '@tensrai/shared';
-import type React from 'react';
-import { useState } from 'react';
+import { type ChangeEvent, type FormEvent, useState } from 'react';
+
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useAuth } from '@/stores/auth';
 
 export function ResetPasswordForm() {
@@ -18,7 +22,7 @@ export function ResetPasswordForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
@@ -26,7 +30,7 @@ export function ResetPasswordForm() {
     }));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
 
     if (formData.newPassword !== formData.confirmPassword) {
@@ -84,57 +88,48 @@ export function ResetPasswordForm() {
 
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           {error && (
-            <div className="rounded-md bg-destructive/10 p-4 border border-destructive/20">
-              <div className="text-sm text-destructive">{error}</div>
-            </div>
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <div className="space-y-4">
             <div>
-              <label htmlFor="tempPassword" className="block text-sm font-medium text-foreground">
-                Temporary Password
-              </label>
-              <input
+              <Label htmlFor="tempPassword">Temporary Password</Label>
+              <Input
                 id="tempPassword"
                 name="tempPassword"
                 type="password"
                 value={formData.tempPassword}
                 onChange={handleChange}
                 required
-                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-input placeholder-muted-foreground text-foreground rounded-md focus:outline-none focus-ring focus:z-10 sm:text-sm"
                 placeholder="Enter your temporary password"
                 disabled={isLoading || isSubmitting}
               />
             </div>
 
             <div>
-              <label htmlFor="displayName" className="block text-sm font-medium text-foreground">
-                Display Name (Optional)
-              </label>
-              <input
+              <Label htmlFor="displayName">Display Name (Optional)</Label>
+              <Input
                 id="displayName"
                 name="displayName"
                 type="text"
                 value={formData.displayName}
                 onChange={handleChange}
-                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-input placeholder-muted-foreground text-foreground rounded-md focus:outline-none focus-ring focus:z-10 sm:text-sm"
                 placeholder="Your display name"
                 disabled={isLoading || isSubmitting}
               />
             </div>
 
             <div>
-              <label htmlFor="newPassword" className="block text-sm font-medium text-foreground">
-                New Password
-              </label>
-              <input
+              <Label htmlFor="newPassword">New Password</Label>
+              <Input
                 id="newPassword"
                 name="newPassword"
                 type={showPassword ? 'text' : 'password'}
                 value={formData.newPassword}
                 onChange={handleChange}
                 required
-                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-input placeholder-muted-foreground text-foreground rounded-md focus:outline-none focus-ring focus:z-10 sm:text-sm"
                 placeholder="Enter new password"
                 disabled={isLoading || isSubmitting}
               />
@@ -156,20 +151,14 @@ export function ResetPasswordForm() {
             </div>
 
             <div>
-              <label
-                htmlFor="confirmPassword"
-                className="block text-sm font-medium text-foreground"
-              >
-                Confirm New Password
-              </label>
-              <input
+              <Label htmlFor="confirmPassword">Confirm New Password</Label>
+              <Input
                 id="confirmPassword"
                 name="confirmPassword"
                 type={showPassword ? 'text' : 'password'}
                 value={formData.confirmPassword}
                 onChange={handleChange}
                 required
-                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-input placeholder-muted-foreground text-foreground rounded-md focus:outline-none focus-ring focus:z-10 sm:text-sm"
                 placeholder="Confirm new password"
                 disabled={isLoading || isSubmitting}
               />
@@ -209,48 +198,46 @@ export function ResetPasswordForm() {
             </ul>
           </div>
 
-          <div>
-            <button
-              type="submit"
-              disabled={
-                isLoading ||
-                isSubmitting ||
-                !formData.tempPassword ||
-                !formData.newPassword ||
-                !formData.confirmPassword ||
-                formData.newPassword !== formData.confirmPassword
-              }
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-primary-foreground bg-primary hover:bg-primary/90 focus-ring focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading || isSubmitting ? (
-                <div className="flex items-center">
-                  <svg
-                    className="animate-spin -ml-1 mr-3 h-5 w-5 text-primary-foreground"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  Resetting Password...
-                </div>
-              ) : (
-                'Reset Password'
-              )}
-            </button>
-          </div>
+          <Button
+            type="submit"
+            disabled={
+              isLoading ||
+              isSubmitting ||
+              !formData.tempPassword ||
+              !formData.newPassword ||
+              !formData.confirmPassword ||
+              formData.newPassword !== formData.confirmPassword
+            }
+            className="w-full"
+          >
+            {isLoading || isSubmitting ? (
+              <>
+                <svg
+                  className="mr-2 h-4 w-4 animate-spin"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  />
+                </svg>
+                Resetting Password...
+              </>
+            ) : (
+              'Reset Password'
+            )}
+          </Button>
         </form>
       </div>
     </div>
