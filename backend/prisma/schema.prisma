@@ -8,29 +8,73 @@ datasource db {
 }
 
 model User {
-  id                String    @id @default(auto()) @map("_id") @db.ObjectId
-  username          String    @unique
-  email             String    @unique
-  passwordHash      String    
-  tempPasswordHash  String?   @db.String
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  username           String    @unique
+  email              String    @unique
+  passwordHash       String
+  tempPasswordHash   String?   @db.String
   tempPasswordExpiry DateTime?
-  role              Role      @default(USER)
-  displayName       String?
-  mustResetPassword Boolean   @default(false)
-  isActive          Boolean   @default(true)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  role               Role      @default(USER)
+  displayName        String?
+  mustResetPassword  Boolean   @default(false)
+  isActive           Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
 
   @@index([role])
+}
+
+model Account {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  token     String   @unique
+  userId    String   @db.ObjectId
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Verification {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  identifier String
+  value      String
+  expires    DateTime
+
+  @@unique([identifier, value])
 }
 
 model AuditLog {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   userId    String   @db.ObjectId
-  role      String   // Capture role for future RBAC enablement
-  action    String   // login, reset, user_created, etc.
+  role      String
+  action    String
   timestamp DateTime @default(now())
-  metadata  Json?    // Additional context
+  metadata  Json?
 
   @@index([userId])
   @@index([action])

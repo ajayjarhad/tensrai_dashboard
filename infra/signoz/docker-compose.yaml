@@ -50,11 +50,15 @@ services:
       - AUTH_TYPE="multi-tenant"
       - REACT_APP_USER_ACCESS_KEY_ENABLED=false
       - REACT_APP_ANONYMOUS_ACCESS_ENABLED=true
+      - SIGNOZ_FRONTEND_PORT=3301
+      - GODEBUG=netdns=go
     ports:
       - "3301:3301" # Frontend
       - "8080:8080" # Query Service API
       - "7180:7180" # GRPC
       - "9090:9090" # HTTP
+    volumes:
+      - signoz-data:/var/lib/signoz
     depends_on:
       - clickhouse
     networks:
@@ -100,4 +104,6 @@ volumes:
   signoz-clickhouse-data:
     driver: local
   signoz-redis-data:
+    driver: local
+  signoz-data:
     driver: local

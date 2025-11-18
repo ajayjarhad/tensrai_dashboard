@@ -12,8 +12,8 @@ const securityPlugin: FastifyPluginAsync = async fastify => {
 
   await fastify.register(cors, {
     origin: frontendUrl
-      ? [frontendUrl, 'http://localhost:3000', 'http://localhost:5173']
-      : ['http://localhost:3000', 'http://localhost:5173'],
+      ? [frontendUrl, 'http://localhost:5000', 'http://localhost:5173']
+      : ['http://localhost:5000', 'http://localhost:5173'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'Set-Cookie'],
@@ -26,7 +26,7 @@ const securityPlugin: FastifyPluginAsync = async fastify => {
         styleSrc: ["'self'", "'unsafe-inline'"],
         scriptSrc: ["'self'"],
         imgSrc: ["'self'", 'data:', 'https:'],
-        connectSrc: ["'self'", frontendUrl ?? 'http://localhost:3000'],
+        connectSrc: ["'self'", frontendUrl ?? 'http://localhost:5000'],
       },
     },
     crossOriginEmbedderPolicy: false,

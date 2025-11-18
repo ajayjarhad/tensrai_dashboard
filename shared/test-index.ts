@@ -22,8 +22,8 @@ console.log('5. Route registered');
 
 const start = async () => {
   try {
-    await server.listen({ port: 5002, host: '0.0.0.0' });
-    console.log('🚀 Test server started on http://0.0.0.0:5002');
+    await server.listen({ port: 5001, host: '0.0.0.0' });
+    console.log('🚀 Test server started on http://0.0.0.0:5001');
   } catch (err) {
     console.log('Failed to start:', err);
     process.exit(1);

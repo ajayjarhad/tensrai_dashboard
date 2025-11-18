@@ -2,7 +2,7 @@ import type { Options } from 'ky';
 import ky, { HTTPError } from 'ky';
 
 export const api = ky.create({
-  prefixUrl: 'http://localhost:5001/api',
+  prefixUrl: `${import.meta.env['VITE_API_URL'] || 'http://localhost:5001'}/api`,
   credentials: 'include',
   timeout: 10000,
   headers: {
@@ -37,18 +37,6 @@ export const api = ky.create({
   },
 });
 
-export const authApi = ky.create({
-  prefixUrl: 'http://localhost:5001/api/auth',
-  credentials: 'include',
-  timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  retry: {
-    limit: 1,
-    methods: ['post'],
-  },
-});
 type ApiRequestOptions = Omit<Options, 'prefixUrl'>;
 
 const withOptions = (options?: ApiRequestOptions): Options | undefined => options;
@@ -68,12 +56,6 @@ export const apiClient = {
 
   delete: <T>(url: string, options?: ApiRequestOptions) =>
     api.delete<T>(url, withOptions(options)).json<T>(),
-};
-
-export const authClient = {
-  post: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    authApi.post<T>(url, { json: data, ...withOptions(options) }),
-  get: <T>(url: string, options?: ApiRequestOptions) => authApi.get<T>(url, withOptions(options)),
 };
 
 export class ApiError extends Error {
@@ -120,33 +102,6 @@ export const unwrapApiResponse = async <T>(apiCall: () => Promise<ApiResponse<T>
     const message = error instanceof Error ? error.message : 'API request failed';
     throw new ApiError(message, undefined, undefined, error);
   }
-};
-
-export const wrappedApiClient = {
-  get: <T>(url: string, options?: ApiRequestOptions) =>
-    unwrapApiResponse<T>(() =>
-      api.get<ApiResponse<T>>(url, withOptions(options)).json<ApiResponse<T>>()
-    ),
-
-  post: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    unwrapApiResponse<T>(() =>
-      api.post<ApiResponse<T>>(url, { json: data, ...withOptions(options) }).json<ApiResponse<T>>()
-    ),
-
-  put: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    unwrapApiResponse<T>(() =>
-      api.put<ApiResponse<T>>(url, { json: data, ...withOptions(options) }).json<ApiResponse<T>>()
-    ),
-
-  patch: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    unwrapApiResponse<T>(() =>
-      api.patch<ApiResponse<T>>(url, { json: data, ...withOptions(options) }).json<ApiResponse<T>>()
-    ),
-
-  delete: <T>(url: string, options?: ApiRequestOptions) =>
-    unwrapApiResponse<T>(() =>
-      api.delete<ApiResponse<T>>(url, withOptions(options)).json<ApiResponse<T>>()
-    ),
 };
 
 export const fetchApi = async <T>(apiCall: () => Promise<T>, errorMessage?: string): Promise<T> => {

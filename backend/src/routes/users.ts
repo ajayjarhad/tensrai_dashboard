@@ -222,8 +222,9 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
       }
     }
   );
+
   fastify.post(
-    '/auth/reset-password',
+    '/auth/first-time-setup',
     {
       config: {
         rateLimit: {
@@ -255,6 +256,13 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
+        if (!currentUser.mustResetPassword) {
+          return reply.code(400).send({
+            success: false,
+            error: 'First-time setup not required',
+          });
+        }
+
         const resetData = request.body;
         const result = await resetPasswordWithTemp(fastify.prisma, currentUser.id, resetData);
 
@@ -263,11 +271,11 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: result.message,
         });
       } catch (error) {
-        fastify.log.error(error, 'Failed to reset password');
+        fastify.log.error(error, 'Failed to complete first-time setup');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to reset password',
+          error: error instanceof Error ? error.message : 'Failed to complete first-time setup',
         });
       }
     }

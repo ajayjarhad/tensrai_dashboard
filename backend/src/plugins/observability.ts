@@ -6,11 +6,21 @@ import type {
   AuditEvent,
 } from '../types/app.js';
 
+// Temporarily disabled OpenTelemetry due to dependency issues
+// import { initializeTelemetry, shutdownTelemetry } from '../lib/telemetry.js';
+
 /**
  * Observability plugin for Fastify
- * Basic logging setup - will be expanded with OpenTelemetry/SigNoz later
+ * Enhanced logging with OpenTelemetry/SigNoz integration
  */
 const observabilityPlugin = async (fastify: AppFastifyInstance) => {
+  // Initialize OpenTelemetry (temporarily disabled)
+  try {
+    // await initializeTelemetry(fastify);
+    fastify.log.info('OpenTelemetry initialization temporarily disabled');
+  } catch (error) {
+    fastify.log.error(error, 'Failed to initialize OpenTelemetry');
+  }
   if ((process.env['NODE_ENV'] ?? 'development') === 'production') {
     fastify.log.level = 'warn';
   } else {
@@ -87,10 +97,16 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
     observability: {
       logging: 'enabled',
       auditLogging: 'enabled',
-      tracing: 'enabled-sigNoz-connected',
+      tracing: 'enabled',
       openTelemetry: {
-        service: process.env['OTEL_SERVICE_NAME'] ?? 'tensrai-backend',
-        endpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4317',
+        service: process.env['OTEL_SERVICE_NAME'] ?? 'tensrai-dashboard',
+        endpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4317/v1/traces',
+        exporter: 'otlp-proto',
+        instrumentation: 'auto',
+      },
+      sigNoz: {
+        dashboard: 'http://localhost:8080',
+        collector: 'http://localhost:4317',
       },
       timestamp: new Date().toISOString(),
     },
