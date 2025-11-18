@@ -16,6 +16,7 @@ export interface AppFastifyReply {
   send: (payload?: unknown) => AppFastifyReply;
   header: (name: string, value: string | number | string[]) => AppFastifyReply;
   removeHeader: (name: string) => AppFastifyReply;
+  setCookie: (name: string, value: string, options?: Record<string, unknown>) => AppFastifyReply;
   statusCode: number;
   raw: ServerResponse;
 }

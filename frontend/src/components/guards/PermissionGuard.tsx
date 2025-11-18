@@ -13,7 +13,7 @@ export const PermissionGuard: React.FC<PermissionGuardProps> = ({
   children,
   fallback = null,
 }) => {
-  const { canAccess, isLoading } = useAuth();
+  const { hasPermission, isLoading } = useAuth();
 
   // Show loading state while checking permissions
   if (isLoading) {
@@ -25,9 +25,7 @@ export const PermissionGuard: React.FC<PermissionGuardProps> = ({
     );
   }
 
-  const hasPermission = canAccess(permission);
-
-  if (!hasPermission) {
+  if (!hasPermission(permission)) {
     return <>{fallback}</>;
   }
 
@@ -82,10 +80,10 @@ export const EmergencyStopGuard: React.FC<{
 
 // Hook for programmatic permission checking
 export const usePermissionGuard = (permission: Permission) => {
-  const { canAccess, isLoading, user } = useAuth();
+  const { hasPermission, isLoading, user } = useAuth();
 
   return {
-    hasPermission: canAccess(permission),
+    hasPermission: hasPermission(permission),
     isLoading,
     user,
   };

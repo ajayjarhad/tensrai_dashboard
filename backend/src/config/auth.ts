@@ -14,7 +14,7 @@ const getEnv = (key: string, fallback?: string): string => {
 };
 
 const baseUrl = getEnv('BASE_URL', 'http://localhost:5001');
-const frontendUrl = getEnv('FRONTEND_URL', 'http://localhost:3000');
+const frontendUrl = getEnv('FRONTEND_URL', 'http://localhost:5000');
 const nodeEnv = process.env['NODE_ENV'] ?? 'development';
 
 // We'll initialize auth with a lazy database adapter that gets the Prisma client at runtime
@@ -45,7 +45,7 @@ export const auth = (prisma: PrismaClient) => {
       },
 
       emailAndPassword: {
-        enabled: true,
+        enabled: false, // Disable built-in email/password auth, we use custom handler
         requireEmailVerification: false,
         minPasswordLength: 8,
         maxPasswordLength: 128,
@@ -72,6 +72,12 @@ export const auth = (prisma: PrismaClient) => {
 
       user: {
         additionalFields: {
+          username: {
+            type: 'string',
+            required: true,
+            defaultValue: '',
+            input: true,
+          },
           role: {
             type: 'string',
             required: true,

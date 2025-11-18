@@ -1,4 +1,5 @@
 import { type Prisma, PrismaClient } from '@prisma/client';
+import fp from 'fastify-plugin';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -114,4 +115,6 @@ const databasePlugin = async (fastify: AppFastifyInstance) => {
   fastify.log.info('Database plugin loaded successfully');
 };
 
-export default databasePlugin;
+export default fp(databasePlugin, {
+  name: 'database-plugin',
+});

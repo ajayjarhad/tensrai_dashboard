@@ -36,7 +36,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
     origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
       const allowedOrigins = [
         frontendUrl || 'http://localhost:5173',
-        'http://localhost:3000',
+        'http://localhost:5001',
         'http://localhost:5000',
         'http://localhost:5174',
       ];
@@ -89,7 +89,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
     const origin = request.headers.origin;
     const allowedOrigins = [
       frontendUrl || 'http://localhost:5173',
-      'http://localhost:3000',
+      'http://localhost:5001',
       'http://localhost:5000',
       'http://localhost:5174',
     ];

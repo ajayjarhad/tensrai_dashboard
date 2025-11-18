@@ -18,6 +18,7 @@ datasource db {
 model User {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   email     String   @unique
+  username  String   @unique
   name      String?
   image     String?
   createdAt DateTime @default(now())

@@ -1,7 +1,7 @@
 import type { CreateUserInput, User } from '@tensrai/shared';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { wrappedApiClient } from '@/lib/api';
+import { apiClient } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
 
 interface CreateUserResponse {
@@ -27,7 +27,7 @@ export function UserManagement() {
   const loadUsers = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await wrappedApiClient.get<User[]>('/users');
+      const response = await apiClient.get<User[]>('/users');
       setUsers(response);
       setError(null);
     } catch (err) {
@@ -47,7 +47,7 @@ export function UserManagement() {
     e.preventDefault();
 
     try {
-      const response = await wrappedApiClient.post<CreateUserResponse>('/users', createFormData);
+      const response = await apiClient.post<CreateUserResponse>('/users', createFormData);
       setCreateSuccess(response);
       setShowCreateForm(false);
       setCreateFormData({
@@ -67,7 +67,7 @@ export function UserManagement() {
     if (!confirm('Are you sure you want to delete this user?')) return;
 
     try {
-      await wrappedApiClient.delete(`/users/${userId}`);
+      await apiClient.delete(`/users/${userId}`);
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to delete user';
@@ -77,7 +77,7 @@ export function UserManagement() {
 
   const handleToggleUserStatus = async (userId: string, isActive: boolean) => {
     try {
-      await wrappedApiClient.put(`/users/${userId}`, { isActive });
+      await apiClient.put(`/users/${userId}`, { isActive });
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to update user';

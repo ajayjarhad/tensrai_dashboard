@@ -185,3 +185,47 @@ export const isAuthenticated = async (request: AppFastifyRequest): Promise<boole
   const user = await request.getCurrentUser();
   return !!user;
 };
+
+export const requirePasswordSetup = async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+  const user = await request.getCurrentUser();
+
+  if (!user) {
+    reply.code(401).send({
+      error: 'Authentication required',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  if (!user.mustResetPassword) {
+    reply.code(403).send({
+      error: 'Password setup not required',
+      code: 'PASSWORD_SETUP_NOT_REQUIRED',
+    });
+    return;
+  }
+};
+
+export const requireCompletedPasswordSetup = async (
+  request: AppFastifyRequest,
+  reply: AppFastifyReply
+) => {
+  const user = await request.getCurrentUser();
+
+  if (!user) {
+    reply.code(401).send({
+      error: 'Authentication required',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  if (user.mustResetPassword) {
+    reply.code(428).send({
+      error: 'Password setup required',
+      code: 'PASSWORD_SETUP_REQUIRED',
+      requiresPasswordSetup: true,
+    });
+    return;
+  }
+};

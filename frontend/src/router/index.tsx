@@ -7,18 +7,15 @@ import {
   redirect,
 } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
-import React from 'react';
 import { UserManagement } from '@/features/admin/components';
-import { LoginForm, ResetPasswordForm } from '@/features/auth/components';
+import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
+import type { NavigationService } from '@/lib/navigation';
+import { setNavigationService } from '@/lib/navigation';
 import { useAuth, useAuthStore } from '@/stores/auth';
 
+// Root Route
 const rootRoute = createRootRoute({
   component: () => {
-    const { checkAuth } = useAuth();
-    React.useEffect(() => {
-      checkAuth();
-    }, [checkAuth]);
-
     return (
       <div className="min-h-screen bg-background text-foreground">
         <Outlet />
@@ -27,18 +24,33 @@ const rootRoute = createRootRoute({
   },
 });
 
+// Index Route (Dashboard)
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: () => {
-    const { user, isAuthenticated } = useAuth();
+    const { user, isAuthenticated, isLoading, hasHydrated } = useAuth();
+
+    // Show loading while Zustand is rehydrating or checking auth state
+    if (!hasHydrated || isLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+            <p className="text-muted-foreground">
+              {hasHydrated ? 'Loading...' : 'Restoring session...'}
+            </p>
+          </div>
+        </div>
+      );
+    }
 
     if (!isAuthenticated) {
       return <Navigate to="/auth/login" replace />;
     }
 
     if (user?.mustResetPassword) {
-      return <Navigate to="/auth/reset-password" replace />;
+      return <Navigate to="/auth/first-time-setup" replace />;
     }
 
     return (
@@ -62,6 +74,7 @@ const indexRoute = createRoute({
   },
 });
 
+// Auth Routes
 const authRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/auth',
@@ -83,11 +96,11 @@ const loginRoute = createRoute({
   },
 });
 
-const resetPasswordRoute = createRoute({
+const firstTimeSetupRoute = createRoute({
   getParentRoute: () => authRoute,
-  path: '/reset-password',
+  path: '/first-time-setup',
   component: () => {
-    const { isAuthenticated } = useAuth();
+    const { isAuthenticated, user } = useAuth();
 
     if (!isAuthenticated) {
       throw redirect({
@@ -95,10 +108,17 @@ const resetPasswordRoute = createRoute({
       });
     }
 
-    return <ResetPasswordForm />;
+    if (!user?.mustResetPassword) {
+      throw redirect({
+        to: '/',
+      });
+    }
+
+    return <FirstTimePasswordForm />;
   },
 });
 
+// Admin Routes
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin',
@@ -127,6 +147,7 @@ const userManagementRoute = createRoute({
   },
 });
 
+// Unauthorized Route
 const unauthorizedRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/unauthorized',
@@ -177,13 +198,38 @@ const unauthorizedRoute = createRoute({
   },
 });
 
+// Route Tree
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  authRoute.addChildren([loginRoute, resetPasswordRoute]),
+  authRoute.addChildren([loginRoute, firstTimeSetupRoute]),
   adminRoute.addChildren([userManagementRoute]),
   unauthorizedRoute,
 ]);
 
+// Navigation Service Implementation
+const navigationServiceImpl: NavigationService = {
+  navigateAfterLogin: user => {
+    if (user?.mustResetPassword) {
+      router.navigate({ to: '/auth/first-time-setup' });
+    } else {
+      router.navigate({ to: '/' });
+    }
+  },
+  navigateToLogin: () => {
+    router.navigate({ to: '/auth/login' });
+  },
+  navigateToDashboard: () => {
+    router.navigate({ to: '/' });
+  },
+  navigateToUnauthorized: () => {
+    router.navigate({ to: '/unauthorized' });
+  },
+};
+
+// Set up navigation service
+setNavigationService(navigationServiceImpl);
+
+// Router Instance
 export const router = createRouter({
   routeTree,
   defaultPreload: 'intent',
@@ -204,6 +250,7 @@ export const router = createRouter({
   ),
 });
 
+// Router Types
 declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router;
