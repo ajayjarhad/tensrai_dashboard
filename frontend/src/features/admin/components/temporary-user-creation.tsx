@@ -4,9 +4,9 @@ import { useState } from 'react';
 import { z } from 'zod';
 import { BaseForm, FormError, FormField, LoadingButton } from '@/components/forms';
 import { apiClient } from '@/lib/api';
-import { copyToClipboard, downloadCredentials } from '@/lib/credentials-download';
-import { generateTemporaryPassword } from '@/lib/password-generator';
-import { useAuth } from '@/stores/auth';
+import { copyToClipboard, downloadCredentials } from '../../../lib/credentials-download';
+import { generateTemporaryPassword } from '../../../lib/password-generator';
+import { useAuth } from '../../../stores/auth';
 
 const userFormSchema = z.object({
   username: z
@@ -232,7 +232,7 @@ export function TemporaryUserCreation() {
         </div>
 
         <div className="bg-card shadow rounded-lg p-6 border border-border">
-          <BaseForm<UserFormData>
+          <BaseForm
             schema={userFormSchema}
             defaultValues={{
               username: '',

@@ -1,20 +1,20 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { ReactNode } from 'react';
-import { FormProvider, useForm } from 'react-hook-form';
+import { FormProvider, type UseFormReturn, useForm } from 'react-hook-form';
 import type { z } from 'zod';
 import { FormErrorBoundary } from './form-error-boundary';
 
-interface BaseFormProps<TData> {
-  schema: z.ZodSchema<TData>;
-  defaultValues?: TData;
-  onSubmit: (data: TData) => Promise<void> | void;
-  children: (methods: any) => ReactNode;
+interface BaseFormProps<TData extends z.ZodType> {
+  schema: TData;
+  defaultValues?: z.infer<TData>;
+  onSubmit: (data: z.infer<TData>) => Promise<void> | void;
+  children: (methods: UseFormReturn<any>) => ReactNode;
   mode?: 'onSubmit' | 'onBlur' | 'onChange' | 'onTouched';
   className?: string;
   disabled?: boolean;
 }
 
-export function BaseForm<TData>({
+export function BaseForm<TData extends z.ZodType>({
   schema,
   defaultValues,
   onSubmit,
@@ -23,14 +23,14 @@ export function BaseForm<TData>({
   className = '',
   disabled = false,
 }: BaseFormProps<TData>) {
-  const methods = useForm({
+  const methods = useForm<any>({
     resolver: zodResolver(schema as any),
-    defaultValues: defaultValues as any,
+    defaultValues,
     mode,
     disabled,
   });
 
-  const handleSubmit = methods.handleSubmit(async (data: any) => {
+  const handleSubmit = methods.handleSubmit(async (data: z.infer<TData>) => {
     try {
       await onSubmit(data);
     } catch (error) {
@@ -42,7 +42,7 @@ export function BaseForm<TData>({
     <FormErrorBoundary>
       <FormProvider {...methods}>
         <form onSubmit={handleSubmit} className={className} noValidate>
-          {children(methods)}
+          {children(methods as any)}
         </form>
       </FormProvider>
     </FormErrorBoundary>

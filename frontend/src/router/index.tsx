@@ -10,6 +10,7 @@ import { PERMISSIONS } from '@tensrai/shared';
 import { UserManagement } from '@/features/admin/components';
 import { TemporaryUserCreation } from '@/features/admin/components/temporary-user-creation';
 import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
+import { OccupancyMap } from '@/features/robot-map/components';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
 import { useAuth, useAuthStore } from '@/stores/auth';
@@ -55,21 +56,20 @@ const indexRoute = createRoute({
     }
 
     return (
-      <div className="container mx-auto px-4 py-8">
-        <h1 className="text-2xl font-bold mb-6 text-foreground">Tensrai Dashboard</h1>
-        <div className="space-y-4">
-          <div className="p-4 border border-border rounded-lg bg-card">
-            <h2 className="text-lg font-semibold mb-2 text-foreground">Welcome back!</h2>
-            <p className="text-muted-foreground">Hello, {user?.displayName || user?.username}!</p>
-          </div>
-
-          {user?.role === 'ADMIN' && (
-            <div className="p-4 border border-border rounded-lg bg-secondary">
-              <h3 className="font-semibold text-foreground">Admin Access</h3>
-              <p className="text-muted-foreground text-sm">You have administrative privileges.</p>
-            </div>
-          )}
-        </div>
+      <div className="w-full h-screen relative">
+        <OccupancyMap
+          mapYamlPath="/assets/map.yaml"
+          width="100%"
+          height="100%"
+          enablePanning={true}
+          enableZooming={true}
+          showDebugOverlay={false}
+          onCoordinateChange={worldCoords => {
+            if (worldCoords) {
+              console.log(`Coords: x=${worldCoords.x.toFixed(2)}, y=${worldCoords.y.toFixed(2)}`);
+            }
+          }}
+        />
       </div>
     );
   },
