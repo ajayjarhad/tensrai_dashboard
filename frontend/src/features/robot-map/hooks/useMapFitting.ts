@@ -1,23 +1,16 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
+import type { RefObject } from 'react';
 import { useCallback, useEffect } from 'react';
-import type { MapDebugInfo } from '../types';
 
 interface UseMapFittingProps {
   mapData: ProcessedMapData | null;
-  stageRef: React.RefObject<Konva.Stage | null>;
+  stageRef: RefObject<Konva.Stage | null>;
   width: number;
   height: number;
-  setDebugInfo: React.Dispatch<React.SetStateAction<MapDebugInfo>>;
 }
 
-export function useMapFitting({
-  mapData,
-  stageRef,
-  width,
-  height,
-  setDebugInfo,
-}: UseMapFittingProps) {
+export function useMapFitting({ mapData, stageRef, width, height }: UseMapFittingProps) {
   const fitStageToMap = useCallback(() => {
     if (!mapData || !stageRef.current) {
       return;
@@ -39,13 +32,7 @@ export function useMapFitting({
       y: (height - mapHeight * fitScale) / 2,
     });
     stage.batchDraw();
-
-    setDebugInfo(prev => ({
-      ...prev,
-      zoom: fitScale,
-      pan: { x: stage.x(), y: stage.y() },
-    }));
-  }, [mapData, width, height, setDebugInfo, stageRef]);
+  }, [mapData, width, height, stageRef]);
 
   // Auto-fit on data change
   useEffect(() => {

@@ -63,8 +63,7 @@ const indexRoute = createRoute({
           height="100%"
           enablePanning={true}
           enableZooming={true}
-          showDebugOverlay={false}
-          onCoordinateChange={worldCoords => {
+          onCoordinateChange={(worldCoords: { x: number; y: number }) => {
             if (worldCoords) {
               console.log(`Coords: x=${worldCoords.x.toFixed(2)}, y=${worldCoords.y.toFixed(2)}`);
             }

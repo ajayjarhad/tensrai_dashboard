@@ -1,88 +1,60 @@
 import type { ProcessedMapData } from '@tensrai/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-export function useMapImage(mapData: ProcessedMapData | null) {
-  const mapImageRef = useRef<HTMLImageElement | null>(null);
-  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
-
-  const cleanup = useCallback(() => {
-    if (mapImageRef.current) {
-      mapImageRef.current.onload = null;
-      mapImageRef.current.onerror = null;
-      mapImageRef.current.src = '';
-      mapImageRef.current = null;
-    }
-    if (offscreenCanvasRef.current) {
-      offscreenCanvasRef.current.width = 0;
-      offscreenCanvasRef.current.height = 0;
-      offscreenCanvasRef.current = null;
-    }
-  }, []);
+/**
+ * Builds a canvas from ProcessedMapData.imageData and returns it for KonvaImage.
+ */
+export function useMapImage(mapData: ProcessedMapData | null | undefined, mapId: string = 'map') {
+  const canvasCache = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const [image, setImage] = useState<HTMLCanvasElement | undefined>(undefined);
 
   useEffect(() => {
-    if (!mapData) {
-      cleanup();
-      setImage(null);
+    if (!mapData || !mapData.imageData) {
+      setImage(undefined);
       return;
     }
 
-    const createMapImage = (processedData: ProcessedMapData): Promise<HTMLImageElement> => {
-      return new Promise((resolve, reject) => {
-        try {
-          const { imageData } = processedData;
+    const cached = canvasCache.current.get(mapId);
+    if (cached) {
+      setImage(cached);
+      return;
+    }
 
-          if (offscreenCanvasRef.current) {
-            offscreenCanvasRef.current.width = 0;
-            offscreenCanvasRef.current.height = 0;
-          }
+    const { imageData } = mapData;
+    if (!imageData.width || !imageData.height || !imageData.data) {
+      setImage(undefined);
+      return;
+    }
 
-          const canvas = document.createElement('canvas');
-          canvas.width = imageData.width;
-          canvas.height = imageData.height;
-          offscreenCanvasRef.current = canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setImage(undefined);
+      return;
+    }
 
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            reject(new Error('Failed to get 2D context for map rendering'));
-            return;
-          }
+    const imgData = new ImageData(
+      new Uint8ClampedArray(imageData.data),
+      imageData.width,
+      imageData.height
+    );
+    ctx.putImageData(imgData, 0, 0);
 
-          const imgData = new ImageData(
-            new Uint8ClampedArray(imageData.data),
-            imageData.width,
-            imageData.height
-          );
+    canvasCache.current.set(mapId, canvas);
+    setImage(canvas);
+  }, [mapData, mapId]);
 
-          ctx.putImageData(imgData, 0, 0);
-
-          const img = new Image();
-          img.onload = () => {
-            mapImageRef.current = img;
-            resolve(img);
-          };
-          img.onerror = error => {
-            reject(new Error(`Failed to load map image: ${error}`));
-          };
-          img.src = canvas.toDataURL();
-        } catch (error) {
-          reject(error);
-        }
+  useEffect(() => {
+    return () => {
+      canvasCache.current.forEach(c => {
+        c.width = 0;
+        c.height = 0;
       });
+      canvasCache.current.clear();
     };
-
-    createMapImage(mapData)
-      .then(img => {
-        setImage(img);
-      })
-      .catch(error => {
-        console.error('Failed to create map image:', error);
-        setImage(null);
-        mapImageRef.current = null;
-      });
-
-    return cleanup;
-  }, [mapData, cleanup]);
+  }, []);
 
   return image;
 }
