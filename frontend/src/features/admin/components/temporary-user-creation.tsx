@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
+import { ArrowLeft, Copy, Download, RefreshCcw, Sparkles, UserPlus, X } from 'lucide-react';
 import { useState } from 'react';
 import { z } from 'zod';
 import { BaseForm, FormError, FormField, LoadingButton } from '@/components/forms';
@@ -121,21 +122,22 @@ export function TemporaryUserCreation() {
 
   if (createdUser) {
     return (
-      <div className="min-h-screen bg-background py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-2xl mx-auto">
-          <div className="mb-8">
+      <div className="min-h-screen bg-card py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-2xl mx-auto space-y-8">
+          <div className="space-y-3">
             <button
               type="button"
               onClick={goBack}
-              className="text-muted-foreground hover:text-foreground mb-4 flex items-center"
+              className="text-muted-foreground hover:text-foreground mb-4 flex items-center gap-2"
             >
-              ← Back to User Management
+              <ArrowLeft className="h-4 w-4" />
+              Back to User Management
             </button>
             <h1 className="text-3xl font-bold text-foreground">User Created Successfully!</h1>
           </div>
 
           <div className="bg-card shadow rounded-lg p-6 border border-border">
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div>
                 <h2 className="text-lg font-semibold text-foreground mb-2">User Information</h2>
                 <div className="space-y-2 text-sm">
@@ -154,7 +156,7 @@ export function TemporaryUserCreation() {
                 </div>
               </div>
 
-              <div className="border-t border-border pt-4">
+              <div className="border-t border-border pt-4 space-y-3">
                 <h3 className="text-lg font-semibold text-foreground mb-2">Temporary Password</h3>
                 <div className="bg-secondary rounded-md p-3">
                   <div className="flex items-center justify-between">
@@ -164,8 +166,9 @@ export function TemporaryUserCreation() {
                     <button
                       type="button"
                       onClick={() => copyToClipboard(createdUser.password)}
-                      className="ml-4 px-3 py-1 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 text-sm"
+                      className="ml-4 px-3 py-1 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 text-sm inline-flex items-center gap-2"
                     >
+                      <Copy className="h-4 w-4" />
                       Copy
                     </button>
                   </div>
@@ -173,7 +176,7 @@ export function TemporaryUserCreation() {
                 <p className="mt-2 text-sm text-destructive">⚠️ This password expires in 72 hours</p>
               </div>
 
-              <div className="border-t border-border pt-4">
+              <div className="border-t border-border pt-4 space-y-3">
                 <h3 className="text-lg font-semibold text-foreground mb-2">Next Steps</h3>
                 <ul className="text-sm text-muted-foreground space-y-1">
                   <li>• Share these credentials securely with the user</li>
@@ -188,23 +191,26 @@ export function TemporaryUserCreation() {
                 <button
                   type="button"
                   onClick={downloadUserCredentials}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 inline-flex items-center gap-2"
                 >
+                  <Download className="h-4 w-4" />
                   Download Credentials
                 </button>
                 <button
                   type="button"
                   onClick={resetForm}
-                  className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90"
+                  className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 inline-flex items-center gap-2"
                 >
+                  <RefreshCcw className="h-4 w-4" />
                   Create Another User
                 </button>
               </div>
               <button
                 type="button"
                 onClick={goBack}
-                className="px-4 py-2 text-muted-foreground hover:text-foreground"
+                className="px-4 py-2 text-muted-foreground hover:text-foreground inline-flex items-center gap-2"
               >
+                <ArrowLeft className="h-4 w-4" />
                 Back to Users
               </button>
             </div>
@@ -215,15 +221,16 @@ export function TemporaryUserCreation() {
   }
 
   return (
-    <div className="min-h-screen bg-background py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-2xl mx-auto">
-        <div className="mb-8">
+    <div className="min-h-screen bg-card py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-2xl mx-auto space-y-8">
+        <div className="space-y-3">
           <button
             type="button"
             onClick={goBack}
-            className="text-muted-foreground hover:text-foreground mb-4 flex items-center"
+            className="text-muted-foreground hover:text-foreground mb-4 flex items-center gap-2"
           >
-            ← Back to User Management
+            <ArrowLeft className="h-4 w-4" />
+            Back to User Management
           </button>
           <h1 className="text-3xl font-bold text-foreground">Create Temporary User</h1>
           <p className="mt-2 text-muted-foreground">
@@ -302,8 +309,9 @@ export function TemporaryUserCreation() {
                         type="button"
                         onClick={generatePassword}
                         disabled={isCreating}
-                        className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 disabled:opacity-50"
+                        className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 disabled:opacity-50 inline-flex items-center gap-2"
                       >
+                        <Sparkles className="h-4 w-4" />
                         Generate Password
                       </button>
 
@@ -316,8 +324,9 @@ export function TemporaryUserCreation() {
                           <button
                             type="button"
                             onClick={copyPassword}
-                            className="px-3 py-1 bg-primary text-primary-foreground rounded text-sm hover:bg-primary/90"
+                            className="px-3 py-1 bg-primary text-primary-foreground rounded text-sm hover:bg-primary/90 inline-flex items-center gap-2"
                           >
+                            <Copy className="h-4 w-4" />
                             {copied ? 'Copied!' : 'Copy'}
                           </button>
                         </div>
@@ -349,16 +358,18 @@ export function TemporaryUserCreation() {
                     type="button"
                     onClick={goBack}
                     disabled={isCreating}
-                    className="px-4 py-2 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    className="px-4 py-2 text-muted-foreground hover:text-foreground disabled:opacity-50 inline-flex items-center gap-2"
                   >
+                    <X className="h-4 w-4" />
                     Cancel
                   </button>
                   <LoadingButton
                     loading={isCreating || formState.isSubmitting}
                     loadingText="Creating User..."
                     disabled={!formState.isValid || !generatedPassword}
-                    className="px-6 py-2"
+                    className="px-6 py-2 inline-flex items-center gap-2"
                   >
+                    <UserPlus className="h-4 w-4" />
                     Create User
                   </LoadingButton>
                 </div>

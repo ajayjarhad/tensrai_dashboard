@@ -1,6 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
-import type { CreateUserInput, User } from '@tensrai/shared';
-import type { FormEvent } from 'react';
+import type { User } from '@tensrai/shared';
+import { ShieldCheck, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { apiClient } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
@@ -16,22 +16,17 @@ export function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [createSuccess, setCreateSuccess] = useState<CreateUserResponse | null>(null);
-
-  const [createFormData, setCreateFormData] = useState<CreateUserInput>({
-    username: '',
-    email: '',
-    role: 'USER',
-    displayName: '',
-  });
 
   const loadUsers = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get<User[]>('/users');
-      setUsers(response);
-      setError(null);
+      const response = await apiClient.get<{ success: boolean; data: User[]; message?: string }>('users');
+      if (response.success && Array.isArray(response.data)) {
+        setUsers(response.data);
+        setError(null);
+      } else {
+        setError(response.message || 'Failed to load users');
+      }
     } catch (err) {
       setError('Failed to load users');
       console.error('Error loading users:', err);
@@ -45,31 +40,11 @@ export function UserManagement() {
     loadUsers();
   }, [isAdmin, loadUsers]);
 
-  const handleCreateUser = async (e: FormEvent) => {
-    e.preventDefault();
-
-    try {
-      const response = await apiClient.post<CreateUserResponse>('/users', createFormData);
-      setCreateSuccess(response);
-      setShowCreateForm(false);
-      setCreateFormData({
-        username: '',
-        email: '',
-        role: 'USER',
-        displayName: '',
-      });
-      await loadUsers();
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create user';
-      setError(errorMessage);
-    }
-  };
-
   const handleDeleteUser = async (userId: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
 
     try {
-      await apiClient.delete(`/users/${userId}`);
+      await apiClient.delete(`users/${userId}`);
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to delete user';
@@ -79,7 +54,7 @@ export function UserManagement() {
 
   const handleToggleUserStatus = async (userId: string, isActive: boolean) => {
     try {
-      await apiClient.put(`/users/${userId}`, { isActive });
+      await apiClient.put(`users/${userId}`, { isActive });
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to update user';
@@ -97,25 +72,18 @@ export function UserManagement() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold text-foreground">User Management</h1>
-        <div className="flex space-x-3">
-          <button
-            type="button"
-            onClick={() => navigate({ to: '/admin/create-temporary-user' })}
-            className="bg-secondary hover:bg-secondary/90 text-secondary-foreground px-4 py-2 rounded-md text-sm font-medium focus-ring"
-          >
-            Create Temporary User
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowCreateForm(true)}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-md text-sm font-medium focus-ring"
-          >
-            Create User
-          </button>
-        </div>
+    <div className="min-h-screen bg-background">
+      <div className="container mx-auto px-4 py-8 space-y-6">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-3xl font-bold text-foreground">User Management</h1>
+        <button
+          type="button"
+          onClick={() => navigate({ to: '/admin/create-temporary-user' })}
+          className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
+        >
+          <ShieldCheck className="h-4 w-4" />
+          Create User
+        </button>
       </div>
 
       {error && (
@@ -128,118 +96,6 @@ export function UserManagement() {
           >
             ×
           </button>
-        </div>
-      )}
-
-      {createSuccess && (
-        <div className="bg-card border border-border px-4 py-3 rounded mb-4">
-          <div className="font-medium text-foreground">User created successfully!</div>
-          <div className="text-sm mt-1 text-muted-foreground">
-            <strong>Username:</strong> {createSuccess.user.username}
-            <br />
-            <strong>Temporary Password:</strong>{' '}
-            <code className="bg-muted px-1 rounded text-foreground">
-              {createSuccess.tempPassword}
-            </code>
-          </div>
-          <p className="text-xs mt-2 text-muted-foreground">
-            Please share this temporary password with the user. It expires in 72 hours.
-          </p>
-          <button
-            type="button"
-            onClick={() => setCreateSuccess(null)}
-            className="mt-2 text-primary hover:text-primary/80 text-sm"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {showCreateForm && (
-        <div className="fixed inset-0 bg-background/80 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-20 mx-auto p-5 border border-border w-96 shadow-lg rounded-md bg-card">
-            <h3 className="text-lg font-bold text-foreground mb-4">Create New User</h3>
-            <form onSubmit={handleCreateUser}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-foreground">Username</label>
-                  <input
-                    type="text"
-                    required
-                    value={createFormData.username}
-                    onChange={e =>
-                      setCreateFormData(prev => ({
-                        ...prev,
-                        username: e.target.value,
-                      }))
-                    }
-                    className="mt-1 block w-full px-3 py-2 border border-input rounded-md focus:outline-none focus-ring"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground">Email</label>
-                  <input
-                    type="email"
-                    required
-                    value={createFormData.email}
-                    onChange={e =>
-                      setCreateFormData(prev => ({
-                        ...prev,
-                        email: e.target.value,
-                      }))
-                    }
-                    className="mt-1 block w-full px-3 py-2 border border-input rounded-md focus:outline-none focus-ring"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground">Display Name</label>
-                  <input
-                    type="text"
-                    value={createFormData.displayName}
-                    onChange={e =>
-                      setCreateFormData(prev => ({
-                        ...prev,
-                        displayName: e.target.value,
-                      }))
-                    }
-                    className="mt-1 block w-full px-3 py-2 border border-input rounded-md focus:outline-none focus-ring"
-                    placeholder="Optional"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground">Role</label>
-                  <select
-                    value={createFormData.role}
-                    onChange={e =>
-                      setCreateFormData(prev => ({
-                        ...prev,
-                        role: e.target.value as 'ADMIN' | 'USER',
-                      }))
-                    }
-                    className="mt-1 block w-full px-3 py-2 border border-input rounded-md focus:outline-none focus-ring"
-                  >
-                    <option value="USER">User</option>
-                    <option value="ADMIN">Admin</option>
-                  </select>
-                </div>
-              </div>
-              <div className="flex justify-end space-x-2 mt-6">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateForm(false)}
-                  className="px-4 py-2 text-muted-foreground border border-input rounded-md hover:bg-accent focus-ring"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 focus-ring"
-                >
-                  Create User
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
       )}
 
@@ -314,8 +170,9 @@ export function UserManagement() {
                       <button
                         type="button"
                         onClick={() => handleDeleteUser(user.id)}
-                        className="text-destructive hover:text-destructive/80 focus-ring"
+                        className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
                       >
+                        <Trash2 className="h-4 w-4" />
                         Delete
                       </button>
                     )}
@@ -325,6 +182,7 @@ export function UserManagement() {
             </tbody>
           </table>
         )}
+      </div>
       </div>
     </div>
   );

@@ -1,3 +1,4 @@
+import { KeyRound } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
 import { FirstTimePasswordSetupSchema } from '@tensrai/shared';
 import { BaseForm, FormError, FormField, LoadingButton } from '@/components/forms';
@@ -114,6 +115,7 @@ export function FirstTimePasswordForm() {
                   disabled={!canSubmit}
                   className="w-full"
                 >
+                  <KeyRound className="h-4 w-4" />
                   Set Password
                 </LoadingButton>
               </>

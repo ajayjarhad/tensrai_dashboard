@@ -19,13 +19,13 @@ export function MapToolbar({
 }: MapToolbarProps) {
   return (
     <div
-      className={`flex flex-col gap-2 bg-white/90 backdrop-blur-sm p-2 rounded-lg shadow-md border border-gray-200 ${className || ''}`}
+      className={`flex flex-col gap-3 bg-card/90 backdrop-blur-sm p-3 rounded-lg shadow-md border border-border ${className || ''}`}
     >
-      <div className="flex flex-col gap-1 border-b border-gray-200 pb-2 mb-2">
+      <div className="flex flex-col gap-2 border-b border-border/60 pb-3 mb-1">
         <button
           type="button"
           onClick={onZoomIn}
-          className="p-2 hover:bg-gray-100 rounded-md transition-colors text-gray-700"
+          className="p-2 hover:bg-muted rounded-md transition-colors text-foreground/80"
           title="Zoom In"
         >
           <Plus size={20} />
@@ -33,17 +33,17 @@ export function MapToolbar({
         <button
           type="button"
           onClick={onZoomOut}
-          className="p-2 hover:bg-gray-100 rounded-md transition-colors text-gray-700"
+          className="p-2 hover:bg-muted rounded-md transition-colors text-foreground/80"
           title="Zoom Out"
         >
           <Minus size={20} />
         </button>
       </div>
-      <div className="flex flex-col map-toolbar-rotate gap-1 border-b border-gray-200 pb-2 mb-2">
+      <div className="flex flex-col map-toolbar-rotate gap-2 border-b border-border/60 pb-3 mb-1">
         <button
           type="button"
           onClick={onRotateLeft}
-          className="p-2 hover:bg-gray-100 rounded-md transition-colors text-gray-700"
+          className="p-2 hover:bg-muted rounded-md transition-colors text-foreground/80"
           title="Rotate Left"
         >
           <RotateCcw size={20} />
@@ -51,7 +51,7 @@ export function MapToolbar({
         <button
           type="button"
           onClick={onRotateRight}
-          className="p-2 hover:bg-gray-100 rounded-md transition-colors text-gray-700"
+          className="p-2 hover:bg-muted rounded-md transition-colors text-foreground/80"
           title="Rotate Right"
         >
           <RotateCw size={20} />
@@ -61,7 +61,7 @@ export function MapToolbar({
         <button
           type="button"
           onClick={onRecenter}
-          className="p-2 hover:bg-gray-100 rounded-md transition-colors text-gray-700"
+          className="p-2 hover:bg-muted rounded-md transition-colors text-foreground/80"
           title="Recenter Map"
         >
           <Maximize size={20} />

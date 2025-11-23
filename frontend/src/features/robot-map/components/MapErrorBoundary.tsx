@@ -18,9 +18,9 @@ interface MapErrorBoundaryProps {
  */
 function MapErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   return (
-    <div className="flex items-center justify-center h-full bg-gray-50 border-2 border-red-200 rounded-lg">
+    <div className="flex items-center justify-center h-full bg-muted border border-status-error/30 rounded-lg">
       <div className="text-center p-6">
-        <div className="text-red-600 mb-4">
+        <div className="text-status-error mb-4">
           <svg
             className="w-12 h-12 mx-auto mb-4"
             fill="none"
@@ -36,13 +36,13 @@ function MapErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
           </svg>
           <h3 className="text-lg font-semibold">Map Rendering Error</h3>
         </div>
-        <p className="text-gray-600 text-sm mb-4">
+        <p className="text-muted-foreground text-sm mb-4">
           {error?.message || 'An error occurred while rendering the map'}
         </p>
         <button
           type="button"
           onClick={resetErrorBoundary}
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm"
+          className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors text-sm"
         >
           Retry
         </button>

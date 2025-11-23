@@ -4,62 +4,62 @@
 
 @layer base {
   :root {
-    /* High-contrast monochromatic design system */
-    --background: 0 0% 100%;
-    --foreground: 0 0% 0%;
+    /* Neutral surfaces and foreground */
+    --background: 0 0% 98%;
+    --foreground: 0 0% 7%;
 
-    /* Card surfaces with subtle contrast */
-    --card: 0 0% 97%;
-    --card-foreground: 0 0% 3%;
+    /* Layered surfaces */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
 
-    /* Popover overlays */
+    /* Popovers */
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
+    --popover-foreground: 0 0% 7%;
 
-    /* Primary actions - high contrast */
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
+    /* Brand-forward primary */
+    --primary: 120 100% 50%;
+    --primary-foreground: 120 40% 10%;
 
-    /* Secondary elements */
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 9%;
+    /* Supporting neutrals */
+    --secondary: 0 0% 93%;
+    --secondary-foreground: 0 0% 12%;
 
-    /* Muted elements */
-    --muted: 0 0% 94%;
-    --muted-foreground: 0 0% 20%;
+    /* Muted text and fills */
+    --muted: 0 0% 92%;
+    --muted-foreground: 0 0% 40%;
 
-    /* Accent elements */
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 98%;
+    /* Deep accent for hover/pressed */
+    --accent: 120 32% 16%;
+    --accent-foreground: 0 0% 96%;
 
-    /* Interactive elements */
-    --destructive: 0 0% 0%;
+    /* Destructive stays red */
+    --destructive: 0 84% 58%;
     --destructive-foreground: 0 0% 98%;
 
-    /* Borders - high contrast for industrial clarity */
-    --border: 0 0% 20%;
-    --input: 0 0% 13%;
-    --ring: 0 0% 0%;
+    /* Chrome + focus */
+    --border: 120 2% 80%;
+    --input: 120 2% 78%;
+    --ring: 120 92% 44%;
 
-    /* Robot status colors - monochromatic with high contrast */
-    --status-online: 0 0% 30%; /* Dark gray for online */
-    --status-offline: 0 0% 70%; /* Light gray for offline */
-    --status-warning: 0 0% 50%; /* Medium gray for warning */
-    --status-error: 0 0% 0%; /* Black for errors */
-    --status-active: 0 0% 20%; /* Very dark for active */
+    /* Status palette (separate from brand) */
+    --status-online: 170 84% 38%;
+    --status-offline: 0 0% 58%;
+    --status-warning: 38 100% 52%;
+    --status-error: 0 84% 58%;
+    --status-active: 210 82% 52%;
 
-    /* Safety-critical colors - WCAG AAA compliant */
-    --safety-estop: 0 0% 0%; /* Black for emergency stop */
-    --safety-caution: 0 0% 40%; /* Medium-dark for caution */
-    --safety-safe: 0 0% 25%; /* Dark for safe status */
+    /* Safety cues */
+    --safety-estop: 0 84% 58%;
+    --safety-caution: 38 100% 52%;
+    --safety-safe: 145 28% 35%;
 
-    /* Telemetry visualization colors */
-    --telemetry-battery: 0 0% 35%; /* Dark gray for battery */
-    --telemetry-signal: 0 0% 45%; /* Medium gray for signal */
-    --telemetry-temperature: 0 0% 55%; /* Lighter gray for temperature */
+    /* Telemetry accents */
+    --telemetry-battery: 170 80% 40%;
+    --telemetry-signal: 210 80% 50%;
+    --telemetry-temperature: 20 90% 55%;
 
-    /* Accessibility-focused radius */
-    --radius: 0.25rem;
+    /* Radius for rounded elements */
+    --radius: 0.625rem;
 
     /* Typography settings */
     --font-sans:
@@ -70,51 +70,52 @@
   }
 
   .dark {
-    /* Dark mode - inverted for industrial environments */
-    --background: 0 0% 3%;
-    --foreground: 0 0% 98%;
+    /* Dark mode surfaces */
+    --background: 0 0% 5%;
+    --foreground: 0 0% 95%;
 
-    --card: 0 0% 6%;
-    --card-foreground: 0 0% 98%;
+    --card: 0 0% 9%;
+    --card-foreground: 0 0% 96%;
 
-    --popover: 0 0% 3%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 0 0% 5%;
+    --popover-foreground: 0 0% 95%;
 
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 0%;
+    /* Brand primary on dark */
+    --primary: 120 100% 50%;
+    --primary-foreground: 120 36% 10%;
 
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 0 0% 16%;
+    --secondary-foreground: 0 0% 95%;
 
-    --muted: 0 0% 11%;
-    --muted-foreground: 0 0% 64%;
+    --muted: 0 0% 16%;
+    --muted-foreground: 0 0% 70%;
 
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 98%;
+    --accent: 120 26% 18%;
+    --accent-foreground: 0 0% 96%;
 
-    --destructive: 0 0% 95%;
-    --destructive-foreground: 0 0% 0%;
+    --destructive: 0 72% 62%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 0 0% 15%;
-    --input: 0 0% 10%;
-    --ring: 0 0% 83%;
+    --border: 0 0% 20%;
+    --input: 0 0% 22%;
+    --ring: 120 92% 44%;
 
-    /* Robot status colors in dark mode */
-    --status-online: 0 0% 85%; /* Light gray for online */
-    --status-offline: 0 0% 40%; /* Dark gray for offline */
-    --status-warning: 0 0% 60%; /* Medium gray for warning */
-    --status-error: 0 0% 100%; /* White for errors */
-    --status-active: 0 0% 90%; /* Very light for active */
+    /* Status palette in dark */
+    --status-online: 170 74% 60%;
+    --status-offline: 0 0% 50%;
+    --status-warning: 38 100% 62%;
+    --status-error: 0 84% 64%;
+    --status-active: 210 82% 64%;
 
-    /* Safety colors in dark mode */
-    --safety-estop: 0 0% 100%; /* White for emergency stop */
-    --safety-caution: 0 0% 75%; /* Light gray for caution */
-    --safety-safe: 0 0% 85%; /* Very light for safe status */
+    /* Safety in dark */
+    --safety-estop: 0 84% 64%;
+    --safety-caution: 38 100% 60%;
+    --safety-safe: 145 26% 42%;
 
-    /* Telemetry colors in dark mode */
-    --telemetry-battery: 0 0% 80%; /* Light gray for battery */
-    --telemetry-signal: 0 0% 70%; /* Medium-light gray for signal */
-    --telemetry-temperature: 0 0% 60%; /* Medium gray for temperature */
+    /* Telemetry in dark */
+    --telemetry-battery: 170 74% 60%;
+    --telemetry-signal: 210 80% 64%;
+    --telemetry-temperature: 20 90% 62%;
   }
 }
 

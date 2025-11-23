@@ -7,6 +7,7 @@ import {
   redirect,
 } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
+import { ArrowLeft, Home } from 'lucide-react';
 import { UserManagement } from '@/features/admin/components';
 import { TemporaryUserCreation } from '@/features/admin/components/temporary-user-creation';
 import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
@@ -171,8 +172,9 @@ const unauthorizedRoute = createRoute({
             <button
               type="button"
               onClick={() => window.history.back()}
-              className="w-full px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors focus-ring"
+              className="w-full px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors focus-ring inline-flex items-center justify-center gap-2"
             >
+              <ArrowLeft className="h-4 w-4" />
               Go Back
             </button>
             <button
@@ -180,8 +182,9 @@ const unauthorizedRoute = createRoute({
               onClick={() => {
                 window.location.href = '/';
               }}
-              className="w-full px-4 py-2 bg-secondary text-secondary-foreground rounded hover:bg-secondary/80 transition-colors focus-ring"
+              className="w-full px-4 py-2 bg-secondary text-secondary-foreground rounded hover:bg-secondary/80 transition-colors focus-ring inline-flex items-center justify-center gap-2"
             >
+              <Home className="h-4 w-4" />
               Home
             </button>
           </div>
@@ -234,8 +237,9 @@ export const router = createRouter({
         <button
           type="button"
           onClick={() => window.history.back()}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 focus-ring"
+          className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 focus-ring inline-flex items-center gap-2"
         >
+          <ArrowLeft className="h-4 w-4" />
           Go Back
         </button>
       </div>

@@ -72,10 +72,10 @@ export function MapStage({
   if (!mapData) {
     return (
       <div
-        className={`flex items-center justify-center bg-gray-100 ${className || ''}`}
+        className={`flex items-center justify-center bg-muted ${className || ''}`}
         style={{ width, height }}
       >
-        <div className="text-gray-500">No map data available</div>
+        <div className="text-muted-foreground">No map data available</div>
       </div>
     );
   }

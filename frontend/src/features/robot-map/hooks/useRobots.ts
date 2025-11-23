@@ -16,6 +16,8 @@ export function useRobots() {
   return useQuery({
     queryKey: ['robots'],
     queryFn: fetchRobots,
-    refetchInterval: 1000, // Poll every second for real-time updates
+    // Avoid hammering the endpoint; rely on focus revalidation/manual refetch
+    refetchInterval: false,
+    staleTime: 5_000,
   });
 }

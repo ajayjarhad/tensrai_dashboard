@@ -1,3 +1,4 @@
+import { LogIn } from 'lucide-react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -41,7 +42,10 @@ export function LoginForm() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md w-full space-y-8">
-        <div></div>
+        <div className="space-y-2 text-center">
+          <h1 className="text-3xl font-bold text-foreground">Welcome back</h1>
+          <p className="text-sm text-muted-foreground">Sign in to manage your robots</p>
+        </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-6">
           <FormError errors={error} />
@@ -84,6 +88,7 @@ export function LoginForm() {
             disabled={!canSubmit || isLoading || isSubmitting}
             className="w-full"
           >
+            <LogIn className="h-4 w-4" />
             Sign in
           </LoadingButton>
         </form>

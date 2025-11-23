@@ -27,7 +27,8 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
         )}
         {...props}
       >
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3">
+          <img src="/assets/logo.png" alt="Tensrai" className="h-8 w-8 object-contain" />
           <h1 className="text-2xl font-bold tracking-tight text-foreground font-sans">Tensrai</h1>
         </div>
 
