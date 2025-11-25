@@ -85,6 +85,8 @@ export function MapContent({
         >
           {mapImage && <KonvaImage image={mapImage} width={mapWidth} height={mapHeight} />}
 
+          <PathLayer points={pathPoints} />
+
           {/* Render Robots */}
           {robots?.map(robot => {
             if (robot.x === undefined || robot.y === undefined || robot.theta === undefined) {
@@ -124,7 +126,6 @@ export function MapContent({
             <LocationPin key={loc.id} x={loc.x} y={loc.y} rotation={loc.rotation} />
           ))}
 
-          <PathLayer points={pathPoints} />
           <LaserLayer points={laserPoints} scale={stageScale} />
         </Group>
       </Layer>

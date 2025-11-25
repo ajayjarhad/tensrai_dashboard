@@ -15,10 +15,12 @@ export function PathLayer({ points }: PathLayerProps) {
       <Line
         points={flattened}
         stroke="#3b82f6"
-        strokeWidth={2}
+        strokeWidth={3}
         lineCap="round"
         lineJoin="round"
         opacity={0.8}
+        // Longer dash/gap for a clearly dotted appearance, works better across zoom levels.
+        lineDash={[12, 10]}
       />
     </Group>
   );

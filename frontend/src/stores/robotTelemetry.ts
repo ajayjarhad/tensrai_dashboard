@@ -61,11 +61,9 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
 
         if (event.channel === 'odom') {
           try {
-            // Only use odom pose if we don't already have a map-frame pose
-            if (next.poseSource !== 'amcl') {
-              next.pose = odomToPose(event.data as any);
-              next.poseSource = 'odom';
-            }
+            // Always drive pose from odom to avoid AMCL snap/auto-orient.
+            next.pose = odomToPose(event.data as any);
+            next.poseSource = 'odom';
           } catch {
             // ignore bad odom
           }
@@ -73,19 +71,6 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           next.laser = event.data as LaserScan;
         } else if (event.channel === 'waypoints') {
           next.path = event.data as PathMessage;
-        } else if (event.channel === 'amcl') {
-          try {
-            const pose = (event.data as any)?.pose?.pose;
-            if (pose) {
-              next.pose = rosPoseToPose2D(pose);
-              next.poseSource = 'amcl';
-              if (typeof console !== 'undefined') {
-                console.log('[telemetry] poseSource=amcl', robotId, next.pose);
-              }
-            }
-          } catch {
-            // ignore bad amcl
-          }
         } else if (event.channel === 'state') {
           // optional: map to status; for now, leave as is
         }
