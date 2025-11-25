@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
 import { ArrowLeft, Home } from 'lucide-react';
-import { UserManagement } from '@/features/admin/components';
+import { RobotManagement, UserManagement } from '@/features/admin/components';
 import { TemporaryUserCreation } from '@/features/admin/components/temporary-user-creation';
 import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
 import { Dashboard } from '@/features/robot-map/components/Dashboard';
@@ -141,6 +141,14 @@ const createTempUserRoute = createRoute({
   },
 });
 
+const robotManagementRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: '/robots',
+  component: () => {
+    return <RobotManagement />;
+  },
+});
+
 // Unauthorized Route
 const unauthorizedRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -198,7 +206,7 @@ const unauthorizedRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   authRoute.addChildren([loginRoute, firstTimeSetupRoute]),
-  adminRoute.addChildren([userManagementRoute, createTempUserRoute]),
+  adminRoute.addChildren([userManagementRoute, createTempUserRoute, robotManagementRoute]),
   unauthorizedRoute,
 ]);
 

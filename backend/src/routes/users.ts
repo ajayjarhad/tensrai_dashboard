@@ -1,4 +1,4 @@
-import { requireAdmin } from '../middleware/auth.js';
+import { requireUser } from '../middleware/auth.js';
 import {
   createUserWithTempPassword,
   deleteUser,
@@ -13,7 +13,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.post(
     '/users',
     {
-      preHandler: [requireAdmin],
+      preHandler: [requireUser],
       schema: {
         body: {
           type: 'object',
@@ -77,7 +77,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users',
     {
-      preHandler: [requireAdmin],
+      preHandler: [requireUser],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -111,7 +111,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users/:id',
     {
-      preHandler: [requireAdmin],
+      preHandler: [requireUser],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -153,7 +153,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.put(
     '/users/:id',
     {
-      preHandler: [requireAdmin],
+      preHandler: [requireUser],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -196,7 +196,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.delete(
     '/users/:id',
     {
-      preHandler: [requireAdmin],
+      preHandler: [requireUser],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {

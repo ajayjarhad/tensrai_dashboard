@@ -445,6 +445,18 @@ const parseCookieHeader = (cookieHeader: string | string[] | undefined) => {
 };
 
 const extractSessionToken = (headers: IncomingHttpHeaders): string | null => {
+  const authHeader = headers['authorization'];
+  if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.slice(7).trim() || null;
+  }
+
+  const headerToken =
+    (typeof headers['x-session-token'] === 'string' && headers['x-session-token']) ||
+    (typeof headers['session-token'] === 'string' && headers['session-token']);
+  if (headerToken) {
+    return headerToken;
+  }
+
   const parsedCookies = parseCookieHeader(headers['cookie']);
   if (!parsedCookies) {
     return null;

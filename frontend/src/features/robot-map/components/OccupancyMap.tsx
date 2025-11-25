@@ -1,5 +1,7 @@
 import { useOccupancyMap } from '../hooks/useOccupancyMap';
 import { MapStage } from './MapStage';
+import type { Robot } from '@/types/robot';
+import type { PathMessage, Pose2D, LaserScan } from '@/types/telemetry';
 
 interface OccupancyMapProps {
   mapId: string;
@@ -9,6 +11,17 @@ interface OccupancyMapProps {
   width?: string | number;
   height?: string | number;
   className?: string;
+  robots?: Robot[] | undefined;
+  telemetryRobotId?: string | null;
+  telemetry?:
+    | {
+        pose?: Pose2D;
+        laser?: LaserScan;
+      path?: PathMessage;
+    }
+    | null
+    | undefined;
+  onRobotSelect?: ((robotId: string) => void) | undefined;
 }
 
 export function OccupancyMap({
@@ -18,6 +31,10 @@ export function OccupancyMap({
   width = '100%',
   height = '100%',
   className,
+  robots,
+  telemetryRobotId,
+  telemetry,
+  onRobotSelect,
 }: OccupancyMapProps) {
   const mapState = useOccupancyMap({
     mapId,
@@ -72,6 +89,10 @@ export function OccupancyMap({
         height={height}
         enablePanning={enablePanning}
         enableZooming={enableZooming}
+        robots={robots}
+        telemetryRobotId={telemetryRobotId ?? undefined}
+        telemetry={telemetry}
+        onRobotSelect={onRobotSelect}
       />
 
       {mapState.loading && (

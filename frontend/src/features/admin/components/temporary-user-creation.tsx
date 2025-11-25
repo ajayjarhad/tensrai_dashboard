@@ -30,7 +30,9 @@ interface CreatedUser {
 
 export function TemporaryUserCreation() {
   const navigate = useNavigate();
-  const { hasPermission } = useAuth();
+  const { hasPermission, session } = useAuth();
+  const sessionToken = session?.sessionToken || session?.token;
+  const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined;
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdUser, setCreatedUser] = useState<CreatedUser | null>(null);
@@ -82,14 +84,23 @@ export function TemporaryUserCreation() {
       return;
     }
 
+    if (!sessionToken) {
+      setError('Authentication required. Please sign in again.');
+      return;
+    }
+
     setIsCreating(true);
     setError(null);
 
     try {
-      const response = await apiClient.post<any>('users', {
-        ...data,
-        tempPassword: generatedPassword,
-      });
+      const response = await apiClient.post<any>(
+        'users',
+        {
+          ...data,
+          tempPassword: generatedPassword,
+        },
+        authHeaders ? { headers: authHeaders } : undefined
+      );
 
       if (response.success) {
         const newUser: CreatedUser = {

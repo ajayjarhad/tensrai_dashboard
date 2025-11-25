@@ -6,9 +6,15 @@ interface UseMapControlsProps {
   stageRef: RefObject<Konva.Stage | null>;
   mapData: ProcessedMapData | null;
   fitStageToMap: () => void;
+  onScaleChange?: (scale: number) => void;
 }
 
-export function useMapControls({ stageRef, mapData, fitStageToMap }: UseMapControlsProps) {
+export function useMapControls({
+  stageRef,
+  mapData,
+  fitStageToMap,
+  onScaleChange,
+}: UseMapControlsProps) {
   const [rotation, setRotation] = useState(0);
 
   const zoomBy = useCallback(
@@ -39,8 +45,9 @@ export function useMapControls({ stageRef, mapData, fitStageToMap }: UseMapContr
       stage.scale({ x: clampedScale, y: clampedScale });
       stage.position(newPos);
       stage.batchDraw();
+      onScaleChange?.(clampedScale);
     },
-    [mapData, stageRef]
+    [mapData, onScaleChange, stageRef]
   );
 
   const rotateStage = useCallback((deltaDegrees: number) => {
@@ -54,8 +61,9 @@ export function useMapControls({ stageRef, mapData, fitStageToMap }: UseMapContr
     if (stage) {
       stage.rotation(0);
       stage.batchDraw();
+      onScaleChange?.(stage.scaleX());
     }
-  }, [fitStageToMap, stageRef]);
+  }, [fitStageToMap, onScaleChange, stageRef]);
 
   return {
     rotation,

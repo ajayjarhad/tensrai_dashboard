@@ -52,6 +52,27 @@ async function main() {
     ],
   };
 
+  const map3Pgm = await fs.readFile(path.join(assetsDir, 'gas_station_map.pgm'));
+  const map3Yaml = await fs.readFile(path.join(assetsDir, 'gas_station_map.yaml'), 'utf-8');
+  const map3Metadata = load(map3Yaml) as any;
+  const map3Features = {
+    locationTags: [
+      { id: 'home', name: 'Home Base', x: -153, y: -34, theta: -1.387 }, // 79.47 deg -> 1.387 rad
+      { id: 'dock', name: 'Docking Station', x: -75.33, y: -18.6, theta: 0 },
+    ],
+    missions: [
+      {
+        id: 'patrol',
+        name: 'Warehouse Patrol',
+        steps: ['home', 'dock', 'home'],
+      },
+      {
+        id: 'inspection',
+        name: 'Daily Inspection',
+        steps: ['home', 'dock'],
+      },
+    ],
+  };
   // Create Maps
   console.log('Creating maps...');
   const map1 = await prisma.map.upsert({
@@ -83,8 +104,22 @@ async function main() {
       features: map2Features,
     },
   });
+  const map3 = await prisma.map.upsert({
+    where: { name: 'Gas Station' },
+    update: {
+      image: map3Pgm,
+      metadata: map3Metadata,
+      features: map3Features,
+    },
+    create: {
+      name: 'Gas Station',
+      image: map3Pgm,
+      metadata: map3Metadata,
+      features: map3Features,
+    },
+  });
 
-  console.log('Maps created:', map1.id, map2.id);
+  console.log('Maps created:', map1.id, map2.id, map3.id);
 
   // Create Robots
   console.log('Creating robots...');
@@ -92,7 +127,7 @@ async function main() {
     {
       name: 'Tensrai1',
       status: 'MISSION',
-      mapId: map1.id,
+      mapId: map3.id,
       x: -153,
       y: -79,
       theta: 1.387,

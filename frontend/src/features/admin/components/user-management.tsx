@@ -6,17 +6,26 @@ import { apiClient } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
 
 export function UserManagement() {
-  const { user: currentUser, isAdmin } = useAuth();
+  const { user: currentUser, session } = useAuth();
+  const sessionToken = session?.sessionToken || session?.token;
+  const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined;
   const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
+    if (!sessionToken) {
+      setError('Authentication required. Please sign in again.');
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const response = await apiClient.get<{ success: boolean; data: User[]; message?: string }>(
-        'users'
+        'users',
+        authHeaders ? { headers: authHeaders } : undefined
       );
       if (response.success && Array.isArray(response.data)) {
         setUsers(response.data);
@@ -30,18 +39,28 @@ export function UserManagement() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionToken]);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!sessionToken) {
+      setLoading(false);
+      setError('Authentication required. Please sign in again.');
+      return;
+    }
+
     loadUsers();
-  }, [isAdmin, loadUsers]);
+  }, [loadUsers, sessionToken]);
 
   const handleDeleteUser = async (userId: string) => {
+    if (!sessionToken) {
+      setError('Authentication required. Please sign in again.');
+      return;
+    }
+
     if (!confirm('Are you sure you want to delete this user?')) return;
 
     try {
-      await apiClient.delete(`users/${userId}`);
+      await apiClient.delete(`users/${userId}`, authHeaders ? { headers: authHeaders } : undefined);
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to delete user';
@@ -50,23 +69,23 @@ export function UserManagement() {
   };
 
   const handleToggleUserStatus = async (userId: string, isActive: boolean) => {
+    if (!sessionToken) {
+      setError('Authentication required. Please sign in again.');
+      return;
+    }
+
     try {
-      await apiClient.put(`users/${userId}`, { isActive });
+      await apiClient.put(
+        `users/${userId}`,
+        { isActive },
+        authHeaders ? { headers: authHeaders } : undefined
+      );
       await loadUsers();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to update user';
       setError(errorMessage);
     }
   };
-
-  if (!isAdmin) {
-    return (
-      <div className="text-center py-12">
-        <h2 className="text-2xl font-bold text-destructive">Access Denied</h2>
-        <p className="mt-2 text-muted-foreground">You don't have permission to access this page.</p>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-background">

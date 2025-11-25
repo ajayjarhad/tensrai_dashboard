@@ -91,6 +91,8 @@ model Robot {
   name        String      @unique
   status      RobotMode   @default(UNKNOWN)
   battery     Float?      // Battery percentage (0-100)
+  bridgePort  Int?
+  channels    Json?
   
   // Location info
   mapId       String?     @db.ObjectId // ID of the map the robot is on

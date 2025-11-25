@@ -4,7 +4,10 @@ import type { RefObject } from 'react';
 import { Group, Image as KonvaImage, Layer, Stage } from 'react-konva';
 import { createMapTransforms, worldToMapPixel } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
+import type { PixelPoint } from '@tensrai/shared';
 import type { TempLocation } from '../hooks/useMapLocations';
+import { LaserLayer } from './LaserLayer';
+import { PathLayer } from './PathLayer';
 import { LocationPin } from './LocationPin';
 import { RobotMarker } from './RobotMarker';
 
@@ -22,6 +25,10 @@ interface MapContentProps {
   robots: Robot[];
   enablePanning: boolean;
   handleWheel: (e: Konva.KonvaEventObject<WheelEvent>) => void;
+  laserPoints?: PixelPoint[];
+  pathPoints?: PixelPoint[];
+  onRobotSelect?: ((robotId: string) => void) | undefined;
+  stageScale?: number;
 }
 
 export function MapContent({
@@ -36,6 +43,10 @@ export function MapContent({
   robots,
   enablePanning,
   handleWheel,
+  laserPoints = [],
+  pathPoints = [],
+  onRobotSelect,
+  stageScale = 1,
 }: MapContentProps) {
   const { width: mapWidth, height: mapHeight, resolution, origin } = mapData.meta;
 
@@ -58,6 +69,10 @@ export function MapContent({
       height={height}
       draggable={enablePanning}
       onWheel={handleWheel}
+      onClick={e => {
+        // allow clicks to pass through without interfering with selection
+        e.cancelBubble = false;
+      }}
     >
       <Layer>
         <Group
@@ -88,23 +103,29 @@ export function MapContent({
             // Formula: 90 - theta_deg
             const rotationDegrees = 90 - robot.theta * (180 / Math.PI);
 
+            const handleSelect = () => onRobotSelect?.(robot.id);
+
             return (
-              <RobotMarker
-                key={robot.id}
-                x={pixelPoint.x}
-                y={pixelPoint.y}
-                rotation={rotationDegrees}
-                status={robot.status}
-                widthMeters={ROBOT_WIDTH_METERS}
-                lengthMeters={ROBOT_LENGTH_METERS}
-                resolution={resolution}
-              />
+              <Group key={robot.id} onClick={handleSelect} onTap={handleSelect}>
+                <RobotMarker
+                  x={pixelPoint.x}
+                  y={pixelPoint.y}
+                  rotation={rotationDegrees}
+                  status={robot.status}
+                  widthMeters={ROBOT_WIDTH_METERS}
+                  lengthMeters={ROBOT_LENGTH_METERS}
+                  resolution={resolution}
+                />
+              </Group>
             );
           })}
 
           {locations.map(loc => (
             <LocationPin key={loc.id} x={loc.x} y={loc.y} rotation={loc.rotation} />
           ))}
+
+          <PathLayer points={pathPoints} />
+          <LaserLayer points={laserPoints} scale={stageScale} />
         </Group>
       </Layer>
     </Stage>

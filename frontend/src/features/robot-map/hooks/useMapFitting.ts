@@ -8,9 +8,10 @@ interface UseMapFittingProps {
   stageRef: RefObject<Konva.Stage | null>;
   width: number;
   height: number;
+  onFit?: (scale: number) => void;
 }
 
-export function useMapFitting({ mapData, stageRef, width, height }: UseMapFittingProps) {
+export function useMapFitting({ mapData, stageRef, width, height, onFit }: UseMapFittingProps) {
   const fitStageToMap = useCallback(() => {
     if (!mapData || !stageRef.current) {
       return;
@@ -32,7 +33,8 @@ export function useMapFitting({ mapData, stageRef, width, height }: UseMapFittin
       y: (height - mapHeight * fitScale) / 2,
     });
     stage.batchDraw();
-  }, [mapData, width, height, stageRef]);
+    onFit?.(fitScale);
+  }, [mapData, width, height, stageRef, onFit]);
 
   // Auto-fit on data change
   useEffect(() => {

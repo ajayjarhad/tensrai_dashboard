@@ -15,6 +15,15 @@ export interface Robot {
   status: RobotMode;
   battery?: number;
   mapId?: string;
+  bridgePort?: number;
+  channels?: Array<{
+    name: string;
+    topic: string;
+    msgType: string;
+    direction: 'subscribe' | 'publish';
+    rateLimitHz?: number;
+    connectionId?: string;
+  }>;
   x?: number;
   y?: number;
   theta?: number;

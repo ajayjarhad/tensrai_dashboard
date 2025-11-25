@@ -21,6 +21,19 @@ const CreateRobotSchema = z.object({
   y: z.number().optional(),
   theta: z.number().optional(),
   ipAddress: z.string().optional(),
+  bridgePort: z.number().int().min(1).max(65535).optional(),
+  channels: z
+    .array(
+      z.object({
+        name: z.string(),
+        topic: z.string(),
+        msgType: z.string(),
+        direction: z.union([z.literal('subscribe'), z.literal('publish')]),
+        rateLimitHz: z.number().positive().optional(),
+        connectionId: z.string().optional(),
+      })
+    )
+    .optional(),
 });
 
 const UpdateRobotSchema = z.object({
@@ -31,6 +44,19 @@ const UpdateRobotSchema = z.object({
   y: z.number().optional(),
   theta: z.number().optional(),
   ipAddress: z.string().optional(),
+  bridgePort: z.number().int().min(1).max(65535).optional(),
+  channels: z
+    .array(
+      z.object({
+        name: z.string(),
+        topic: z.string(),
+        msgType: z.string(),
+        direction: z.union([z.literal('subscribe'), z.literal('publish')]),
+        rateLimitHz: z.number().positive().optional(),
+        connectionId: z.string().optional(),
+      })
+    )
+    .optional(),
 });
 
 const robotRoutes: any = async (server: AppFastifyInstance) => {
@@ -67,7 +93,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         return reply.status(400).send({ success: false, error: result.error });
       }
 
-      const { name, ...data } = result.data;
+      const { name, mapId, channels, ...data } = result.data;
       const prisma = server.prisma as any;
 
       try {
@@ -76,8 +102,17 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
             name,
             ...data,
             status: data.status || 'UNKNOWN',
+            channels: channels ?? undefined,
+            ...(mapId
+              ? {
+                  map: {
+                    connect: { id: mapId },
+                  },
+                }
+              : {}),
           } as any,
         });
+        (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
         if (error.code === 'P2002') {
@@ -104,13 +139,25 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       const prisma = server.prisma as any;
 
       try {
+        const { mapId, channels, ...rest } = result.data;
         const robot = await prisma.robot.update({
           where: { id },
           data: {
-            ...result.data,
+            ...rest,
+            ...(mapId !== undefined
+              ? {
+                  map: mapId
+                    ? {
+                        connect: { id: mapId },
+                      }
+                    : { disconnect: true },
+                }
+              : {}),
+            channels: channels ?? undefined,
             lastSeen: new Date(),
           } as any,
         });
+        (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
         if (error.code === 'P2025') {
@@ -129,6 +176,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       await prisma.robot.delete({
         where: { id },
       });
+      (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
       return { success: true, message: 'Robot deleted successfully' };
     } catch (error: any) {
       if (error.code === 'P2025') {

@@ -4,6 +4,7 @@ import databasePlugin from './plugins/database.js';
 import observabilityPlugin from './plugins/observability.js';
 import securityPlugin from './plugins/security.js';
 import mapRoutes from './routes/maps.js';
+import rosGateway from './routes/rosGateway.js';
 import robotRoutes from './routes/robots.js';
 import userRoutes from './routes/users.js';
 // Temporarily disabled OpenTelemetry
@@ -33,6 +34,7 @@ const registerPlugins = async () => {
   await server.register(observabilityPlugin);
   await server.register(securityPlugin);
   await server.register(authPlugin);
+  await server.register(rosGateway);
 
   await server.register(userRoutes, { prefix: '/api' });
   await server.register(robotRoutes, { prefix: '/api' });

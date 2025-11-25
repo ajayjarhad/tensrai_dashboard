@@ -13,7 +13,15 @@ interface RobotMarkerProps {
 }
 
 export const RobotMarker = React.memo(
-  ({ x, y, rotation, status, widthMeters, lengthMeters, resolution }: RobotMarkerProps) => {
+  ({
+    x,
+    y,
+    rotation,
+    status,
+    widthMeters,
+    lengthMeters,
+    resolution,
+  }: RobotMarkerProps) => {
     // Calculate pixel dimensions
     const widthPixels = widthMeters / resolution;
     const lengthPixels = lengthMeters / resolution;
@@ -23,7 +31,14 @@ export const RobotMarker = React.memo(
     const indicatorColor = isEmergency ? '#EF4444' : '#22C55E'; // red-500 : green-500
 
     return (
-      <Group x={x} y={y} rotation={rotation} offsetX={widthPixels / 2} offsetY={lengthPixels / 2}>
+      <Group
+        x={x}
+        y={y}
+        rotation={rotation}
+        offsetX={widthPixels / 2}
+        offsetY={lengthPixels / 2}
+        listening
+      >
         {/* Robot Body */}
         <Rect
           width={widthPixels}

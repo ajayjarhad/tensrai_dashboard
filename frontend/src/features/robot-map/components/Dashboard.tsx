@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { Robot } from '../../../types/robot';
 import { EmergencyHeader } from '../../emergency-stop/emergency-header';
+import { useRobotTelemetry } from '@/hooks/useRobotTelemetry';
 import { useRobots } from '../hooks/useRobots';
+import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { OccupancyMap } from './OccupancyMap';
 import { RobotSidebar } from './RobotSidebar';
 
@@ -9,8 +11,25 @@ export function Dashboard() {
   const { data: robots = [] } = useRobots();
   const [selectedRobotId, setSelectedRobotId] = useState<string | null>(null);
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
+  const activeRobotId = selectedRobotId ?? robots.find(robot => robot.mapId)?.id ?? null;
+  const { telemetry } = useRobotTelemetry(activeRobotId);
+  const telemetryStore = useRobotTelemetryStore();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Keep all robot telemetry sockets connected so data flows regardless of selection.
+  useEffect(() => {
+    const ids = robots.map(r => r.id);
+    ids.forEach(id => telemetryStore.connect(id));
+
+    // Disconnect sockets for robots no longer in the list
+    const currentIds = new Set(ids);
+    Object.keys(telemetryStore.telemetry).forEach(id => {
+      if (!currentIds.has(id)) {
+        telemetryStore.disconnect(id);
+      }
+    });
+  }, [robots, telemetryStore]);
 
   // Initialize or recover active map when robots load or change
   useEffect(() => {
@@ -49,6 +68,32 @@ export function Dashboard() {
               height="100%"
               enablePanning={true}
               enableZooming={true}
+              robots={robots.map(robot => {
+                if (
+                  robot.id === activeRobotId &&
+                  telemetry?.pose &&
+                  Number.isFinite(telemetry.pose.x) &&
+                  Number.isFinite(telemetry.pose.y) &&
+                  Number.isFinite(telemetry.pose.theta)
+                ) {
+                  return {
+                    ...robot,
+                    x: telemetry.pose.x,
+                    y: telemetry.pose.y,
+                    theta: telemetry.pose.theta,
+                  };
+                }
+                return robot;
+              })}
+              telemetryRobotId={activeRobotId}
+              telemetry={telemetry}
+              onRobotSelect={id => {
+                setSelectedRobotId(id);
+                const r = robots.find(ro => ro.id === id);
+                if (r?.mapId) {
+                  setActiveMapId(r.mapId);
+                }
+              }}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-muted-foreground">
