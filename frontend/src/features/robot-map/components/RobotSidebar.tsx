@@ -210,7 +210,7 @@ export function RobotSidebar({
                     <MoreVertical className="h-4 w-4" />
                   </button>
                   {showMenu && (
-                    <div className="absolute right-0 mt-2 w-44 rounded-md bg-card border border-border shadow-lg z-20">
+                    <div className="absolute right-0 bottom-full mb-2 w-44 rounded-md bg-card border border-border shadow-lg z-20">
                       <button
                         type="button"
                         onClick={() => {
