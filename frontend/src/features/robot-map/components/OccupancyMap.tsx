@@ -13,6 +13,7 @@ interface OccupancyMapProps {
   className?: string;
   robots?: Robot[] | undefined;
   telemetryRobotId?: string | null;
+  selectedRobotId?: string | null;
   telemetry?:
     | {
         pose?: Pose2D;
@@ -21,7 +22,7 @@ interface OccupancyMapProps {
     }
     | null
     | undefined;
-  onRobotSelect?: ((robotId: string) => void) | undefined;
+  onRobotSelect?: ((robotId: string | null) => void) | undefined;
 }
 
 export function OccupancyMap({
@@ -33,6 +34,7 @@ export function OccupancyMap({
   className,
   robots,
   telemetryRobotId,
+  selectedRobotId,
   telemetry,
   onRobotSelect,
 }: OccupancyMapProps) {
@@ -91,6 +93,7 @@ export function OccupancyMap({
         enableZooming={enableZooming}
         robots={robots}
         telemetryRobotId={telemetryRobotId ?? undefined}
+        selectedRobotId={selectedRobotId ?? undefined}
         telemetry={telemetry}
         onRobotSelect={onRobotSelect}
       />

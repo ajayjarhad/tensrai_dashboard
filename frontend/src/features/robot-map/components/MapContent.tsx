@@ -1,14 +1,13 @@
-import type { ProcessedMapData } from '@tensrai/shared';
+import type { PixelPoint, ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import type { RefObject } from 'react';
-import { Group, Image as KonvaImage, Layer, Stage } from 'react-konva';
+import { Group, Image as KonvaImage, Label, Layer, Stage, Tag, Text } from 'react-konva';
 import { createMapTransforms, worldToMapPixel } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
-import type { PixelPoint } from '@tensrai/shared';
 import type { TempLocation } from '../hooks/useMapLocations';
 import { LaserLayer } from './LaserLayer';
-import { PathLayer } from './PathLayer';
 import { LocationPin } from './LocationPin';
+import { PathLayer } from './PathLayer';
 import { RobotMarker } from './RobotMarker';
 
 interface MapContentProps {
@@ -27,8 +26,9 @@ interface MapContentProps {
   handleWheel: (e: Konva.KonvaEventObject<WheelEvent>) => void;
   laserPoints?: PixelPoint[];
   pathPoints?: PixelPoint[];
-  onRobotSelect?: ((robotId: string) => void) | undefined;
+  onRobotSelect?: ((robotId: string | null) => void) | undefined;
   stageScale?: number;
+  selectedRobotId?: string | null;
 }
 
 export function MapContent({
@@ -47,6 +47,7 @@ export function MapContent({
   pathPoints = [],
   onRobotSelect,
   stageScale = 1,
+  selectedRobotId,
 }: MapContentProps) {
   const { width: mapWidth, height: mapHeight, resolution, origin } = mapData.meta;
 
@@ -61,6 +62,7 @@ export function MapContent({
   // Default robot dimensions in meters
   const ROBOT_WIDTH_METERS = 1.1;
   const ROBOT_LENGTH_METERS = 1.6;
+  const robotLengthPixels = ROBOT_LENGTH_METERS / resolution;
 
   return (
     <Stage
@@ -70,8 +72,15 @@ export function MapContent({
       draggable={enablePanning}
       onWheel={handleWheel}
       onClick={e => {
-        // allow clicks to pass through without interfering with selection
-        e.cancelBubble = false;
+        const target = e.target;
+        const clickedRobot = target.findAncestor(
+          node => typeof node.hasName === 'function' && node.hasName('robot-marker'),
+          true
+        );
+
+        if (!clickedRobot) {
+          onRobotSelect?.(null);
+        }
       }}
     >
       <Layer>
@@ -95,6 +104,7 @@ export function MapContent({
 
             // Convert world coordinates (meters) to pixel coordinates
             const pixelPoint = worldToMapPixel({ x: robot.x, y: robot.y }, transforms);
+            const isSelected = robot.id === selectedRobotId;
 
             // For rotation:
             // ROS: +Z is CCW, 0 is East.
@@ -104,7 +114,6 @@ export function MapContent({
             // To point North (theta=90), we need rotation=0.
             // Formula: 90 - theta_deg
             const rotationDegrees = 90 - robot.theta * (180 / Math.PI);
-
             const handleSelect = () => onRobotSelect?.(robot.id);
 
             return (
@@ -118,6 +127,33 @@ export function MapContent({
                   lengthMeters={ROBOT_LENGTH_METERS}
                   resolution={resolution}
                 />
+                {isSelected && (
+                  <Label
+                    x={pixelPoint.x}
+                    y={pixelPoint.y - robotLengthPixels / 2 - 6}
+                    listening={false}
+                  >
+                    <Tag
+                      fill="rgba(15, 23, 42, 0.9)"
+                      cornerRadius={6}
+                      pointerDirection="down"
+                      pointerWidth={10}
+                      pointerHeight={6}
+                      shadowColor="black"
+                      shadowBlur={8}
+                      shadowOpacity={0.25}
+                      shadowOffset={{ x: 1, y: 2 }}
+                    />
+                    <Text
+                      text={robot.name || 'Robot'}
+                      fontSize={14}
+                      padding={8}
+                      fill="#fff"
+                      fontFamily="Inter, system-ui, -apple-system, sans-serif"
+                      align="center"
+                    />
+                  </Label>
+                )}
               </Group>
             );
           })}

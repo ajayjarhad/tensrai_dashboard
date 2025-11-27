@@ -37,6 +37,7 @@ export const RobotMarker = React.memo(
         rotation={rotation}
         offsetX={widthPixels / 2}
         offsetY={lengthPixels / 2}
+        name="robot-marker"
         listening
       >
         {/* Robot Body */}
@@ -44,15 +45,14 @@ export const RobotMarker = React.memo(
           width={widthPixels}
           height={lengthPixels}
           stroke="black"
-          strokeWidth={widthPixels * 0.1} // Proportional stroke width
-          cornerRadius={widthPixels * 0.2} // Proportional corner radius
-          fill="#828282" // Brand grey fill
-          shadowColor="black"
-          shadowBlur={5}
-          shadowOpacity={0.3}
-          shadowOffset={{ x: 2, y: 2 }}
-          listening={false}
-        />
+        strokeWidth={widthPixels * 0.1} // Proportional stroke width
+        cornerRadius={widthPixels * 0.2} // Proportional corner radius
+        fill="#828282" // Brand grey fill
+        shadowColor="black"
+        shadowBlur={5}
+        shadowOpacity={0.3}
+        shadowOffset={{ x: 2, y: 2 }}
+      />
 
         {/* Direction Indicator (Triangle) */}
         <RegularPolygon
@@ -62,7 +62,6 @@ export const RobotMarker = React.memo(
           radius={widthPixels * 0.25} // Proportional size
           fill={indicatorColor}
           rotation={0} // Points up (negative Y) by default
-          listening={false}
         />
       </Group>
     );

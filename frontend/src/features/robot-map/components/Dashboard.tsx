@@ -53,6 +53,9 @@ export function Dashboard() {
     if (robot?.mapId) {
       setActiveMapId(robot.mapId);
     }
+    if (robot) {
+      setIsSidebarOpen(true);
+    }
   };
 
   return (
@@ -87,12 +90,10 @@ export function Dashboard() {
               })}
               telemetryRobotId={activeRobotId}
               telemetry={telemetry}
+              selectedRobotId={selectedRobotId}
               onRobotSelect={id => {
-                setSelectedRobotId(id);
-                const r = robots.find(ro => ro.id === id);
-                if (r?.mapId) {
-                  setActiveMapId(r.mapId);
-                }
+                const robot = id ? robots.find(ro => ro.id === id) ?? null : null;
+                handleSelectRobot(robot);
               }}
             />
           ) : (

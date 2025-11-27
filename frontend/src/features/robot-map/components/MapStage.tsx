@@ -26,6 +26,7 @@ interface MapStageProps {
   className?: string;
   robots?: Robot[] | undefined;
   telemetryRobotId?: string | null | undefined;
+  selectedRobotId?: string | null;
   telemetry?:
     | {
         pose?: Pose2D;
@@ -34,7 +35,7 @@ interface MapStageProps {
     }
     | null
     | undefined;
-  onRobotSelect?: ((robotId: string) => void) | undefined;
+  onRobotSelect?: ((robotId: string | null) => void) | undefined;
 }
 
 export function MapStage({
@@ -46,6 +47,7 @@ export function MapStage({
   className,
   robots: robotsProp,
   telemetryRobotId,
+  selectedRobotId,
   telemetry,
   onRobotSelect,
 }: MapStageProps) {
@@ -159,6 +161,7 @@ export function MapStage({
           pathPoints={pathPoints}
           onRobotSelect={onRobotSelect}
           stageScale={stageScale}
+          selectedRobotId={selectedRobotId}
         />
 
         <MapOverlay
