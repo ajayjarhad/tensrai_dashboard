@@ -4,6 +4,7 @@ import { createMapTransforms, worldToMapPixel } from '../../../lib/map/mapTransf
 
 export interface TempLocation {
   id: string;
+  name: string;
   x: number;
   y: number;
   rotation: number;
@@ -29,6 +30,7 @@ export function useMapLocations({ mapData }: { mapData: ProcessedMapData | null 
 
           return {
             id: tag.id,
+            name: tag.name,
             x: pixelPos.x,
             y: pixelPos.y,
             rotation: tag.theta * (180 / Math.PI),
