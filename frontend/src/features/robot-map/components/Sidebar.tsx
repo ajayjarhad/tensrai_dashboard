@@ -17,7 +17,7 @@ import { cn } from '../../../lib/utils';
 import type { Robot } from '../../../types/robot';
 import { MissionDialog, type MissionWithContext } from './MissionDialog';
 
-interface RobotSidebarProps {
+interface SidebarProps {
   robots: Robot[];
   selectedRobotId: string | null;
   onSelectRobot: (robot: Robot | null) => void;
@@ -27,7 +27,7 @@ interface RobotSidebarProps {
   missions?: MissionWithContext[];
 }
 
-export function RobotSidebar({
+export function Sidebar({
   robots,
   selectedRobotId,
   onSelectRobot,
@@ -35,7 +35,7 @@ export function RobotSidebar({
   onToggle,
   className,
   missions,
-}: RobotSidebarProps) {
+}: SidebarProps) {
   const navigate = useNavigate();
   const { user, isAdmin, logout } = useAuth();
   const isUserAdmin = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
@@ -206,17 +206,30 @@ export function RobotSidebar({
 
       <div className="p-4 border-border bg-card space-y-3">
         <div className="flex justify-center">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="w-full"
-            onClick={() => setMissionDialogOpen(true)}
-            disabled={(missionList?.length ?? 0) === 0}
-          >
-            <Play className="h-4 w-4 mr-2" />
-            {missionList.length > 0 ? 'View Missions' : 'No Missions'}
-          </Button>
+          {isOpen ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="w-full"
+              onClick={() => setMissionDialogOpen(true)}
+              disabled={(missionList?.length ?? 0) === 0}
+            >
+              <Play className="h-4 w-4 mr-2" />
+              {missionList.length > 0 ? 'View Missions' : 'No Missions'}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              onClick={() => setMissionDialogOpen(true)}
+              disabled={(missionList?.length ?? 0) === 0}
+              aria-label={missionList.length > 0 ? 'View missions' : 'No missions'}
+            >
+              <Play className="h-4 w-4" />
+            </Button>
+          )}
         </div>
         <div className="border-b border-border/60" />
 
