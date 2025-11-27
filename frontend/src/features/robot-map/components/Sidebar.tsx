@@ -7,8 +7,12 @@ import {
   LogOut,
   MapPin,
   MoreVertical,
+  Pause,
   Play,
   Users,
+  Gamepad2,
+  LocateFixed,
+  XCircle,
 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -25,6 +29,12 @@ interface SidebarProps {
   onToggle: () => void;
   className?: string;
   missions?: MissionWithContext[];
+  isMissionPaused?: boolean;
+  onPause?: () => void;
+  onResume?: () => void;
+  onCancel?: () => void;
+  onManualControl?: () => void;
+  onSetPose?: () => void;
 }
 
 export function Sidebar({
@@ -35,6 +45,12 @@ export function Sidebar({
   onToggle,
   className,
   missions,
+  isMissionPaused,
+  onPause,
+  onResume,
+  onCancel,
+  onManualControl,
+  onSetPose,
 }: SidebarProps) {
   const navigate = useNavigate();
   const { user, isAdmin, logout } = useAuth();
@@ -44,9 +60,18 @@ export function Sidebar({
   const [missionDialogOpen, setMissionDialogOpen] = useState(false);
 
   const missionList = missions ?? [];
+  const paused = Boolean(isMissionPaused);
 
   const handleStartMission = (missionId: string) => {
     console.log('Start mission', missionId);
+  };
+
+  const handlePauseResume = () => {
+    if (paused) {
+      onResume?.();
+    } else {
+      onPause?.();
+    }
   };
 
   return (
@@ -115,7 +140,7 @@ export function Sidebar({
         {/* Expanded View */}
         {isOpen &&
           (selectedRobot ? (
-            <div className="p-4 space-y-6 min-w-[20rem]">
+            <div className="p-4 min-w-[20rem] h-full flex flex-col gap-6">
               <button
                 type="button"
                 onClick={() => onSelectRobot(null)}
@@ -166,6 +191,59 @@ export function Sidebar({
                       {selectedRobot.name || '--'}
                     </span>
                   </div>
+                </div>
+              </div>
+
+              <div className="pt-3 mt-auto border-t border-border/60 space-y-3">
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={handlePauseResume}
+                  >
+                    {paused ? (
+                      <>
+                        <Play className="h-4 w-4" />
+                        Resume
+                      </>
+                    ) : (
+                      <>
+                        <Pause className="h-4 w-4" />
+                        Pause
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="flex-1"
+                    onClick={() => onCancel?.()}
+                  >
+                    <XCircle className="h-4 w-4" />
+                    Cancel
+                  </Button>
+                </div>
+                <div className="border-b border-border/60" />
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={() => onManualControl?.()}
+                  >
+                    <Gamepad2 className="h-4 w-4" />
+                    Manual Control
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={() => onSetPose?.()}
+                  >
+                    <LocateFixed className="h-4 w-4" />
+                    Set Pose
+                  </Button>
                 </div>
               </div>
             </div>

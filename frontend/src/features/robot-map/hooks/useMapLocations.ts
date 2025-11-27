@@ -8,6 +8,9 @@ export interface TempLocation {
   x: number;
   y: number;
   rotation: number;
+  worldX: number;
+  worldY: number;
+  thetaRad: number;
 }
 
 export function useMapLocations({ mapData }: { mapData: ProcessedMapData | null }) {
@@ -34,6 +37,9 @@ export function useMapLocations({ mapData }: { mapData: ProcessedMapData | null 
             x: pixelPos.x,
             y: pixelPos.y,
             rotation: tag.theta * (180 / Math.PI),
+            worldX: tag.x,
+            worldY: tag.y,
+            thetaRad: tag.theta,
           };
         })
       );
