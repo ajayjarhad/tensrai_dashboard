@@ -7,7 +7,7 @@ import { useRobotTelemetry } from '@/hooks/useRobotTelemetry';
 import { useRobots } from '../hooks/useRobots';
 import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { OccupancyMap } from './OccupancyMap';
-import { RobotSidebar } from './RobotSidebar';
+import { Sidebar } from './Sidebar';
 import type { MissionWithContext } from './MissionDialog';
 
 export function Dashboard() {
@@ -174,7 +174,7 @@ export function Dashboard() {
           )}
         </div>
 
-        <RobotSidebar
+        <Sidebar
           robots={robots}
           selectedRobotId={selectedRobotId}
           onSelectRobot={handleSelectRobot}
