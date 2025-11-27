@@ -36,6 +36,9 @@ interface MapStageProps {
     | null
     | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
+  setPoseMode?: boolean;
+  onPoseConfirm?: () => void;
+  onPoseCancel?: () => void;
 }
 
 export function MapStage({
@@ -50,6 +53,9 @@ export function MapStage({
   selectedRobotId,
   telemetry,
   onRobotSelect,
+  setPoseMode,
+  onPoseConfirm,
+  onPoseCancel,
 }: MapStageProps) {
   const stageRef = useRef<Konva.Stage>(null);
   const mapGroupRef = useRef<Konva.Group>(null);
@@ -162,6 +168,9 @@ export function MapStage({
           onRobotSelect={onRobotSelect}
           stageScale={stageScale}
           selectedRobotId={selectedRobotId}
+          setPoseMode={setPoseMode}
+          onPoseConfirm={onPoseConfirm}
+          onPoseCancel={onPoseCancel}
         />
 
         <MapOverlay

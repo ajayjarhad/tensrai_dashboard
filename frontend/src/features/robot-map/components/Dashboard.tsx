@@ -9,6 +9,7 @@ import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { OccupancyMap } from './OccupancyMap';
 import { Sidebar } from './Sidebar';
 import type { MissionWithContext } from './MissionDialog';
+import { toast } from 'sonner';
 
 export function Dashboard() {
   const { data: robots = [] } = useRobots();
@@ -21,6 +22,7 @@ export function Dashboard() {
   const telemetryStore = useRobotTelemetryStore();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSettingPose, setIsSettingPose] = useState(false);
 
   // Keep all robot telemetry sockets connected so data flows regardless of selection.
   useEffect(() => {
@@ -128,6 +130,19 @@ export function Dashboard() {
     [allMissions, robots]
   );
 
+  const handleStartSetPose = () => {
+    if (!activeMapId) {
+      toast.error('Select a robot/map before setting pose');
+      return;
+    }
+    setIsSettingPose(true);
+    toast.message('Set pose: click a location tag or anywhere on the map. Press Esc to cancel.');
+  };
+
+  const handlePoseComplete = () => {
+    setIsSettingPose(false);
+  };
+
   return (
     <div className="flex flex-col h-screen w-full overflow-hidden bg-background relative">
       <EmergencyHeader className="flex-shrink-0 z-20 relative" />
@@ -166,6 +181,9 @@ export function Dashboard() {
                 handleSelectRobot(robot);
               }}
               onMapFeaturesChange={setMapFeatures}
+              setPoseMode={isSettingPose}
+              onPoseConfirm={handlePoseComplete}
+              onPoseCancel={handlePoseComplete}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -183,6 +201,10 @@ export function Dashboard() {
           missions={missionsWithRobots}
           locationTags={mapFeatures?.locationTags}
           className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
+          onSetPose={() => {
+            setIsSidebarOpen(true);
+            handleStartSetPose();
+          }}
         />
       </div>
     </div>

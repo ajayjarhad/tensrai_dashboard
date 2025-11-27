@@ -26,6 +26,9 @@ interface OccupancyMapProps {
     | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   onMapFeaturesChange?: (features: ProcessedMapData['features'] | undefined) => void;
+  setPoseMode?: boolean;
+  onPoseConfirm?: () => void;
+  onPoseCancel?: () => void;
 }
 
 export function OccupancyMap({
@@ -41,6 +44,9 @@ export function OccupancyMap({
   telemetry,
   onRobotSelect,
   onMapFeaturesChange,
+  setPoseMode,
+  onPoseConfirm,
+  onPoseCancel,
 }: OccupancyMapProps) {
   const mapState = useOccupancyMap({
     mapId,
@@ -106,6 +112,9 @@ export function OccupancyMap({
         selectedRobotId={selectedRobotId ?? undefined}
         telemetry={telemetry}
         onRobotSelect={onRobotSelect}
+        setPoseMode={setPoseMode}
+        onPoseConfirm={onPoseConfirm}
+        onPoseCancel={onPoseCancel}
       />
 
       {mapState.loading && (
