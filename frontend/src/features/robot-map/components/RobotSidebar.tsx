@@ -1,9 +1,21 @@
 import { useNavigate } from '@tanstack/react-router';
-import { Battery, ChevronLeft, ChevronRight, LogOut, MapPin, MoreVertical, Users, Cpu } from 'lucide-react';
+import {
+  Battery,
+  ChevronLeft,
+  ChevronRight,
+  Cpu,
+  LogOut,
+  MapPin,
+  MoreVertical,
+  Play,
+  Users,
+} from 'lucide-react';
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { useAuth } from '@/stores/auth';
 import { cn } from '../../../lib/utils';
 import type { Robot } from '../../../types/robot';
+import { MissionDialog, type MissionWithContext } from './MissionDialog';
 
 interface RobotSidebarProps {
   robots: Robot[];
@@ -12,6 +24,7 @@ interface RobotSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
   className?: string;
+  missions?: MissionWithContext[];
 }
 
 export function RobotSidebar({
@@ -21,12 +34,20 @@ export function RobotSidebar({
   isOpen,
   onToggle,
   className,
+  missions,
 }: RobotSidebarProps) {
   const navigate = useNavigate();
   const { user, isAdmin, logout } = useAuth();
   const isUserAdmin = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const selectedRobot = robots.find(r => r.id === selectedRobotId);
   const [showMenu, setShowMenu] = useState(false);
+  const [missionDialogOpen, setMissionDialogOpen] = useState(false);
+
+  const missionList = missions ?? [];
+
+  const handleStartMission = (missionId: string) => {
+    console.log('Start mission', missionId);
+  };
 
   return (
     <div
@@ -183,7 +204,29 @@ export function RobotSidebar({
           ))}
       </div>
 
-      <div className="p-4 border-t border-border bg-card">
+      <div className="p-4 border-border bg-card space-y-3">
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="w-full"
+            onClick={() => setMissionDialogOpen(true)}
+            disabled={(missionList?.length ?? 0) === 0}
+          >
+            <Play className="h-4 w-4 mr-2" />
+            {missionList.length > 0 ? 'View Missions' : 'No Missions'}
+          </Button>
+        </div>
+        <div className="border-b border-border/60" />
+
+        <MissionDialog
+          open={missionDialogOpen}
+          onOpenChange={setMissionDialogOpen}
+          missions={missionList}
+          onStartMission={handleStartMission}
+        />
+
         {isOpen ? (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -253,39 +296,39 @@ export function RobotSidebar({
             <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-foreground/80 text-sm font-semibold">
               {user?.displayName?.slice(0, 1)?.toUpperCase() || 'U'}
             </div>
-              <div className="flex flex-col items-center gap-2">
-                {isUserAdmin && (
-                  <div className="flex flex-col gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!isOpen) onToggle();
-                        navigate({ to: '/admin/users' });
-                      }}
-                      className="p-2 rounded-md hover:bg-muted transition-colors"
-                      title="Manage users"
-                      aria-label="Manage users"
-                    >
-                      <Users className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!isOpen) onToggle();
-                        navigate({ to: '/admin/robots' });
-                      }}
-                      className="p-2 rounded-md hover:bg-muted transition-colors"
-                      title="Manage robots"
-                      aria-label="Manage robots"
-                    >
-                      <Cpu className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={logout}
-                  className="p-2 rounded-md hover:bg-muted transition-colors"
+            <div className="flex flex-col items-center gap-2">
+              {isUserAdmin && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!isOpen) onToggle();
+                      navigate({ to: '/admin/users' });
+                    }}
+                    className="p-2 rounded-md hover:bg-muted transition-colors"
+                    title="Manage users"
+                    aria-label="Manage users"
+                  >
+                    <Users className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!isOpen) onToggle();
+                      navigate({ to: '/admin/robots' });
+                    }}
+                    className="p-2 rounded-md hover:bg-muted transition-colors"
+                    title="Manage robots"
+                    aria-label="Manage robots"
+                  >
+                    <Cpu className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={logout}
+                className="p-2 rounded-md hover:bg-muted transition-colors"
                 title="Log out"
                 aria-label="Log out"
               >

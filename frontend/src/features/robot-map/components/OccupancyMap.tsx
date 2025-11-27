@@ -1,7 +1,9 @@
+import { useEffect } from 'react';
 import { useOccupancyMap } from '../hooks/useOccupancyMap';
 import { MapStage } from './MapStage';
 import type { Robot } from '@/types/robot';
 import type { PathMessage, Pose2D, LaserScan } from '@/types/telemetry';
+import type { ProcessedMapData } from '@tensrai/shared';
 
 interface OccupancyMapProps {
   mapId: string;
@@ -23,6 +25,7 @@ interface OccupancyMapProps {
     | null
     | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
+  onMapFeaturesChange?: (features: ProcessedMapData['features'] | undefined) => void;
 }
 
 export function OccupancyMap({
@@ -37,12 +40,19 @@ export function OccupancyMap({
   selectedRobotId,
   telemetry,
   onRobotSelect,
+  onMapFeaturesChange,
 }: OccupancyMapProps) {
   const mapState = useOccupancyMap({
     mapId,
     autoLoad: true,
     useOptimizedParser: true,
   });
+
+  useEffect(() => {
+    if (onMapFeaturesChange) {
+      onMapFeaturesChange(mapState.data?.features);
+    }
+  }, [mapState.data?.features, onMapFeaturesChange]);
 
   if (!mapState.data && mapState.loading) {
     return (
