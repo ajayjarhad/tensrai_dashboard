@@ -294,42 +294,6 @@ export function MapContent({
 
           <PathLayer points={pathPoints} />
 
-          {/* Render Robots */}
-          {robots?.map(robot => {
-            if (robot.x === undefined || robot.y === undefined || robot.theta === undefined) {
-              return null;
-            }
-
-            // Convert world coordinates (meters) to pixel coordinates
-            const pixelPoint = worldToMapPixel({ x: robot.x, y: robot.y }, transforms);
-            // For rotation:
-            // ROS: +Z is CCW, 0 is East.
-            // Konva: +Rotation is CW.
-            // Our sprite points "Up" (North) at 0 rotation.
-            // To point East (theta=0), we need rotation=90.
-            // To point North (theta=90), we need rotation=0.
-            // Formula: 90 - theta_deg
-            const rotationDegrees = 90 - robot.theta * (180 / Math.PI);
-            const handleSelect = () => {
-              setSelectedLocationId(null);
-              onRobotSelect?.(robot.id);
-            };
-
-            return (
-              <Group key={robot.id} onClick={handleSelect} onTap={handleSelect}>
-                <RobotMarker
-                  x={pixelPoint.x}
-                  y={pixelPoint.y}
-                  rotation={rotationDegrees}
-                  status={robot.status}
-                  widthMeters={ROBOT_WIDTH_METERS}
-                  lengthMeters={ROBOT_LENGTH_METERS}
-                  resolution={resolution}
-                />
-              </Group>
-            );
-          })}
-
           {locations.map(loc => {
             const handleLocationSelect = (evt?: Konva.KonvaEventObject<MouseEvent>) => {
               if (setPoseMode) {
@@ -356,6 +320,34 @@ export function MapContent({
                 onClick={handleLocationSelect}
                 onTap={handleLocationSelect}
               />
+            );
+          })}
+
+          {/* Render Robots above location pins */}
+          {robots?.map(robot => {
+            if (robot.x === undefined || robot.y === undefined || robot.theta === undefined) {
+              return null;
+            }
+
+            const pixelPoint = worldToMapPixel({ x: robot.x, y: robot.y }, transforms);
+            const rotationDegrees = 90 - robot.theta * (180 / Math.PI);
+            const handleSelect = () => {
+              setSelectedLocationId(null);
+              onRobotSelect?.(robot.id);
+            };
+
+            return (
+              <Group key={robot.id} onClick={handleSelect} onTap={handleSelect}>
+                <RobotMarker
+                  x={pixelPoint.x}
+                  y={pixelPoint.y}
+                  rotation={rotationDegrees}
+                  status={robot.status}
+                  widthMeters={ROBOT_WIDTH_METERS}
+                  lengthMeters={ROBOT_LENGTH_METERS}
+                  resolution={resolution}
+                />
+              </Group>
             );
           })}
 

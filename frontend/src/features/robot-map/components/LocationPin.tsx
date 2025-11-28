@@ -15,7 +15,7 @@ interface LocationPinProps {
 
 export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
   ({ x, y, rotation = 0, scale = 1, color = '#01FF01', name, onClick, onTap }, ref) => {
-    const pathScale = 2.5;
+    const pathScale = 2.2;
     const pathData =
       'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z';
 
@@ -33,12 +33,11 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
       >
         {/* Invisible hit area to make the pin easy to click, including the hollow center */}
         <Circle x={0} y={0} radius={16 * pathScale} fill="#000" opacity={0.01} listening />
-
         <Path
           data={pathData}
           fill={color}
           stroke="black"
-          strokeWidth={0.5}
+          strokeWidth={0.65}
           scaleX={pathScale}
           scaleY={pathScale}
           rotation={-90}
