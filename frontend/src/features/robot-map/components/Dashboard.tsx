@@ -137,6 +137,25 @@ export function Dashboard() {
     [allMissions, robots]
   );
 
+  const prioritizedMissions = useMemo(() => {
+    const targetMap = activeMapId;
+    const withPriority = missionsWithRobots.map(mission => {
+      const hasRobots = (mission.availableRobots?.length ?? 0) > 0;
+      const onTargetMap = targetMap && mission.mapId === targetMap;
+      // Priority order:
+      // 0: on active map AND has robots
+      // 1: has robots (other maps)
+      // 2: no robots
+      const priority = onTargetMap && hasRobots ? 0 : hasRobots ? 1 : 2;
+      return { mission, priority };
+    });
+    withPriority.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.mission.name.localeCompare(b.mission.name);
+    });
+    return withPriority.map(entry => entry.mission);
+  }, [activeMapId, missionsWithRobots]);
+
   const handleStartSetPose = () => {
     if (!activeMapId) {
       toast.error('Select a robot/map before setting pose');
@@ -232,7 +251,7 @@ export function Dashboard() {
           onSelectRobot={handleSelectRobot}
           isOpen={isSidebarOpen}
           onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
-          missions={missionsWithRobots}
+          missions={prioritizedMissions}
           locationTags={mapFeatures?.locationTags}
           className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
           onManualControl={() => {
