@@ -10,6 +10,7 @@ import { OccupancyMap } from './OccupancyMap';
 import { Sidebar } from './Sidebar';
 import type { MissionWithContext } from './MissionDialog';
 import { toast } from 'sonner';
+import { TeleopPanel } from './TeleopPanel';
 
 export function Dashboard() {
   const { data: robots = [] } = useRobots();
@@ -18,11 +19,12 @@ export function Dashboard() {
   const [mapFeatures, setMapFeatures] = useState<ProcessedMapData['features'] | undefined>();
   const [allMissions, setAllMissions] = useState<MissionWithContext[]>([]);
   const activeRobotId = selectedRobotId ?? robots.find(robot => robot.mapId)?.id ?? null;
-  const { telemetry } = useRobotTelemetry(activeRobotId);
+  const { telemetry, sendTeleop } = useRobotTelemetry(activeRobotId);
   const telemetryStore = useRobotTelemetryStore();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingPose, setIsSettingPose] = useState(false);
+  const [teleopRobotId, setTeleopRobotId] = useState<string | null>(null);
 
   // Keep all robot telemetry sockets connected so data flows regardless of selection.
   useEffect(() => {
@@ -143,48 +145,75 @@ export function Dashboard() {
     setIsSettingPose(false);
   };
 
+  const teleopRobot = teleopRobotId ? robots.find(r => r.id === teleopRobotId) ?? null : null;
+
+  // Close teleop if the robot disappears or selection is cleared
+  useEffect(() => {
+    if (teleopRobotId && !robots.some(r => r.id === teleopRobotId)) {
+      setTeleopRobotId(null);
+    }
+  }, [robots, teleopRobotId]);
+
+  useEffect(() => {
+    if (!selectedRobotId && teleopRobotId) {
+      setTeleopRobotId(null);
+    }
+  }, [selectedRobotId, teleopRobotId]);
+
   return (
     <div className="flex flex-col h-screen w-full overflow-hidden bg-background relative">
       <EmergencyHeader className="flex-shrink-0 z-20 relative" />
       <div className="flex flex-1 overflow-hidden relative w-full">
         <div className="flex-1 relative min-w-0">
           {activeMapId ? (
-            <OccupancyMap
-              mapId={activeMapId}
-              onMapChange={setActiveMapId}
-              width="100%"
-              height="100%"
-              enablePanning={true}
-              enableZooming={true}
-              robots={robots.map(robot => {
-                if (
-                  robot.id === activeRobotId &&
-                  telemetry?.pose &&
-                  Number.isFinite(telemetry.pose.x) &&
-                  Number.isFinite(telemetry.pose.y) &&
-                  Number.isFinite(telemetry.pose.theta)
-                ) {
-                  return {
-                    ...robot,
-                    x: telemetry.pose.x,
-                    y: telemetry.pose.y,
-                    theta: telemetry.pose.theta,
-                  };
-                }
-                return robot;
-              })}
-              telemetryRobotId={activeRobotId}
-              telemetry={telemetry}
-              selectedRobotId={selectedRobotId}
-              onRobotSelect={id => {
-                const robot = id ? robots.find(ro => ro.id === id) ?? null : null;
-                handleSelectRobot(robot);
-              }}
-              onMapFeaturesChange={setMapFeatures}
-              setPoseMode={isSettingPose}
-              onPoseConfirm={handlePoseComplete}
-              onPoseCancel={handlePoseComplete}
-            />
+            <>
+              <OccupancyMap
+                mapId={activeMapId}
+                onMapChange={setActiveMapId}
+                width="100%"
+                height="100%"
+                enablePanning={true}
+                enableZooming={true}
+                robots={robots.map(robot => {
+                  if (
+                    robot.id === activeRobotId &&
+                    telemetry?.pose &&
+                    Number.isFinite(telemetry.pose.x) &&
+                    Number.isFinite(telemetry.pose.y) &&
+                    Number.isFinite(telemetry.pose.theta)
+                  ) {
+                    return {
+                      ...robot,
+                      x: telemetry.pose.x,
+                      y: telemetry.pose.y,
+                      theta: telemetry.pose.theta,
+                    };
+                  }
+                  return robot;
+                })}
+                telemetryRobotId={activeRobotId}
+                telemetry={telemetry}
+                selectedRobotId={selectedRobotId}
+                onRobotSelect={id => {
+                  const robot = id ? robots.find(ro => ro.id === id) ?? null : null;
+                  handleSelectRobot(robot);
+                }}
+                onMapFeaturesChange={setMapFeatures}
+                setPoseMode={isSettingPose}
+                onPoseConfirm={handlePoseComplete}
+                onPoseCancel={handlePoseComplete}
+              />
+
+              {teleopRobot && teleopRobotId && (
+                <TeleopPanel
+                  robotId={teleopRobotId}
+                  robotName={teleopRobot.name}
+                  sendTeleop={sendTeleop}
+                  onClose={() => setTeleopRobotId(null)}
+                  className={isSidebarOpen ? 'right-2 md:right-4' : 'right-2'}
+                />
+              )}
+            </>
           ) : (
             <div className="flex items-center justify-center h-full text-muted-foreground">
               {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
@@ -201,6 +230,14 @@ export function Dashboard() {
           missions={missionsWithRobots}
           locationTags={mapFeatures?.locationTags}
           className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
+          onManualControl={() => {
+            if (!selectedRobotId) {
+              toast.error('Select a robot to start teleop');
+              return;
+            }
+            setTeleopRobotId(selectedRobotId);
+            setIsSidebarOpen(true);
+          }}
           onSetPose={() => {
             setIsSidebarOpen(true);
             handleStartSetPose();
