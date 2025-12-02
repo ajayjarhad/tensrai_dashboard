@@ -22,15 +22,7 @@ const decodeToBuffer = (raw: unknown): Buffer | null => {
   }
 };
 
-const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRobot: boolean) => {
-  const logger = fastify.log;
-  const prisma = fastify.prisma as any;
-
-  if (!files?.map_yaml || !files?.map_pgm) {
-    logger.warn({ robotId, files }, 'MAP_DATA_RESPONSE missing map files');
-    return null;
-  }
-
+const extractMapContent = (files: any, logger: any, robotId: string) => {
   const mapYamlRaw = files.map_yaml_content ?? files.map_yaml;
   const mapPgmRaw = files.map_pgm_content ?? files.map_pgm;
 
@@ -57,23 +49,24 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRo
     typeof mapYamlRaw === 'string' &&
     (!looksLikeFilename(mapYamlRaw, '.yaml') || mapYamlRaw.includes('\n'));
   const hasPgmContent =
-    typeof mapPgmRaw === 'string' &&
-    (!looksLikeFilename(mapPgmRaw, '.pgm') || isBase64(mapPgmRaw));
+    typeof mapPgmRaw === 'string' && (!looksLikeFilename(mapPgmRaw, '.pgm') || isBase64(mapPgmRaw));
 
   if (hasYamlContent) {
     yamlText = mapYamlRaw as string;
-    logger.info({ robotId, source: 'inline', yamlLength: yamlText.length }, 'Using inline map YAML');
+    logger.info(
+      { robotId, source: 'inline', yamlLength: yamlText.length },
+      'Using inline map YAML'
+    );
   }
   if (hasPgmContent) {
     pgmBytes = decodeToBuffer(mapPgmRaw);
     logger.info({ robotId, source: 'inline', pgmBytes: pgmBytes?.length }, 'Using inline map PGM');
   }
 
-  if (!yamlText || !pgmBytes) {
-    logger.error({ robotId, hasYamlContent, hasPgmContent }, 'Mapping payload missing inline content; aborting');
-    return null;
-  }
+  return { yamlText, pgmBytes, hasYamlContent, hasPgmContent };
+};
 
+const parseMapMetadata = (yamlText: string, logger: any, robotId: string) => {
   let metadata: any;
   try {
     metadata = yaml.load(yamlText) ?? {};
@@ -81,10 +74,41 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRo
     logger.error({ robotId, err }, 'Failed to parse map YAML');
     metadata = {};
   }
+  return metadata;
+};
 
+const getMapDetails = (files: any) => {
   const features = files.metadata_json ?? {};
   const filename = looksLikeFilename(files.map_yaml, '.yaml') ? files.map_yaml : 'map.yaml';
   const name = filename.replace(/\.yaml$/i, '') || filename;
+  return { features, filename, name };
+};
+
+const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRobot: boolean) => {
+  const logger = fastify.log;
+  const prisma = fastify.prisma as any;
+
+  if (!files?.map_yaml || !files?.map_pgm) {
+    logger.warn({ robotId, files }, 'MAP_DATA_RESPONSE missing map files');
+    return null;
+  }
+
+  const { yamlText, pgmBytes, hasYamlContent, hasPgmContent } = extractMapContent(
+    files,
+    logger,
+    robotId
+  );
+
+  if (!yamlText || !pgmBytes) {
+    logger.error(
+      { robotId, hasYamlContent, hasPgmContent },
+      'Mapping payload missing inline content; aborting'
+    );
+    return null;
+  }
+
+  const metadata = parseMapMetadata(yamlText, logger, robotId);
+  const { features, filename, name } = getMapDetails(files);
 
   try {
     const map = await prisma.map.upsert({
@@ -170,11 +194,12 @@ export const fetchMapViaMappingBridge = async (
   });
 
   socket.on('message', async (data, isBinary) => {
-    const payload = !isBinary && typeof data === 'string'
-      ? data
-      : Buffer.isBuffer(data)
-        ? data.toString('utf8')
-        : data;
+    const payload =
+      !isBinary && typeof data === 'string'
+        ? data
+        : Buffer.isBuffer(data)
+          ? data.toString('utf8')
+          : data;
 
     try {
       const parsed = typeof payload === 'string' ? JSON.parse(payload) : null;

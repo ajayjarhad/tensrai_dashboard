@@ -128,10 +128,13 @@ export function RobotManagement() {
       name: robot.name,
       ipAddress: robot.ipAddress ?? '',
       bridgePort: robot.bridgePort ?? 9090,
-      mappingBridgePort: robot.mappingBridgePort ?? undefined,
       mapId: robot.mapId ?? '',
       status: robot.status,
     };
+
+    if (robot.mappingBridgePort !== undefined) {
+      next.mappingBridgePort = robot.mappingBridgePort;
+    }
     if (robot.channels) {
       next.channels = robot.channels;
     }
@@ -449,8 +452,8 @@ export function RobotManagement() {
                     placeholder="8765"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Optional mapping ROS bridge on the same IP (e.g. 8765). Use channel
-                    connectionId ("mapping") to target this socket.
+                    Optional mapping ROS bridge on the same IP (e.g. 8765). Use channel connectionId
+                    ("mapping") to target this socket.
                   </p>
                 </div>
                 <div className="space-y-1">
