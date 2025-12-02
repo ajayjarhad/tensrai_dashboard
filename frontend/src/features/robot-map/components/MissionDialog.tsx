@@ -73,7 +73,7 @@ export function MissionDialog({
               {group.missions.map(mission => {
                 const stepsArray = Array.isArray(mission.steps) ? mission.steps : [];
                 const locationMap = new Map(
-                  (mission.locationTags ?? []).map(tag => [tag.id, tag.name] as const)
+                  (mission.locationTags ?? []).map(tag => [String(tag.id), tag.name] as const)
                 );
                 const robotsOnMap = mission.availableRobots ?? [];
                 const hasRobots = robotsOnMap.length > 0;

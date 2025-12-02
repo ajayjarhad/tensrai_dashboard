@@ -20,10 +20,15 @@ export const getMissions = async (): Promise<MissionWithContext[]> => {
       if (features?.missions?.length) {
         const locationTags = features.locationTags ?? [];
         features.missions.forEach(mission => {
+          const steps = Array.isArray((mission as any).steps)
+            ? (mission as any).steps
+            : Array.isArray((mission as any).locationTagId)
+              ? (mission as any).locationTagId.map((id: any) => String(id))
+              : [];
           missions.push({
-            id: mission.id,
+            id: String(mission.id),
             name: mission.name,
-            steps: Array.isArray(mission.steps) ? mission.steps : [],
+            steps,
             mapId: map.id,
             mapName: map.name,
             locationTags,

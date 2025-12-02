@@ -92,7 +92,7 @@ model Robot {
   status      RobotMode   @default(UNKNOWN)
   battery     Float?      // Battery percentage (0-100)
   bridgePort  Int?
-  secondaryBridgePort Int?
+  mappingBridgePort Int?
   channels    Json?
   
   // Location info
@@ -112,6 +112,7 @@ model Robot {
 model Map {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   name      String   @unique
+  filename  String   @unique
   image     Bytes    // Binary PGM data
   metadata  Json     // YAML metadata (resolution, origin)
   features  Json     // Location tags, missions

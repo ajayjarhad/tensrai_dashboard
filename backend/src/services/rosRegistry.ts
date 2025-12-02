@@ -2,7 +2,29 @@
 import { RosRobotManager } from './rosRobotManager.js';
 
 const DEFAULT_PORT = Number(process.env['ROS_BRIDGE_PORT'] ?? 9090);
-const DEFAULT_SECONDARY_PORT = Number(process.env['ROS_SECONDARY_BRIDGE_PORT'] ?? 8765);
+const DEFAULT_MAPPING_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
+
+const serializeConfig = (config: any) => {
+  const connections = Array.isArray(config?.connections)
+    ? [...config.connections].sort((a, b) => (a.id ?? '').localeCompare(b.id ?? ''))
+    : [];
+  const channels = Array.isArray(config?.channels)
+    ? [...config.channels].sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
+    : [];
+
+  return JSON.stringify({
+    bridgeUrl: config?.bridgeUrl,
+    connections: connections.map(c => ({ id: c.id, url: c.url })),
+    channels: channels.map(ch => ({
+      name: ch.name,
+      topic: ch.topic,
+      msgType: ch.msgType,
+      direction: ch.direction,
+      rateLimitHz: ch.rateLimitHz,
+      connectionId: ch.connectionId,
+    })),
+  });
+};
 
 const normalizeMsgType = (msgType: string) => {
   const map: Record<string, string> = {
@@ -87,35 +109,45 @@ export class RosRegistry {
         continue;
       }
       const bridgePort = (robot as any).bridgePort ?? DEFAULT_PORT;
-      const secondaryBridgePort = (robot as any).secondaryBridgePort;
+      const configuredMappingPort = (robot as any).mappingBridgePort;
+      const resolvedMappingPort =
+        configuredMappingPort ??
+        (process.env['ROS_MAPPING_BRIDGE_PORT'] ? DEFAULT_MAPPING_PORT : undefined);
       const bridgeUrl = `ws://${robot.ipAddress}:${bridgePort}`;
-      const connections: Array<{ id: string; url: string }> = [
-        { id: 'default', url: bridgeUrl },
-      ];
+      const connections: Array<{ id: string; url: string }> = [{ id: 'default', url: bridgeUrl }];
 
-      // Only attach the secondary connection when explicitly configured
-      if (secondaryBridgePort) {
+      // Only attach the mapping connection when requested per-robot or via env
+      if (resolvedMappingPort) {
         connections.push({
-          id: 'secondary',
-          url: `ws://${robot.ipAddress}:${secondaryBridgePort ?? DEFAULT_SECONDARY_PORT}`,
+          id: 'mapping',
+          url: `ws://${robot.ipAddress}:${resolvedMappingPort}`,
         });
       }
       const channels = normalizeChannels((robot as any).channels) ?? defaultChannels;
       const robotId = robot.id;
       desiredIds.add(robotId);
 
-      if (!this.managers.has(robotId)) {
-        const manager = new RosRobotManager({
-          id: robotId,
-          bridgeUrl,
-          connections,
-          channels,
-        });
-        this.managers.set(robotId, manager);
-        manager.start().catch(error => {
-          this.logger?.error({ robotId, error }, 'Failed to start ROS manager');
-        });
+      const nextConfig = {
+        id: robotId,
+        bridgeUrl,
+        connections,
+        channels,
+      };
+
+      const existing = this.managers.get(robotId);
+      if (existing && serializeConfig((existing as any).config) === serializeConfig(nextConfig)) {
+        continue;
       }
+
+      existing?.stop();
+      const manager = new RosRobotManager(nextConfig);
+      manager.on('error', error => {
+        this.logger?.error({ robotId, error }, 'ROS manager error');
+      });
+      this.managers.set(robotId, manager);
+      manager.start().catch(error => {
+        this.logger?.error({ robotId, error }, 'Failed to start ROS manager');
+      });
     }
 
     // Remove stale managers

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance } from '../types/app.js';
 
 const RobotModeSchema = z.enum([
@@ -22,7 +23,7 @@ const CreateRobotSchema = z.object({
   theta: z.number().optional(),
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
-  secondaryBridgePort: z.number().int().min(1).max(65535).optional(),
+  mappingBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -46,7 +47,7 @@ const UpdateRobotSchema = z.object({
   theta: z.number().optional(),
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
-  secondaryBridgePort: z.number().int().min(1).max(65535).optional(),
+  mappingBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -115,6 +116,8 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
           } as any,
         });
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
+        // Try to fetch and store map in the background (fire and forget)
+        fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
         if (error.code === 'P2002') {
@@ -160,6 +163,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
           } as any,
         });
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
+        fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
         if (error.code === 'P2025') {

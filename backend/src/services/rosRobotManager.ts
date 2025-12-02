@@ -3,7 +3,7 @@ import EventEmitter from 'node:events';
 import type { RosChannelConfig, RosRobotConfig } from '../config/ros.js';
 import { createLatestThrottle } from '../utils/throttle.js';
 import { combineTransforms, type Pose2D, quaternionToYaw } from '../utils/transform.js';
-import type { RosBridgeConnection } from './rosBridgeConnection.js';
+import { RosBridgeConnection } from './rosBridgeConnection.js';
 
 type ChannelRuntime = {
   config: RosChannelConfig;
@@ -85,6 +85,53 @@ export class RosRobotManager extends EventEmitter {
     this.initializeChannels();
   }
 
+  private initializeConnections() {
+    const rawConnections = Array.isArray((this.config as any).connections)
+      ? ((this.config as any).connections as Array<{ id?: string; url?: string }>)
+      : [];
+
+    const fallbackUrl = (this.config as any).bridgeUrl;
+    const connectionDefs = rawConnections.length
+      ? rawConnections
+      : fallbackUrl
+        ? [{ id: 'default', url: fallbackUrl }]
+        : [];
+
+    for (const def of connectionDefs) {
+      const id = def.id ?? 'default';
+      const url = def.url ?? fallbackUrl;
+      if (!url) {
+        this.emit('error', new Error(`ROS connection ${id} missing URL`));
+        continue;
+      }
+      if (this.connections.has(id)) continue;
+
+      const connection = new RosBridgeConnection({ id, url });
+      connection.on('connected', () => this.handleConnectionConnected(id));
+      connection.on('error', error => this.emit('error', error));
+
+      this.connections.set(id, connection);
+    }
+  }
+
+  private initializeChannels() {
+    const configChannels = Array.isArray((this.config as any).channels)
+      ? ((this.config as any).channels as RosChannelConfig[])
+      : [];
+
+    for (const channel of configChannels) {
+      if (!channel?.name) continue;
+      const connectionId = channel.connectionId ?? 'default';
+      if (!this.connections.has(connectionId)) {
+        this.emit(
+          'error',
+          new Error(`Channel ${channel.name} references missing connection ${connectionId}`)
+        );
+      }
+      this.channels.set(channel.name, { config: channel, errorCount: 0 });
+    }
+  }
+
   async start() {
     if (this.started) return;
     this.started = true;
@@ -97,9 +144,6 @@ export class RosRobotManager extends EventEmitter {
         }
       })
     );
-    for (const connectionId of this.connections.keys()) {
-      this.handleConnectionConnected(connectionId);
-    }
   }
 
   stop() {

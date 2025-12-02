@@ -16,6 +16,7 @@ export interface Robot {
   battery?: number;
   mapId?: string;
   bridgePort?: number;
+  mappingBridgePort?: number;
   channels?: Array<{
     name: string;
     topic: string;

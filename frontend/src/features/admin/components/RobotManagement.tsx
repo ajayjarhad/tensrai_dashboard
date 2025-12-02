@@ -21,6 +21,7 @@ type EditableRobot = Partial<Robot> & {
   name: string;
   ipAddress?: string;
   bridgePort?: number;
+  mappingBridgePort?: number;
   mapId?: string;
   status?: RobotMode;
   channels?: Robot['channels'];
@@ -30,6 +31,7 @@ const DEFAULT_ROBOT: EditableRobot = {
   name: '',
   ipAddress: '',
   bridgePort: 9090,
+  mappingBridgePort: 8765,
   mapId: '',
   status: 'UNKNOWN' as RobotMode,
 };
@@ -126,6 +128,7 @@ export function RobotManagement() {
       name: robot.name,
       ipAddress: robot.ipAddress ?? '',
       bridgePort: robot.bridgePort ?? 9090,
+      mappingBridgePort: robot.mappingBridgePort ?? undefined,
       mapId: robot.mapId ?? '',
       status: robot.status,
     };
@@ -161,6 +164,7 @@ export function RobotManagement() {
         name: form.name,
         ipAddress: form.ipAddress || undefined,
         bridgePort: form.bridgePort ? Number(form.bridgePort) : undefined,
+        mappingBridgePort: form.mappingBridgePort ? Number(form.mappingBridgePort) : undefined,
         mapId: form.mapId || undefined,
         status: form.status ?? 'UNKNOWN',
         channels: finalChannels,
@@ -343,6 +347,7 @@ export function RobotManagement() {
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {robot.ipAddress ?? '—'}:{robot.bridgePort ?? 9090}
+                        {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {maps.find(m => m.id === robot.mapId)?.name ?? '—'}
@@ -428,6 +433,27 @@ export function RobotManagement() {
                   />
                 </div>
                 <div className="space-y-1">
+                  <label className="text-sm text-muted-foreground">Mapping Bridge Port</label>
+                  <input
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
+                    value={form.mappingBridgePort ?? ''}
+                    onChange={e =>
+                      setForm(f => ({
+                        ...f,
+                        mappingBridgePort: e.target.value ? Number(e.target.value) : undefined,
+                      }))
+                    }
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder="8765"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional mapping ROS bridge on the same IP (e.g. 8765). Use channel
+                    connectionId ("mapping") to target this socket.
+                  </p>
+                </div>
+                <div className="space-y-1">
                   <label className="text-sm text-muted-foreground">Map</label>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
@@ -487,7 +513,8 @@ export function RobotManagement() {
                         <div className="text-xs text-muted-foreground">
                           Provide an array of channels. Leave blank to start from defaults.
                           Edit/Delete rows below to change the working set; Save to persist to the
-                          robot.
+                          robot. Use <code>connectionId</code> (e.g. "default" or "mapping") to pick
+                          which ROS bridge port to use.
                         </div>
                         {channelsError && (
                           <div className="text-xs text-destructive mt-1">{channelsError}</div>
@@ -514,6 +541,7 @@ export function RobotManagement() {
                               <tr className="text-muted-foreground bg-muted/40">
                                 <th className="px-2 py-1 text-left">Name</th>
                                 <th className="px-2 py-1 text-left">Direction</th>
+                                <th className="px-2 py-1 text-left">Conn</th>
                                 <th className="px-2 py-1 text-left">Topic</th>
                                 <th className="px-2 py-1 text-left">Type</th>
                                 <th className="px-2 py-1 text-left">Actions</th>
@@ -524,6 +552,9 @@ export function RobotManagement() {
                                 <tr key={ch.name} className="border-t border-border/60">
                                   <td className="px-2 py-1 font-medium">{ch.name}</td>
                                   <td className="px-2 py-1">{ch.direction}</td>
+                                  <td className="px-2 py-1 text-muted-foreground">
+                                    {ch.connectionId ?? 'default'}
+                                  </td>
                                   <td className="px-2 py-1">{ch.topic}</td>
                                   <td className="px-2 py-1 text-muted-foreground">{ch.msgType}</td>
                                   <td className="px-2 py-1">
