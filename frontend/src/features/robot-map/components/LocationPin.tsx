@@ -10,7 +10,7 @@ interface LocationPinProps {
   color?: string;
   name?: string;
   onClick?: (evt: Konva.KonvaEventObject<MouseEvent>) => void;
-  onTap?: (evt: Konva.KonvaEventObject<MouseEvent>) => void;
+  onTap?: (evt: Konva.KonvaEventObject<TouchEvent | MouseEvent>) => void;
 }
 
 export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(

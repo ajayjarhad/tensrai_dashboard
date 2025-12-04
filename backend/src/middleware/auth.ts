@@ -1,5 +1,5 @@
-import { type Permission, ROLE, ROLE_PERMISSIONS } from '@tensrai/shared';
 import type { AppFastifyReply, AppFastifyRequest } from '../types/app.js';
+import { type Permission, ROLE, ROLE_PERMISSIONS } from '../types/shared-shim.js';
 import { AuthTracer } from '../utils/tracing.js';
 
 export const requireUser = async (request: AppFastifyRequest, reply: AppFastifyReply) => {

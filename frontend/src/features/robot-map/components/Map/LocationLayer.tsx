@@ -5,14 +5,17 @@ import { LocationPin } from '../LocationPin';
 interface LocationLayerProps {
   locations: TempLocation[];
   setPoseMode: boolean;
-  onLocationSelect: (location: TempLocation, evt?: Konva.KonvaEventObject<MouseEvent>) => void;
+  onLocationSelect: (
+    location: TempLocation,
+    evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>
+  ) => void;
 }
 
 export function LocationLayer({ locations, setPoseMode, onLocationSelect }: LocationLayerProps) {
   return (
     <>
       {locations.map(loc => {
-        const handleLocationSelect = (evt?: Konva.KonvaEventObject<MouseEvent>) => {
+        const handleLocationSelect = (evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
           if (setPoseMode) {
             if (evt) evt.cancelBubble = true;
           }

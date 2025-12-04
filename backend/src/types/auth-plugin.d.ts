@@ -1,4 +1,4 @@
-import type { User } from '@tensrai/shared';
+import type { User } from './shared-shim.js';
 
 export interface AuthSession {
   user: User | null;

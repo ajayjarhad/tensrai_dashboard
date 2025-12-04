@@ -5,8 +5,7 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -25,6 +24,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Additional fields for our application
+  passwordHash         String?
   role                  String   @default("USER")
   displayName           String?
   mustResetPassword     Boolean  @default(false)
@@ -64,11 +64,16 @@ model Account {
 
 // Session model for authentication
 model Session {
-  id           String   @id @default(auto()) @map("_id") @db.ObjectId
-  sessionToken String   @unique
-  userId       String   @db.ObjectId
-  expires      DateTime
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Use string IDs because Better Auth generates session IDs that are not Mongo ObjectIds
+  id         String   @id @map("_id") @db.String
+  token      String   @unique @map("sessionToken")
+  userId     String   @db.ObjectId
+  expiresAt  DateTime
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
 }
@@ -95,7 +100,6 @@ model Robot {
   ownerId     String   @db.ObjectId
 
   // Robot configuration
-  type         String
   model        String?
   serialNumber String?
   lastSeen     DateTime?

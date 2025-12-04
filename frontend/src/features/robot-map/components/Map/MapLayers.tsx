@@ -124,7 +124,7 @@ export function MapLayers({
     }));
   }, [pointerToMapPixel, transforms]);
 
-  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     const target = e.target;
     const clickedRobot = target.findAncestor(
       (node: Konva.Node) => typeof node.hasName === 'function' && node.hasName('robot-marker'),
@@ -172,7 +172,7 @@ export function MapLayers({
 
   const handleLocationSelect = (
     location: TempLocation,
-    evt?: Konva.KonvaEventObject<MouseEvent>
+    evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) => {
     if (setPoseMode) {
       if (evt) evt.cancelBubble = true;

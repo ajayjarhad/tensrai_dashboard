@@ -57,7 +57,7 @@ const renderControl = <TFieldValues extends FieldValues, TName extends FieldPath
 ) => {
   if (customRenderer) {
     return customRenderer({
-      value: field.value,
+      value: field.value || '',
       onChange: field.onChange,
       onBlur: field.onBlur,
       disabled: field.disabled || false,

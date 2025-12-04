@@ -15,7 +15,7 @@ interface MapCanvasProps {
   robots: Robot[];
   locations: TempLocation[];
   enablePanning?: boolean;
-  onRobotSelect?: (robotId: string | null) => void | undefined;
+  onRobotSelect?: (robotId: string | null) => undefined | undefined;
   selectedRobotId: string | null;
   stageScale: number;
   setPoseMode?: boolean;

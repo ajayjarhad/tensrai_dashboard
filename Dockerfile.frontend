@@ -1,0 +1,21 @@
+# Simple Dockerfile that copies pre-built frontend and serves with Nginx
+FROM nginx:1.27-alpine
+
+# Install wget for health check
+RUN apk add --no-cache wget
+
+# Copy the built frontend to nginx serving directory
+COPY frontend/dist /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
+
+# Expose port
+EXPOSE 80
+
+# Health check disabled for development
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+#   CMD curl -f http://localhost/health || exit 1
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]

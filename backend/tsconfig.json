@@ -12,8 +12,8 @@
     "verbatimModuleSyntax": false,
     "noUncheckedIndexedAccess": false,
     "paths": {
-      "@tensrai/shared": ["./src/types/shared-shim.d.ts"],
-      "@tensrai/shared/*": ["./src/types/shared-shim.d.ts"]
+      "@tensrai/shared": ["../shared/src/index.ts"],
+      "@tensrai/shared/*": ["../shared/src/*"]
     }
   },
   "include": ["src"],

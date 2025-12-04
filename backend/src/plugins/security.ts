@@ -32,11 +32,15 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
   });
 
   const frontendUrl = process.env['FRONTEND_URL'];
+  const defaultOrigin = frontendUrl || 'http://localhost:8080';
+  const nodeEnv = process.env['NODE_ENV'] ?? 'development';
   const localDevOrigins = Array.from({ length: 10 }, (_, idx) => `http://localhost:${5001 + idx}`);
   const explicitOrigins = [
     frontendUrl || 'http://localhost:5173',
     'http://localhost:5000',
     'http://localhost:5174',
+    'http://localhost:8080',
+    'http://127.0.0.1:8080',
     ...localDevOrigins,
   ];
   const allowedOriginSet = new Set(
@@ -44,6 +48,8 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
   );
 
   const isAllowedOrigin = (origin?: string | null) => {
+    // In non-production, allow all origins to simplify local dev
+    if (nodeEnv !== 'production') return true;
     if (!origin) return true;
     const normalized = origin.toLowerCase();
     if (allowedOriginSet.has(normalized)) {
@@ -98,6 +104,13 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
   });
 
   fastify.addHook('onSend', async (_requestt: AppFastifyRequest, reply: AppFastifyReply) => {
+    const origin = _requestt.headers.origin;
+    if (isAllowedOrigin(origin)) {
+      const selectedOrigin = origin || defaultOrigin;
+      reply.header('Access-Control-Allow-Origin', selectedOrigin);
+      reply.header('Access-Control-Allow-Credentials', 'true');
+    }
+
     reply.header('Server', 'TensraiDashboard');
 
     reply.header('X-Content-Type-Options', 'nosniff');
@@ -144,6 +157,20 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
       timestamp: new Date().toISOString(),
     },
   }));
+
+  // Helper for routes that need explicit CORS headers (auth plugin does its own)
+  fastify.decorate('applyCorsHeaders', (reply: AppFastifyReply, origin?: string | null) => {
+    const selectedOrigin = origin || frontendUrl || 'http://localhost:8080';
+    reply.header('Access-Control-Allow-Origin', selectedOrigin);
+    reply.header('Access-Control-Allow-Credentials', 'true');
+    reply.header(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Accept, Authorization, Content-Type, Cache-Control, Pragma'
+    );
+    reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    reply.header('Access-Control-Expose-Headers', 'Set-Cookie');
+    reply.header('Vary', 'Origin');
+  });
 };
 
 export default fp(securityPlugin, {

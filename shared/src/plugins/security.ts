@@ -13,7 +13,7 @@ const securityPlugin: FastifyPluginAsync = async fastify => {
   await fastify.register(cors, {
     origin: frontendUrl
       ? [frontendUrl, 'http://localhost:5000', 'http://localhost:5173']
-      : ['http://localhost:5000', 'http://localhost:5173'],
+      : ['http://localhost:5000', 'http://localhost:5173', 'http://localhost:8080'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'Set-Cookie'],

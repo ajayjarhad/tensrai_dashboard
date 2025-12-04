@@ -12,6 +12,8 @@
     "seed": "./scripts/mongoReplica.sh && tsx scripts/seed.ts",
     "seed:robots": "./scripts/mongoReplica.sh && tsx scripts/robotSeed.ts",
     "seed:maps": "./scripts/mongoReplica.sh && tsx scripts/seedMaps.ts",
+    "seed:all": "./scripts/mongoReplica.sh && tsx scripts/seed.ts && tsx scripts/seedMaps.ts",
+    "dev:with-seed": "npm run seed:all && bun --watch src/index.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format .",
@@ -62,6 +64,7 @@
     "@types/node": "^24.10.1",
     "@types/roslib": "^1.3.6",
     "@types/ws": "^8.5.12",
+    "ts-node": "^10.9.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

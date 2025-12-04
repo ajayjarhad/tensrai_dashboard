@@ -47,14 +47,15 @@ model Account {
 }
 
 model Session {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  token     String   @unique
-  userId    String   @db.ObjectId
-  expiresAt DateTime
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Use string IDs because auth sessions are not Mongo ObjectIds
+  id         String   @id @map("_id") @db.String
+  token      String   @unique @map("sessionToken")
+  userId     String   @db.ObjectId
+  expiresAt  DateTime
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

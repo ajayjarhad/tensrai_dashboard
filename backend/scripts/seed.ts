@@ -11,21 +11,19 @@ type SeedConfig = {
   role: 'ADMIN' | 'USER';
 };
 
-const env = (key: string, fallback: string) => process.env[key] ?? fallback;
-
 const seedUsers: SeedConfig[] = [
   {
-    email: env('SEED_ADMIN_EMAIL', 'admin@tensrai.com'),
-    username: env('SEED_ADMIN_USERNAME', 'admin'),
-    displayName: env('SEED_ADMIN_DISPLAY_NAME', 'Admin'),
-    password: env('SEED_ADMIN_PASSWORD', 'pass'),
+    email: 'admin@tensrai.com',
+    username: 'admin',
+    displayName: 'Admin',
+    password: 'pass',
     role: 'ADMIN',
   },
   {
-    email: env('SEED_USER_EMAIL', 'operator@tensrai.com'),
-    username: env('SEED_USER_USERNAME', 'operator'),
-    displayName: env('SEED_USER_DISPLAY_NAME', 'Operator'),
-    password: env('SEED_USER_PASSWORD', 'pass'),
+    email: 'operator@tensrai.com',
+    username: 'operator',
+    displayName: 'Operator',
+    password: 'pass',
     role: 'USER',
   },
 ];

@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
+import { runWithEndpointContext } from '@better-auth/core/context';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
 import fp from 'fastify-plugin';
@@ -321,12 +322,21 @@ const createSessionForUser = async (
   }
 
   const sessionHeaders = toFetchHeaders(request.headers);
-  const sessionContext = {
+  const endpointContext = {
     headers: sessionHeaders,
-    context: authContext,
+    request: request.raw,
+    path: '/api/auth/sign-in',
+    context: {
+      ...authContext,
+      returned: undefined,
+      responseHeaders: undefined,
+      session: null,
+    },
   } as any;
 
-  const session = await authContext.internalAdapter.createSession(userId, sessionContext, false);
+  const session = await runWithEndpointContext(endpointContext, () =>
+    authContext.internalAdapter.createSession(userId)
+  );
 
   if (!session) {
     return err(createRouteError(500, 'SESSION_ERROR', 'Failed to create session'));
