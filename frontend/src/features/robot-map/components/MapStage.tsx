@@ -11,6 +11,7 @@ import { useMapImage } from '../hooks/useMapImage';
 import { useMapLocations } from '../hooks/useMapLocations';
 import { useRobots } from '../hooks/useRobots';
 import { useZoom } from '../hooks/useZoom';
+import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import { MapErrorBoundary } from './MapErrorBoundary';
 import { MapCanvas } from './MapStage/MapCanvas';
 import { MapControls } from './MapStage/MapControls';
@@ -36,7 +37,7 @@ interface MapStageProps {
     | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   setPoseMode?: boolean;
-  onPoseConfirm?: () => void;
+  onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
 }
 

@@ -33,9 +33,13 @@ exporters:
       environment: "development"
       service: "tensrai-dashboard"
 
-  # Export to file for debugging
+  # Export to SignOz (using file for now since collector isn't forwarding)
   file:
     path: /tmp/otel-output.json
+
+  # Export to SignOz OTLP endpoint
+  otlphttp:
+    endpoint: http://signoz-frontend:8080
 
 extensions:
   health_check:
@@ -51,7 +55,7 @@ service:
     traces:
       receivers: [otlp, jaeger]
       processors: [memory_limiter, batch]
-      exporters: [file]
+      exporters: [file, otlphttp]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
@@ -59,4 +63,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [file]
+      exporters: [file, otlphttp]

@@ -97,6 +97,7 @@ services:
     restart: unless-stopped
     networks:
       - tensrai-network
+      - signoz-backend
     # Initialize database on startup
     command: >
       sh -c "
@@ -111,6 +112,9 @@ services:
 
 networks:
   tensrai-network:
+    driver: bridge
+  signoz-backend:
+    name: signoz-backend
     driver: bridge
 
 volumes:

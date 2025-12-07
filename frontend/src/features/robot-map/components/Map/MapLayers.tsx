@@ -11,7 +11,7 @@ import { PathLayer } from '../PathLayer';
 import { LabelsLayer } from './LabelsLayer';
 import { LocationLayer } from './LocationLayer';
 import { RobotLayer } from './RobotLayer';
-import { type PendingPose, SetPoseLayer } from './SetPoseLayer';
+import { type PendingPose, type PoseConfirmPayload, SetPoseLayer } from './SetPoseLayer';
 
 interface MapLayersProps {
   stageRef: RefObject<Konva.Stage | null>;
@@ -27,14 +27,7 @@ interface MapLayersProps {
   stageScale?: number;
   selectedRobotId?: string | null;
   setPoseMode?: boolean;
-  onPoseConfirm?: (payload: {
-    x: number;
-    y: number;
-    theta: number;
-    source: 'location' | 'manual';
-    locationId?: string;
-    locationName?: string;
-  }) => void;
+  onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
 }
 
@@ -238,8 +231,11 @@ export function MapLayers({
           transforms={transforms}
           resolution={resolution}
           onPoseConfirm={payload => {
-            toast.success('Pose updated');
-            onPoseConfirm?.(payload);
+            if (onPoseConfirm) {
+              onPoseConfirm(payload);
+            } else {
+              toast.success('Pose updated');
+            }
           }}
           onPoseCancel={() => {
             onPoseCancel?.();

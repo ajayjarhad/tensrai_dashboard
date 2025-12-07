@@ -18,6 +18,11 @@ const AMCL_MIN_DELTA_YAW = 0.05;
 const _SCAN_POSE_MAX_DRIFT_MS = 100;
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
+// Teleop safety defaults
+const TELEOP_MAX_LINEAR = 0.5; // m/s
+const TELEOP_MAX_ANGULAR = 0.8; // rad/s
+const TELEOP_WATCHDOG_MS = 750; // send zero if idle
+const POSE_EPS = 1e-3;
 
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
@@ -42,6 +47,10 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
     const odom = data as any;
     return { pose: odom.pose ? { pose: pickPose(odom.pose.pose) } : undefined };
   }
+  if (channelName === 'amcl') {
+    const amcl = data as any;
+    return { pose: amcl.pose ? { pose: pickPose(amcl.pose.pose) } : undefined };
+  }
   if (channelName === 'laser') {
     const scan = data as any;
     return {
@@ -65,6 +74,46 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   return data;
 };
 
+const zeroTwist = () => ({
+  linear: { x: 0, y: 0, z: 0 },
+  angular: { x: 0, y: 0, z: 0 },
+});
+
+const clampNumber = (value: unknown, limit: number) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+  if (!Number.isFinite(limit) || limit <= 0) return value;
+  return Math.max(-limit, Math.min(limit, value));
+};
+
+const validateAndClampTeleop = (
+  payload: unknown,
+  limits?: { maxLinear?: number; maxAngular?: number }
+): { ok: boolean; value?: any; error?: string } => {
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, error: 'teleop payload must be an object' };
+  }
+  const linear = (payload as any).linear ?? {};
+  const angular = (payload as any).angular ?? {};
+  if (typeof linear !== 'object' || typeof angular !== 'object') {
+    return { ok: false, error: 'teleop payload missing linear/angular' };
+  }
+  const maxLinear = limits?.maxLinear ?? TELEOP_MAX_LINEAR;
+  const maxAngular = limits?.maxAngular ?? TELEOP_MAX_ANGULAR;
+  const clamped = {
+    linear: {
+      x: clampNumber(linear.x, maxLinear),
+      y: 0,
+      z: 0,
+    },
+    angular: {
+      x: 0,
+      y: 0,
+      z: clampNumber(angular.z, maxAngular),
+    },
+  };
+  return { ok: true, value: clamped };
+};
+
 export class RosRobotManager extends EventEmitter {
   private connections = new Map<string, RosBridgeConnection>();
   private channels = new Map<string, ChannelRuntime>();
@@ -73,14 +122,27 @@ export class RosRobotManager extends EventEmitter {
   private mapPose?: Pose2D;
   // private mapPoseStampMs?: number;
   private mapToOdom?: Pose2D & { stampMs?: number };
+  private mapToBase?: Pose2D & { stampMs?: number };
+  private odomToBase?: Pose2D & { stampMs?: number };
+  private lastPublishedPose?: Pose2D & { stampMs?: number; source?: string };
   private laserToBase?: Pose2D;
   private odomPose?: Pose2D & { stampMs?: number };
   private tfSubscribed = false;
   private baseFrames: string[] = ['base_link', 'base_footprint'];
+  private teleopTimers = new Map<string, NodeJS.Timeout>();
+  private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
 
   constructor(readonly config: RosRobotConfig) {
     super();
     this.laserOffset = { ...DEFAULT_LASER_OFFSET, ...(config as any).laserOffset };
+    const userTeleop =
+      typeof (config as any).teleopLimits === 'object' ? (config as any).teleopLimits : {};
+    this.teleopLimits = {
+      maxLinear: TELEOP_MAX_LINEAR,
+      maxAngular: TELEOP_MAX_ANGULAR,
+      watchdogMs: TELEOP_WATCHDOG_MS,
+      ...userTeleop,
+    };
     this.initializeConnections();
     this.initializeChannels();
   }
@@ -147,6 +209,7 @@ export class RosRobotManager extends EventEmitter {
   }
 
   stop() {
+    this.sendZeroTeleopIfNeeded();
     for (const runtime of this.channels.values()) {
       runtime.unsubscribe?.();
     }
@@ -161,10 +224,19 @@ export class RosRobotManager extends EventEmitter {
     if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}` };
     if (runtime.config.direction !== 'publish')
       return { ok: false, error: `Channel ${channelName} is not publishable` };
+
+    let outgoing = payload;
+    if (channelName === 'teleop') {
+      const result = validateAndClampTeleop(payload, this.teleopLimits);
+      if (!result.ok) return { ok: false, error: result.error };
+      outgoing = result.value;
+      this.armTeleopWatchdog(runtime.config);
+    }
+
     const connection = this.getConnectionForChannel(runtime.config);
     if (!connection) return { ok: false, error: `No connection for channel ${channelName}` };
     try {
-      connection.publish(runtime.config.topic, runtime.config.msgType, payload as object);
+      connection.publish(runtime.config.topic, runtime.config.msgType, outgoing as object);
       return { ok: true };
     } catch (error) {
       runtime.errorCount += 1;
@@ -212,6 +284,41 @@ export class RosRobotManager extends EventEmitter {
     return this.connections.get(connectionId);
   }
 
+  private armTeleopWatchdog(config: RosChannelConfig) {
+    const timeoutMs = this.teleopLimits.watchdogMs;
+    if (!timeoutMs || timeoutMs <= 0) return;
+    const channelName = config.name ?? 'teleop';
+    const existing = this.teleopTimers.get(channelName);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.teleopTimers.delete(channelName);
+      try {
+        const connection = this.getConnectionForChannel(config);
+        if (connection) {
+          connection.publish(config.topic, config.msgType, zeroTwist());
+        }
+      } catch {
+        // ignore watchdog send failures
+      }
+    }, timeoutMs);
+    this.teleopTimers.set(channelName, timer);
+  }
+
+  private sendZeroTeleopIfNeeded() {
+    for (const timer of this.teleopTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.teleopTimers.clear();
+    const teleop = this.channels.get('teleop');
+    if (!teleop || teleop.config.direction !== 'publish') return;
+    try {
+      const connection = this.getConnectionForChannel(teleop.config);
+      connection?.publish(teleop.config.topic, teleop.config.msgType, zeroTwist());
+    } catch {
+      // ignore cleanup send failures
+    }
+  }
+
   private processOdom(raw: any) {
     if (!raw?.pose?.pose) return raw;
     const pos = raw.pose.pose.position ?? {};
@@ -228,6 +335,7 @@ export class RosRobotManager extends EventEmitter {
         ? stamp.sec * 1000 + stamp.nanosec / 1e6
         : undefined;
     this.odomPose = { x: pos.x ?? 0, y: pos.y ?? 0, yaw, stampMs };
+    this.maybeEmitBasePose();
     return raw;
   }
 
@@ -374,6 +482,7 @@ export class RosRobotManager extends EventEmitter {
     });
 
     this.updateTransformBasedOnFrame(parent, child, trans, yaw, stampMs);
+    this.maybeEmitBasePose();
   }
 
   private getStampMs(stamp: any): number | undefined {
@@ -395,11 +504,91 @@ export class RosRobotManager extends EventEmitter {
     if (parent === 'map' && child === 'odom') {
       this.mapToOdom = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
     }
+    if (parent === 'map' && this.baseFrames.includes(child)) {
+      this.mapToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
+    }
+    if (parent === 'odom' && this.baseFrames.includes(child)) {
+      this.odomToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
+    }
     if (
       (child === 'laser' || child === 'base_scan') &&
       (parent === 'base_footprint' || parent === 'base_link' || this.baseFrames.includes(parent))
     ) {
       this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
     }
+  }
+
+  private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
+    if (!tf) return true;
+    if (tf.stampMs === undefined) return false; // static TF
+    if (referenceMs === undefined) return false; // no reference clock; trust TF
+    return Math.abs(referenceMs - tf.stampMs) > TF_STALE_MS;
+  }
+
+  private computeMapBasePose(): { pose: Pose2D; source: string; stampMs?: number } | undefined {
+    const refMs = this.odomPose?.stampMs;
+    // 1) direct map->base TF
+    if (this.mapToBase && !this.isTfStale(this.mapToBase, refMs)) {
+      return {
+        pose: { ...this.mapToBase },
+        source: 'tf:map->base',
+        stampMs: this.mapToBase.stampMs,
+      };
+    }
+    // 2) map->odom TF + odom->base TF
+    if (
+      this.mapToOdom &&
+      this.odomToBase &&
+      !this.isTfStale(this.mapToOdom, refMs) &&
+      !this.isTfStale(this.odomToBase, refMs)
+    ) {
+      const pose = combineTransforms(this.mapToOdom, this.odomToBase);
+      return { pose, source: 'tf:map->odom + odom->base', stampMs: this.mapToOdom.stampMs };
+    }
+    // 3) map->odom TF + odom pose topic (fallback)
+    if (this.mapToOdom && this.odomPose && !this.isTfStale(this.mapToOdom, this.odomPose.stampMs)) {
+      const pose = combineTransforms(this.mapToOdom, this.odomPose);
+      return { pose, source: 'tf:map->odom + odom topic', stampMs: this.mapToOdom.stampMs };
+    }
+    // 4) amcl pose as last resort
+    if (this.mapPose) {
+      return { pose: { ...this.mapPose }, source: 'amcl' };
+    }
+    return undefined;
+  }
+
+  private yawToQuaternion(yaw: number) {
+    const half = yaw / 2;
+    return { x: 0, y: 0, z: Math.sin(half), w: Math.cos(half) };
+  }
+
+  private maybeEmitBasePose() {
+    const resolved = this.computeMapBasePose();
+    if (!resolved) return;
+    const { pose, source, stampMs } = resolved;
+    const last = this.lastPublishedPose;
+    const yawDelta = Math.abs((pose.yaw ?? 0) - (last?.yaw ?? 0));
+    const posDelta = Math.hypot((pose.x ?? 0) - (last?.x ?? 0), (pose.y ?? 0) - (last?.y ?? 0));
+    if (last && posDelta < POSE_EPS && yawDelta < POSE_EPS) return;
+
+    const orientation = this.yawToQuaternion(pose.yaw ?? 0);
+    this.lastPublishedPose = { ...pose, stampMs, source };
+    this.emit('channel-data', {
+      channel: 'pose',
+      data: {
+        x: pose.x,
+        y: pose.y,
+        yaw: pose.yaw,
+        theta: pose.yaw,
+        stampMs,
+        source,
+        pose: {
+          pose: {
+            position: { x: pose.x, y: pose.y, z: 0 },
+            orientation,
+          },
+        },
+      },
+    });
   }
 }

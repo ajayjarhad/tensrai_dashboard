@@ -4,10 +4,12 @@
  */
 
 export interface ROSHeader {
-  seq: number;
+  seq?: number;
   stamp: {
-    secs: number;
-    nsecs: number;
+    sec?: number;
+    nanosec?: number;
+    secs?: number;
+    nsecs?: number;
   };
   frame_id: string;
 }
@@ -36,6 +38,18 @@ export interface ROSQuaternion {
   y: number;
   z: number;
   w: number;
+}
+
+// geometry_msgs/PoseWithCovariance
+export interface ROSPoseWithCovariance {
+  pose: ROSPose;
+  covariance: number[]; // 36-length row-major 6x6 covariance
+}
+
+// geometry_msgs/PoseWithCovarianceStamped
+export interface ROSPoseWithCovarianceStamped {
+  header: ROSHeader;
+  pose: ROSPoseWithCovariance;
 }
 
 export interface ROSPoint {

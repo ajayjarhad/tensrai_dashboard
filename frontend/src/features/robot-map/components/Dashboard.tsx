@@ -1,13 +1,15 @@
-import type { ProcessedMapData } from '@tensrai/shared';
+import type { ProcessedMapData, ROSPoseWithCovarianceStamped } from '@tensrai/shared';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useRobotTelemetry } from '@/hooks/useRobotTelemetry';
+import { worldToRosPose } from '@/lib/map/mapTransforms';
 import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { useMapRobots } from '../hooks/useMapRobots';
 import { useRobotMissions } from '../hooks/useRobotMissions';
 import { useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
 import { DashboardLayout } from './DashboardLayout';
+import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import { OccupancyMap } from './OccupancyMap';
 import { Sidebar } from './Sidebar';
 import { TeleopPanel } from './TeleopPanel';
@@ -32,7 +34,7 @@ export function Dashboard() {
   const [isSettingPose, setIsSettingPose] = useState(false);
   const [teleopRobotId, setTeleopRobotId] = useState<string | null>(null);
 
-  const { telemetry, sendTeleop } = useRobotTelemetry(activeRobotId);
+  const { telemetry, sendTeleop, sendInitialPose } = useRobotTelemetry(activeRobotId);
   const telemetryStore = useRobotTelemetryStore();
 
   // Keep all robot telemetry sockets connected
@@ -59,7 +61,37 @@ export function Dashboard() {
     toast.message('Set pose: click a location tag or anywhere on the map. Press Esc to cancel.');
   };
 
-  const handlePoseComplete = () => {
+  const handlePoseConfirm = (payload: PoseConfirmPayload) => {
+    if (!activeRobotId) {
+      toast.error('Select a robot before setting pose');
+      setIsSettingPose(false);
+      return;
+    }
+
+    const rosPose = worldToRosPose({ x: payload.x, y: payload.y }, payload.theta);
+    const covariance = Array(36).fill(0);
+    covariance[0] = 0.25; // x variance (m^2)
+    covariance[7] = 0.25; // y variance (m^2)
+    covariance[35] = 0.068; // yaw variance (~15 deg^2)
+
+    const message: ROSPoseWithCovarianceStamped = {
+      header: {
+        // Use stamp=0 so AMCL uses the latest TF available; include both ROS2 and ROS1 field names.
+        stamp: { sec: 0, nanosec: 0, secs: 0, nsecs: 0 },
+        frame_id: 'map',
+      },
+      pose: {
+        pose: rosPose,
+        covariance,
+      },
+    };
+
+    sendInitialPose(activeRobotId, message);
+    setIsSettingPose(false);
+    toast.success('Pose command sent');
+  };
+
+  const handlePoseCancel = () => {
     setIsSettingPose(false);
   };
 
@@ -115,8 +147,8 @@ export function Dashboard() {
             }}
             onMapFeaturesChange={setMapFeatures}
             setPoseMode={isSettingPose}
-            onPoseConfirm={handlePoseComplete}
-            onPoseCancel={handlePoseComplete}
+            onPoseConfirm={handlePoseConfirm}
+            onPoseCancel={handlePoseCancel}
           />
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">

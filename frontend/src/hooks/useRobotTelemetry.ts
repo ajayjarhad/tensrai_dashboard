@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useRobotTelemetryStore } from '../stores/robotTelemetry';
 
 export const useRobotTelemetry = (robotId: string | null | undefined) => {
-  const { telemetry, connect, disconnect, sendTeleop, sendMode, sendEmergency } =
+  const { telemetry, connect, disconnect, sendTeleop, sendMode, sendEmergency, sendInitialPose } =
     useRobotTelemetryStore();
 
   useEffect(() => {
@@ -20,5 +20,6 @@ export const useRobotTelemetry = (robotId: string | null | undefined) => {
     sendTeleop,
     sendMode,
     sendEmergency,
+    sendInitialPose,
   };
 };

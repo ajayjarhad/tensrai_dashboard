@@ -1,3 +1,6 @@
+// Initialize OpenTelemetry BEFORE importing anything else
+import './otel';
+
 import fastify from 'fastify';
 import authPlugin from './plugins/auth.js';
 import databasePlugin from './plugins/database.js';

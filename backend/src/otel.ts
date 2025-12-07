@@ -1,21 +1,7 @@
 import { DiagConsoleLogger, DiagLogLevel, diag } from '@opentelemetry/api';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { NodeSDK } from '@opentelemetry/sdk-node';
-
-type HeaderMap = Record<string, string>;
-
-const parseHeaders = (rawHeaders?: string): HeaderMap | undefined => {
-  if (!rawHeaders) return undefined;
-
-  return rawHeaders.split(',').reduce<HeaderMap>((headers, pair) => {
-    const [key, value] = pair.split('=').map(part => part?.trim());
-    if (key && value) {
-      headers[key] = value;
-    }
-    return headers;
-  }, {});
-};
 
 let sdk: NodeSDK | null = null;
 
@@ -42,18 +28,14 @@ export const initializeOpenTelemetry = (): NodeSDK => {
     ? `${existingAttributes},${resourceAttributes}`
     : resourceAttributes;
 
-  const otlpEndpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] || 'http://localhost:4317';
-  const otlpHeaders = parseHeaders(process.env['OTEL_EXPORTER_OTLP_HEADERS']);
+  const otlpEndpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] || 'http://localhost:4318';
 
-  const exporterOptions: { url: string; headers?: HeaderMap } = {
-    url: otlpEndpoint,
-  };
+  // Ensure endpoint has the full URL for HTTP exporter
+  const httpEndpoint = otlpEndpoint.startsWith('http') ? otlpEndpoint : `http://${otlpEndpoint}`;
 
-  if (otlpHeaders) {
-    exporterOptions.headers = otlpHeaders;
-  }
-
-  const traceExporter = new OTLPTraceExporter(exporterOptions);
+  const traceExporter = new OTLPTraceExporter({
+    url: `${httpEndpoint}/v1/traces`,
+  });
 
   sdk = new NodeSDK({
     serviceName,
@@ -71,10 +53,7 @@ export const initializeOpenTelemetry = (): NodeSDK => {
     sdk.start();
     console.log('🔍 OpenTelemetry initialized');
     console.log(`   Service: ${serviceName} v${serviceVersion}`);
-    console.log(`   Exporter: ${otlpEndpoint}`);
-    if (otlpHeaders) {
-      console.log('   Custom OTLP headers detected');
-    }
+    console.log(`   Exporter: ${httpEndpoint}`);
   } catch (error) {
     console.error('Failed to start OpenTelemetry SDK', error);
   }

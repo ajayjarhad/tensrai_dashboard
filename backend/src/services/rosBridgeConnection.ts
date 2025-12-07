@@ -133,10 +133,12 @@ export class RosBridgeConnection extends EventEmitter {
     let topic = this.publishers.get(key);
 
     if (!topic) {
+      const shouldLatch = topicName === '/initialpose';
       topic = new ROSLIB.Topic({
         ros: this.ros,
         name: topicName,
         messageType,
+        latch: shouldLatch,
       });
       topic.advertise();
       this.publishers.set(key, topic);

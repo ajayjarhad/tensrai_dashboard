@@ -6,6 +6,7 @@ import { Stage } from 'react-konva';
 import type { Robot } from '@/types/robot';
 import type { TempLocation } from '../../hooks/useMapLocations';
 import { MapLayers } from '../Map/MapLayers';
+import type { PoseConfirmPayload } from '../Map/SetPoseLayer';
 
 interface MapCanvasProps {
   stageRef: React.RefObject<Konva.Stage | null>;
@@ -19,7 +20,7 @@ interface MapCanvasProps {
   selectedRobotId: string | null;
   stageScale: number;
   setPoseMode?: boolean;
-  onPoseConfirm?: () => void;
+  onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
   laserPoints: import('@tensrai/shared').PixelPoint[];
   pathPoints: import('@tensrai/shared').PixelPoint[];
@@ -80,7 +81,7 @@ export function MapCanvas({
         stageScale={stageScale}
         selectedRobotId={selectedRobotId ?? null}
         setPoseMode={setPoseMode}
-        onPoseConfirm={onPoseConfirm ?? (() => {})}
+        onPoseConfirm={onPoseConfirm ?? (_payload => {})}
         onPoseCancel={onPoseCancel ?? (() => {})}
       />
     </Stage>

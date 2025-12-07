@@ -23,19 +23,21 @@ export type PendingPose =
       showConfirm: boolean;
     };
 
+export type PoseConfirmPayload = {
+  x: number;
+  y: number;
+  theta: number;
+  source: 'location' | 'manual';
+  locationId?: string;
+  locationName?: string;
+};
+
 interface SetPoseLayerProps {
   pendingPose: PendingPose | null;
   setPendingPose: React.Dispatch<React.SetStateAction<PendingPose | null>>;
   transforms: MapTransforms | null;
   resolution: number;
-  onPoseConfirm: (payload: {
-    x: number;
-    y: number;
-    theta: number;
-    source: 'location' | 'manual';
-    locationId?: string;
-    locationName?: string;
-  }) => void;
+  onPoseConfirm: (payload: PoseConfirmPayload) => void;
   onPoseCancel: () => void;
   pointerToMapPixel: () => PixelPoint | null;
 }

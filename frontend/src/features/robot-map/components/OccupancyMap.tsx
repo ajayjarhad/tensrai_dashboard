@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import type { Robot } from '@/types/robot';
 import type { LaserScan, PathMessage, Pose2D } from '@/types/telemetry';
 import { useOccupancyMap } from '../hooks/useOccupancyMap';
+import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import { MapStage } from './MapStage';
 
 interface OccupancyMapProps {
@@ -27,7 +28,7 @@ interface OccupancyMapProps {
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   onMapFeaturesChange?: (features: ProcessedMapData['features'] | undefined) => void;
   setPoseMode?: boolean;
-  onPoseConfirm?: () => void;
+  onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
 }
 
@@ -101,7 +102,7 @@ export function OccupancyMap({
           telemetry={telemetry}
           onRobotSelect={onRobotSelect}
           setPoseMode={setPoseMode ?? false}
-          onPoseConfirm={onPoseConfirm || (() => {})}
+          onPoseConfirm={onPoseConfirm || ((_payload: PoseConfirmPayload) => {})}
           onPoseCancel={onPoseCancel || (() => {})}
         />
       </div>

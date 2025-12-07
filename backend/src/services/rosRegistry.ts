@@ -33,13 +33,15 @@ const normalizeMsgType = (msgType: string) => {
     'nav_msgs/Path': 'nav_msgs/msg/Path',
     'std_msgs/String': 'std_msgs/msg/String',
     'geometry_msgs/Twist': 'geometry_msgs/msg/Twist',
+    'geometry_msgs/PoseWithCovarianceStamped': 'geometry_msgs/msg/PoseWithCovarianceStamped',
   };
   return map[msgType] ?? msgType;
 };
 
 const rateLimitOverrides: Record<string, number> = {
-  odom: 2, // 2 Hz (0.5s)
-  laser: 1, // 1 Hz (1s)
+  odom: 12,
+  laser: 5,
+  amcl: 6,
 };
 
 const normalizeChannels = (channels: any[] | undefined) => {
@@ -77,6 +79,19 @@ const defaultChannels = [
     name: 'teleop',
     topic: '/cmd_vel',
     msgType: 'geometry_msgs/msg/Twist',
+    direction: 'publish',
+  },
+  {
+    name: 'amcl',
+    topic: '/amcl_pose',
+    msgType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+    direction: 'subscribe',
+    rateLimitHz: 5,
+  },
+  {
+    name: 'initialpose',
+    topic: '/initialpose',
+    msgType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
     direction: 'publish',
   },
 ];
@@ -123,7 +138,7 @@ export class RosRegistry {
           url: `ws://${robot.ipAddress}:${resolvedMappingPort}`,
         });
       }
-      const channels = normalizeChannels((robot as any).channels) ?? defaultChannels;
+      const channels = _mergeChannels(defaultChannels, normalizeChannels((robot as any).channels));
       const robotId = robot.id;
       desiredIds.add(robotId);
 

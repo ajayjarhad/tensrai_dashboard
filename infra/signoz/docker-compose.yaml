@@ -46,17 +46,22 @@ services:
     environment:
       - STORAGE=clickhouse
       - CLICKHOUSE_ADDRESS=clickhouse:9000
+      - CLICKHOUSE_HOST=clickhouse
       - LOG_LEVEL=info
       - AUTH_TYPE="multi-tenant"
       - REACT_APP_USER_ACCESS_KEY_ENABLED=false
       - REACT_APP_ANONYMOUS_ACCESS_ENABLED=true
       - SIGNOZ_FRONTEND_PORT=3301
       - GODEBUG=netdns=go
+      - HTTP_HOST=0.0.0.0
+      - HTTP_PORT=8080
+      - FRONTEND_HOST=0.0.0.0
+      - FRONTEND_PORT=3301
     ports:
       - "3301:3301" # Frontend
-      - "8080:8080" # Query Service API
+      - "8081:8080" # Query Service API (changed from 8080 to 8081)
       - "7180:7180" # GRPC
-      - "9090:9090" # HTTP
+      - "9091:9090" # HTTP (changed from 9090 to 9091)
     volumes:
       - signoz-data:/var/lib/signoz
     depends_on:
@@ -99,6 +104,7 @@ services:
 networks:
   signoz-backend:
     driver: bridge
+    name: signoz-backend
 
 volumes:
   signoz-clickhouse-data:
