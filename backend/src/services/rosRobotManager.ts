@@ -18,6 +18,10 @@ const AMCL_MIN_DELTA_YAW = 0.05;
 const _SCAN_POSE_MAX_DRIFT_MS = 100;
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
+// Teleop safety defaults
+const TELEOP_MAX_LINEAR = 0.5; // m/s
+const TELEOP_MAX_ANGULAR = 0.8; // rad/s
+const TELEOP_WATCHDOG_MS = 750; // send zero if idle
 
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
@@ -69,6 +73,46 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   return data;
 };
 
+const zeroTwist = () => ({
+  linear: { x: 0, y: 0, z: 0 },
+  angular: { x: 0, y: 0, z: 0 },
+});
+
+const clampNumber = (value: unknown, limit: number) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+  if (!Number.isFinite(limit) || limit <= 0) return value;
+  return Math.max(-limit, Math.min(limit, value));
+};
+
+const validateAndClampTeleop = (
+  payload: unknown,
+  limits?: { maxLinear?: number; maxAngular?: number }
+): { ok: boolean; value?: any; error?: string } => {
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, error: 'teleop payload must be an object' };
+  }
+  const linear = (payload as any).linear ?? {};
+  const angular = (payload as any).angular ?? {};
+  if (typeof linear !== 'object' || typeof angular !== 'object') {
+    return { ok: false, error: 'teleop payload missing linear/angular' };
+  }
+  const maxLinear = limits?.maxLinear ?? TELEOP_MAX_LINEAR;
+  const maxAngular = limits?.maxAngular ?? TELEOP_MAX_ANGULAR;
+  const clamped = {
+    linear: {
+      x: clampNumber(linear.x, maxLinear),
+      y: 0,
+      z: 0,
+    },
+    angular: {
+      x: 0,
+      y: 0,
+      z: clampNumber(angular.z, maxAngular),
+    },
+  };
+  return { ok: true, value: clamped };
+};
+
 export class RosRobotManager extends EventEmitter {
   private connections = new Map<string, RosBridgeConnection>();
   private channels = new Map<string, ChannelRuntime>();
@@ -81,10 +125,20 @@ export class RosRobotManager extends EventEmitter {
   private odomPose?: Pose2D & { stampMs?: number };
   private tfSubscribed = false;
   private baseFrames: string[] = ['base_link', 'base_footprint'];
+  private teleopTimers = new Map<string, NodeJS.Timeout>();
+  private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
 
   constructor(readonly config: RosRobotConfig) {
     super();
     this.laserOffset = { ...DEFAULT_LASER_OFFSET, ...(config as any).laserOffset };
+    const userTeleop =
+      typeof (config as any).teleopLimits === 'object' ? (config as any).teleopLimits : {};
+    this.teleopLimits = {
+      maxLinear: TELEOP_MAX_LINEAR,
+      maxAngular: TELEOP_MAX_ANGULAR,
+      watchdogMs: TELEOP_WATCHDOG_MS,
+      ...userTeleop,
+    };
     this.initializeConnections();
     this.initializeChannels();
   }
@@ -151,6 +205,7 @@ export class RosRobotManager extends EventEmitter {
   }
 
   stop() {
+    this.sendZeroTeleopIfNeeded();
     for (const runtime of this.channels.values()) {
       runtime.unsubscribe?.();
     }
@@ -165,10 +220,19 @@ export class RosRobotManager extends EventEmitter {
     if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}` };
     if (runtime.config.direction !== 'publish')
       return { ok: false, error: `Channel ${channelName} is not publishable` };
+
+    let outgoing = payload;
+    if (channelName === 'teleop') {
+      const result = validateAndClampTeleop(payload, this.teleopLimits);
+      if (!result.ok) return { ok: false, error: result.error };
+      outgoing = result.value;
+      this.armTeleopWatchdog(runtime.config);
+    }
+
     const connection = this.getConnectionForChannel(runtime.config);
     if (!connection) return { ok: false, error: `No connection for channel ${channelName}` };
     try {
-      connection.publish(runtime.config.topic, runtime.config.msgType, payload as object);
+      connection.publish(runtime.config.topic, runtime.config.msgType, outgoing as object);
       return { ok: true };
     } catch (error) {
       runtime.errorCount += 1;
@@ -214,6 +278,41 @@ export class RosRobotManager extends EventEmitter {
   private getConnectionForChannel(config: RosChannelConfig) {
     const connectionId = config.connectionId ?? 'default';
     return this.connections.get(connectionId);
+  }
+
+  private armTeleopWatchdog(config: RosChannelConfig) {
+    const timeoutMs = this.teleopLimits.watchdogMs;
+    if (!timeoutMs || timeoutMs <= 0) return;
+    const channelName = config.name ?? 'teleop';
+    const existing = this.teleopTimers.get(channelName);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.teleopTimers.delete(channelName);
+      try {
+        const connection = this.getConnectionForChannel(config);
+        if (connection) {
+          connection.publish(config.topic, config.msgType, zeroTwist());
+        }
+      } catch {
+        // ignore watchdog send failures
+      }
+    }, timeoutMs);
+    this.teleopTimers.set(channelName, timer);
+  }
+
+  private sendZeroTeleopIfNeeded() {
+    for (const timer of this.teleopTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.teleopTimers.clear();
+    const teleop = this.channels.get('teleop');
+    if (!teleop || teleop.config.direction !== 'publish') return;
+    try {
+      const connection = this.getConnectionForChannel(teleop.config);
+      connection?.publish(teleop.config.topic, teleop.config.msgType, zeroTwist());
+    } catch {
+      // ignore cleanup send failures
+    }
   }
 
   private processOdom(raw: any) {

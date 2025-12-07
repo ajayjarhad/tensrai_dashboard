@@ -39,9 +39,9 @@ const normalizeMsgType = (msgType: string) => {
 };
 
 const rateLimitOverrides: Record<string, number> = {
-  odom: 2, // 2 Hz (0.5s)
-  laser: 1, // 1 Hz (1s)
-  amcl: 2, // 2 Hz is sufficient for localization updates
+  odom: 12,
+  laser: 5,
+  amcl: 6,
 };
 
 const normalizeChannels = (channels: any[] | undefined) => {
