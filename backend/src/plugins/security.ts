@@ -99,6 +99,9 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
       'Content-Type',
       'Cache-Control',
       'Pragma',
+      'traceparent',
+      'tracestate',
+      'baggage',
     ],
     exposedHeaders: ['Set-Cookie'],
   });

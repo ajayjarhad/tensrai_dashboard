@@ -77,8 +77,47 @@ const parseMapMetadata = (yamlText: string, logger: any, robotId: string) => {
   return metadata;
 };
 
+const normalizeFeatures = (features: any) => {
+  const input = features && typeof features === 'object' ? features : {};
+  const rawLocationTags = Array.isArray(input.locationTags) ? input.locationTags : [];
+  const rawMissions = Array.isArray(input.missions) ? input.missions : [];
+
+  const locationTags = rawLocationTags.map((tag: any, index: number) => {
+    const id = tag?.id ?? tag?.tagId ?? index + 1;
+    return {
+      ...tag,
+      id: String(id),
+    };
+  });
+
+  const missions = rawMissions.map((mission: any, index: number) => {
+    const id = mission?.id ?? mission?.missionId ?? mission?.missionID ?? index + 1;
+    const name = mission?.name ?? `Mission ${id}`;
+    const locationTagId = Array.isArray(mission?.locationTagId)
+      ? mission.locationTagId.map((value: any) => String(value))
+      : undefined;
+    const steps = Array.isArray(mission?.steps)
+      ? mission.steps.map((value: any) => String(value))
+      : (locationTagId ?? []);
+
+    return {
+      ...mission,
+      id: String(id),
+      name,
+      steps,
+      ...(locationTagId ? { locationTagId } : {}),
+    };
+  });
+
+  return {
+    ...input,
+    locationTags,
+    missions,
+  };
+};
+
 const getMapDetails = (files: any) => {
-  const features = files.metadata_json ?? {};
+  const features = normalizeFeatures(files.metadata_json ?? {});
   const filename = looksLikeFilename(files.map_yaml, '.yaml') ? files.map_yaml : 'map.yaml';
   const name = filename.replace(/\.yaml$/i, '') || filename;
   return { features, filename, name };

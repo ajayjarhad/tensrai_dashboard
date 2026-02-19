@@ -10,6 +10,19 @@ export const initializeOpenTelemetry = (): NodeSDK => {
     return sdk;
   }
 
+  const isBunRuntime =
+    typeof (globalThis as any).Bun !== 'undefined' || typeof process.versions?.['bun'] === 'string';
+  const otelEnabledEnv = process.env['OTEL_ENABLED'];
+  const otelEnabled =
+    otelEnabledEnv !== undefined
+      ? otelEnabledEnv !== 'false'
+      : (process.env['NODE_ENV'] ?? 'development') === 'production' || !isBunRuntime;
+
+  if (!otelEnabled) {
+    console.log('OpenTelemetry disabled (set OTEL_ENABLED=true to enable)');
+    return (sdk as unknown as NodeSDK) ?? ({} as NodeSDK);
+  }
+
   diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
 
   const serviceName = process.env['OTEL_SERVICE_NAME'] || 'tensrai-backend';

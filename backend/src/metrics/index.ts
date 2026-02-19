@@ -1,27 +1,85 @@
 import { metrics } from '@opentelemetry/api';
-import { MeterProvider } from '@opentelemetry/sdk-metrics';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
+import { MeterProvider } from '@opentelemetry/sdk-metrics';
 
-// Initialize Prometheus exporter for metrics
-const prometheusExporter = new PrometheusExporter({
-  port: 9464,
-  endpoint: '/metrics',
+type CounterLike = { add: (value: number, attributes?: Record<string, unknown>) => void };
+type HistogramLike = { record: (value: number, attributes?: Record<string, unknown>) => void };
+
+const createNoopCounter = (): CounterLike => ({ add: () => {} });
+const createNoopHistogram = (): HistogramLike => ({ record: () => {} });
+
+const createNoopMeter = () => ({
+  createCounter: () => createNoopCounter(),
+  createHistogram: () => createNoopHistogram(),
 });
 
-// Set up metrics provider - simple configuration without views
-const meterProvider = new MeterProvider({
-  readers: [prometheusExporter],
-});
+const isBunRuntime =
+  typeof (globalThis as any).Bun !== 'undefined' || typeof process.versions?.['bun'] === 'string';
+const metricsEnabledEnv = process.env['OTEL_METRICS_ENABLED'] ?? process.env['METRICS_ENABLED'];
+const metricsEnabled =
+  metricsEnabledEnv !== undefined
+    ? metricsEnabledEnv === 'true' || metricsEnabledEnv === '1'
+    : !isBunRuntime;
 
-// Register the meter provider globally
-metrics.setGlobalMeterProvider(meterProvider);
+let meter: {
+  createCounter: (name: string, options?: Record<string, unknown>) => CounterLike;
+  createHistogram: (name: string, options?: Record<string, unknown>) => HistogramLike;
+} = createNoopMeter();
 
-// Get the meter from the global provider
-const meter = metrics.getMeter('robot-dashboard-backend');
+if (metricsEnabled) {
+  try {
+    const port = Number(process.env['OTEL_PROMETHEUS_PORT'] ?? 9464);
+    const prometheusExporter = new PrometheusExporter({
+      port,
+      endpoint: '/metrics',
+    });
+
+    const meterProvider = new MeterProvider({
+      // Exporter package versions can drift in monorepos; cast keeps runtime resilient.
+      readers: [
+        prometheusExporter as unknown as import('@opentelemetry/sdk-metrics').IMetricReader,
+      ],
+    });
+
+    metrics.setGlobalMeterProvider(meterProvider);
+    meter = metrics.getMeter('robot-dashboard-backend') as any;
+  } catch (error) {
+    // Fall back to no-op metrics if the SDK fails (prevents dev crash in Bun/OTEL combos).
+    console.warn('Metrics disabled due to OpenTelemetry error:', error);
+    meter = createNoopMeter();
+  }
+}
+
+let metricsErrorLogged = false;
+const safeCounter = (name: string, options?: Record<string, unknown>): CounterLike => {
+  if (!metricsEnabled) return createNoopCounter();
+  try {
+    return meter.createCounter(name, options);
+  } catch (error) {
+    if (!metricsErrorLogged) {
+      metricsErrorLogged = true;
+      console.warn(`Metrics disabled after error in counter: ${name}`, error);
+    }
+    return createNoopCounter();
+  }
+};
+
+const safeHistogram = (name: string, options?: Record<string, unknown>): HistogramLike => {
+  if (!metricsEnabled) return createNoopHistogram();
+  try {
+    return meter.createHistogram(name, options);
+  } catch (error) {
+    if (!metricsErrorLogged) {
+      metricsErrorLogged = true;
+      console.warn(`Metrics disabled after error in histogram: ${name}`, error);
+    }
+    return createNoopHistogram();
+  }
+};
 
 // Robot fleet metrics (based on existing robot collection) - simplified for Bun compatibility
 export const robotFleetMetrics = {
-  statusChanges: meter.createCounter('robot.fleet.status_changes', {
+  statusChanges: safeCounter('robot.fleet.status_changes', {
     description: 'Total number of robot status changes',
   }),
   // Note: totalCount and onlineCount removed due to Bun runtime compatibility issues with gauges
@@ -29,24 +87,24 @@ export const robotFleetMetrics = {
 
 // API metrics
 export const apiMetrics = {
-  requestCount: meter.createCounter('api.requests.total', {
+  requestCount: safeCounter('api.requests.total', {
     description: 'Total number of API requests',
   }),
-  requestDuration: meter.createHistogram('api.request.duration', {
+  requestDuration: safeHistogram('api.request.duration', {
     description: 'Duration of API requests in milliseconds',
     unit: 'ms',
   }),
-  errorRate: meter.createCounter('api.errors.total', {
+  errorRate: safeCounter('api.errors.total', {
     description: 'Total number of API errors',
   }),
 };
 
 // WebSocket metrics - simplified for Bun compatibility
 export const websocketMetrics = {
-  messagesReceived: meter.createCounter('websocket.messages.received', {
+  messagesReceived: safeCounter('websocket.messages.received', {
     description: 'Total number of WebSocket messages received',
   }),
-  connectionErrors: meter.createCounter('websocket.connection.errors', {
+  connectionErrors: safeCounter('websocket.connection.errors', {
     description: 'Total number of WebSocket connection errors',
   }),
   // Note: activeConnections removed due to Bun runtime compatibility issues with gauges
@@ -54,11 +112,11 @@ export const websocketMetrics = {
 
 // Database metrics - simplified for Bun compatibility
 export const databaseMetrics = {
-  queryDuration: meter.createHistogram('database.query.duration', {
+  queryDuration: safeHistogram('database.query.duration', {
     description: 'Duration of database queries in milliseconds',
     unit: 'ms',
   }),
-  operationCount: meter.createCounter('database.operations.total', {
+  operationCount: safeCounter('database.operations.total', {
     description: 'Total number of database operations',
   }),
   // Note: connectionPool removed due to Bun runtime compatibility issues with gauges
@@ -66,13 +124,13 @@ export const databaseMetrics = {
 
 // Auth metrics - simplified for Bun compatibility
 export const authMetrics = {
-  loginAttempts: meter.createCounter('auth.login.attempts', {
+  loginAttempts: safeCounter('auth.login.attempts', {
     description: 'Total number of login attempts',
   }),
-  loginSuccess: meter.createCounter('auth.login.success', {
+  loginSuccess: safeCounter('auth.login.success', {
     description: 'Total number of successful logins',
   }),
-  loginFailures: meter.createCounter('auth.login.failures', {
+  loginFailures: safeCounter('auth.login.failures', {
     description: 'Total number of failed logins',
   }),
   // Note: activeSessions removed due to Bun runtime compatibility issues with gauges
@@ -80,10 +138,10 @@ export const authMetrics = {
 
 // Map management metrics - simplified for Bun compatibility
 export const mapMetrics = {
-  uploadCount: meter.createCounter('maps.uploads.total', {
+  uploadCount: safeCounter('maps.uploads.total', {
     description: 'Total number of map uploads',
   }),
-  downloadCount: meter.createCounter('maps.downloads.total', {
+  downloadCount: safeCounter('maps.downloads.total', {
     description: 'Total number of map downloads',
   }),
   // Note: storageSize removed due to Bun runtime compatibility issues with gauges

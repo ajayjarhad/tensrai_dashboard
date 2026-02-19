@@ -60,13 +60,6 @@ export const laserToPixelPoints = (
     const pixel = worldToMapPixel({ x: worldX, y: worldY }, transforms);
     if (Number.isFinite(pixel.x) && Number.isFinite(pixel.y)) {
       points.push(pixel);
-    } else if (typeof console !== 'undefined') {
-      console.warn('[laserToPixelPoints] invalid pixel from raw range', {
-        worldX,
-        worldY,
-        angle,
-        range: r,
-      });
     }
   }
 

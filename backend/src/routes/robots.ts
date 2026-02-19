@@ -1,8 +1,8 @@
-import { z } from 'zod';
 import { trace } from '@opentelemetry/api';
-
+import { z } from 'zod';
+import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
+import { getMissionState } from '../services/missionStatus.js';
 import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
-import { robotFleetMetrics, databaseMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance } from '../types/app.js';
 
 const RobotModeSchema = z.enum([
@@ -26,6 +26,7 @@ const CreateRobotSchema = z.object({
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
+  missionBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -50,6 +51,7 @@ const UpdateRobotSchema = z.object({
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
+  missionBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -94,7 +96,12 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       });
       span.end();
 
-      return { success: true, data: robots };
+      const withMission = robots.map((robot: any) => ({
+        ...robot,
+        mission: getMissionState(robot.id),
+      }));
+
+      return { success: true, data: withMission };
     } catch (error) {
       databaseMetrics.queryDuration.record(Date.now() - startTime, {
         'db.operation': 'findMany',
@@ -120,7 +127,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       return reply.status(404).send({ success: false, error: 'Robot not found' });
     }
 
-    return { success: true, data: robot };
+    return { success: true, data: { ...robot, mission: getMissionState(robot.id) } };
   });
 
   // Create robot (Backend/Testing only)

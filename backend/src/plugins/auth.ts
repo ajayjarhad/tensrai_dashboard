@@ -1,10 +1,9 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
-import { URL } from 'node:url';
 import { runWithEndpointContext } from '@better-auth/core/context';
+import { trace } from '@opentelemetry/api';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
 import fp from 'fastify-plugin';
-import { trace } from '@opentelemetry/api';
 import { auth } from '../config/auth.js';
 import { authMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
@@ -586,50 +585,39 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
   };
 
   const localDevOrigins = Array.from({ length: 10 }, (_, idx) => `http://localhost:${5001 + idx}`);
-  const allowedOrigins = [
+  const fallbackAllowedOrigins = [
     process.env['FRONTEND_URL'],
     'http://localhost:5000',
     'http://localhost:5173',
     'http://localhost:5174',
     ...localDevOrigins,
   ].filter(Boolean) as string[];
-  const allowedOriginSet = new Set(allowedOrigins.map(origin => origin.toLowerCase()));
+  const fallbackAllowedOriginSet = new Set(
+    fallbackAllowedOrigins.map(origin => origin.toLowerCase())
+  );
+  const nodeEnv = process.env['NODE_ENV'] ?? 'development';
 
-  const isAllowedOrigin = (origin?: string | null) => {
+  const isFallbackAllowedOrigin = (origin?: string | null) => {
     if (!origin) return false;
-    const normalized = origin.toLowerCase();
-    if (allowedOriginSet.has(normalized)) {
-      return true;
-    }
-
-    try {
-      const parsed = new URL(origin);
-      const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
-      if (
-        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') &&
-        port >= 5001 &&
-        port <= 5010
-      ) {
-        return true;
-      }
-    } catch {
-      return false;
-    }
-
-    return false;
+    if (nodeEnv !== 'production') return true;
+    return fallbackAllowedOriginSet.has(origin.toLowerCase());
   };
 
   const applyCorsHeaders = (request: AppFastifyRequest, reply: AppFastifyReply) => {
     const origin = request.headers.origin;
-    if (isAllowedOrigin(origin)) {
-      if (origin) {
-        reply.header('Access-Control-Allow-Origin', origin);
-        reply.raw.setHeader('Access-Control-Allow-Origin', origin);
-      }
-    } else {
-      reply.removeHeader('Access-Control-Allow-Origin');
-      reply.raw.removeHeader('Access-Control-Allow-Origin');
+    const sharedCors = (fastify as any).applyCorsHeaders;
+    if (typeof sharedCors === 'function') {
+      sharedCors(reply, origin ?? null);
+      return;
     }
+
+    if (!isFallbackAllowedOrigin(origin)) {
+      reply.removeHeader('Access-Control-Allow-Origin');
+      reply.raw?.removeHeader?.('Access-Control-Allow-Origin');
+    } else if (origin) {
+      reply.header('Access-Control-Allow-Origin', origin);
+    }
+
     const credentials = 'true';
     const allowHeaders =
       'Origin, X-Requested-With, Accept, Authorization, Content-Type, Cache-Control, Pragma';
@@ -639,12 +627,6 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     reply.header('Access-Control-Allow-Methods', allowMethods);
     reply.header('Access-Control-Expose-Headers', 'Set-Cookie');
     reply.header('Vary', 'Origin');
-
-    reply.raw.setHeader('Access-Control-Allow-Credentials', credentials);
-    reply.raw.setHeader('Access-Control-Allow-Headers', allowHeaders);
-    reply.raw.setHeader('Access-Control-Allow-Methods', allowMethods);
-    reply.raw.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
-    reply.raw.setHeader('Vary', 'Origin');
   };
 
   fastify.options('/api/auth/*', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
@@ -792,17 +774,24 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         'user.role': finalResult.value.user.role,
       });
 
-      // Create audit log entry
-      await fastify.audit({
-        userId: finalResult.value.user.id,
-        role: finalResult.value.user.role,
-        action: 'LOGIN',
-        metadata: {
-          authMethod: authResult.authMethod,
-          ip: request.ip,
-          userAgent: request.headers['user-agent'],
-        },
-      });
+      // Create audit log entry (guard in case observability plugin is disabled)
+      if (typeof (fastify as any).audit === 'function') {
+        await fastify.audit({
+          userId: finalResult.value.user.id,
+          role: finalResult.value.user.role,
+          action: 'LOGIN',
+          metadata: {
+            authMethod: authResult.authMethod,
+            ip: request.ip,
+            userAgent: request.headers['user-agent'],
+          },
+        });
+      } else {
+        fastify.log.warn(
+          { userId: finalResult.value.user.id, action: 'LOGIN' },
+          'Audit logger not available; skipping audit event'
+        );
+      }
 
       span.setAttributes({
         'auth.success': true,

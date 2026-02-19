@@ -1,12 +1,12 @@
+import { trace } from '@opentelemetry/api';
 import type { Prisma } from '@prisma/client';
+import { apiMetrics } from '../metrics/index.js';
 import type {
   AppFastifyInstance,
   AppFastifyReply,
   AppFastifyRequest,
   AuditEvent,
 } from '../types/app.js';
-import { apiMetrics } from '../metrics/index.js';
-import { trace } from '@opentelemetry/api';
 
 /**
  * Observability plugin for Fastify
@@ -53,7 +53,7 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
 
   fastify.addHook('onResponse', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
     const duration = request.startTime ? Date.now() - request.startTime : 0;
-    const routePath = request.routeOptions?.config?.url ?? request.url;
+    const routePath = (request as any).routeOptions?.config?.url ?? request.url;
 
     // Record API metrics
     apiMetrics.requestDuration.record(duration, {
@@ -95,7 +95,6 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
   fastify.addHook(
     'onError',
     async (request: AppFastifyRequest, _reply: AppFastifyReply, error: Error) => {
-      const tracer = trace.getTracer('fastify-server');
       const span = trace.getActiveSpan();
 
       if (span) {

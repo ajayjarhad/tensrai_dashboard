@@ -2,8 +2,15 @@ import { useEffect } from 'react';
 import { useRobotTelemetryStore } from '../stores/robotTelemetry';
 
 export const useRobotTelemetry = (robotId: string | null | undefined) => {
-  const { telemetry, connect, disconnect, sendTeleop, sendMode, sendEmergency, sendInitialPose } =
-    useRobotTelemetryStore();
+  const connect = useRobotTelemetryStore(state => state.connect);
+  const disconnect = useRobotTelemetryStore(state => state.disconnect);
+  const sendTeleop = useRobotTelemetryStore(state => state.sendTeleop);
+  const sendMode = useRobotTelemetryStore(state => state.sendMode);
+  const sendEmergency = useRobotTelemetryStore(state => state.sendEmergency);
+  const sendInitialPose = useRobotTelemetryStore(state => state.sendInitialPose);
+  const telemetry = useRobotTelemetryStore(state =>
+    robotId ? state.telemetry[robotId] : undefined
+  );
 
   useEffect(() => {
     if (!robotId) return;
@@ -13,10 +20,8 @@ export const useRobotTelemetry = (robotId: string | null | undefined) => {
     };
   }, [robotId, connect, disconnect]);
 
-  const state = robotId ? telemetry[robotId] : undefined;
-
   return {
-    telemetry: state,
+    telemetry,
     sendTeleop,
     sendMode,
     sendEmergency,

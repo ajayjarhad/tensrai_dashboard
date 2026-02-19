@@ -23,6 +23,11 @@ const TELEOP_MAX_LINEAR = 0.5; // m/s
 const TELEOP_MAX_ANGULAR = 0.8; // rad/s
 const TELEOP_WATCHDOG_MS = 750; // send zero if idle
 const POSE_EPS = 1e-3;
+const MAX_LASER_POINTS = (() => {
+  const raw = Number(process.env['ROS_MAX_LASER_POINTS'] ?? 450);
+  if (!Number.isFinite(raw) || raw <= 0) return 450;
+  return Math.max(60, Math.floor(raw));
+})();
 
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
@@ -53,14 +58,15 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   }
   if (channelName === 'laser') {
     const scan = data as any;
+    const hasPoints = Array.isArray(scan.points) && scan.points.length > 0;
     return {
       angle_min: scan.angle_min,
       angle_max: scan.angle_max,
       angle_increment: scan.angle_increment,
       range_min: scan.range_min,
       range_max: scan.range_max,
-      ranges: scan.ranges,
-      points: scan.points,
+      ranges: hasPoints ? [] : scan.ranges,
+      points: hasPoints ? scan.points : undefined,
       frame: scan.frame,
     };
   }
@@ -267,8 +273,19 @@ export class RosRobotManager extends EventEmitter {
         this.emit('channel-data', { channel: name, data: sanitized });
       });
       try {
-        const unsubscribe = connection.subscribe(runtime.config.topic, runtime.config.msgType, d =>
-          throttled(d)
+        const rateHz = runtime.config.rateLimitHz;
+        const throttleRateMs =
+          typeof rateHz === 'number' && rateHz > 0
+            ? Math.max(1, Math.floor(1000 / rateHz))
+            : undefined;
+        const unsubscribe = connection.subscribe(
+          runtime.config.topic,
+          runtime.config.msgType,
+          d => throttled(d),
+          {
+            throttleRateMs,
+            queueLength: 1,
+          }
         );
         runtime.unsubscribe = unsubscribe;
         runtime.errorCount = 0;
@@ -375,9 +392,9 @@ export class RosRobotManager extends EventEmitter {
     if (!pose) return raw;
 
     const laserOffset = this.laserToBase ?? this.laserOffset;
-    const points = this.computeLaserPoints(raw, pose, laserOffset);
+    const { points, pointStride } = this.computeLaserPoints(raw, pose, laserOffset);
 
-    return { ...raw, points, frame: 'map' };
+    return { ...raw, points, pointStride, frame: 'map' };
   }
 
   private getLaserPose(scanStampMs: number): Pose2D | undefined {
@@ -399,15 +416,16 @@ export class RosRobotManager extends EventEmitter {
     raw: any,
     pose: Pose2D,
     laserOffset: Pose2D
-  ): Array<{ x: number; y: number }> {
+  ): { points: Array<{ x: number; y: number }>; pointStride: number } {
     const { angle_min, angle_increment, ranges, range_min, range_max } = raw;
     const cosOff = Math.cos(laserOffset.yaw);
     const sinOff = Math.sin(laserOffset.yaw);
     const cosPose = Math.cos(pose.yaw);
     const sinPose = Math.sin(pose.yaw);
+    const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
 
     const points: Array<{ x: number; y: number }> = [];
-    for (let i = 0; i < ranges.length; i++) {
+    for (let i = 0; i < ranges.length; i += stride) {
       const r = ranges[i];
       if (!Number.isFinite(r) || r < range_min || r > range_max) continue;
       const angle = angle_min + i * angle_increment;
@@ -418,8 +436,9 @@ export class RosRobotManager extends EventEmitter {
       const wx = pose.x + cosPose * bx - sinPose * by;
       const wy = pose.y + sinPose * bx + cosPose * by;
       points.push({ x: wx, y: wy });
+      if (points.length >= MAX_LASER_POINTS) break;
     }
-    return points;
+    return { points, pointStride: stride };
   }
 
   private subscribeTf(connection: RosBridgeConnection) {

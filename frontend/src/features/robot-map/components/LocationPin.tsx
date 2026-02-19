@@ -8,13 +8,29 @@ interface LocationPinProps {
   rotation?: number;
   scale?: number;
   color?: string;
+  opacity?: number;
+  listening?: boolean;
   name?: string;
   onClick?: (evt: Konva.KonvaEventObject<MouseEvent>) => void;
   onTap?: (evt: Konva.KonvaEventObject<TouchEvent | MouseEvent>) => void;
 }
 
 export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
-  ({ x, y, rotation = 0, scale = 1, color = '#01FF01', name, onClick, onTap }, ref) => {
+  (
+    {
+      x,
+      y,
+      rotation = 0,
+      scale = 1,
+      color = '#01FF01',
+      opacity = 1,
+      listening = true,
+      name,
+      onClick,
+      onTap,
+    },
+    ref
+  ) => {
     const pathScale = 2.2;
     const pathData =
       'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z';
@@ -27,6 +43,8 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
         rotation={rotation}
         scaleX={scale}
         scaleY={scale}
+        opacity={opacity}
+        listening={listening}
         name={name || ''}
         {...(onClick ? { onClick } : {})}
         {...(onTap ? { onTap } : {})}

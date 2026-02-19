@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { Robot } from '@/types/robot';
 
-export function useRobotSelection(robots: Robot[]) {
+interface RobotSelectionOptions {
+  suspendAutoMapSync?: boolean;
+}
+
+export function useRobotSelection(robots: Robot[], options: RobotSelectionOptions = {}) {
   const [selectedRobotId, setSelectedRobotId] = useState<string | null>(null);
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -14,20 +18,22 @@ export function useRobotSelection(robots: Robot[]) {
 
   // Initialize or recover active map when robots load or change
   useEffect(() => {
+    if (options.suspendAutoMapSync) return;
     if (activeMapId) return;
     const firstWithMap = robots.find(robot => robot.mapId);
     if (firstWithMap?.mapId) {
       setActiveMapId(firstWithMap.mapId);
     }
-  }, [activeMapId, robots]);
+  }, [activeMapId, options.suspendAutoMapSync, robots]);
 
   // Keep active map in sync with the selected robot when its map changes
   useEffect(() => {
+    if (options.suspendAutoMapSync) return;
     const selectedRobot = robots.find(robot => robot.id === selectedRobotId);
     if (selectedRobot?.mapId && selectedRobot.mapId !== activeMapId) {
       setActiveMapId(selectedRobot.mapId);
     }
-  }, [activeMapId, robots, selectedRobotId]);
+  }, [activeMapId, options.suspendAutoMapSync, robots, selectedRobotId]);
 
   const handleSelectRobot = (robot: Robot | null) => {
     setSelectedRobotId(robot?.id ?? null);

@@ -1,5 +1,5 @@
 import { trace } from '@opentelemetry/api';
-import { mapMetrics, databaseMetrics } from '../metrics/index.js';
+import { databaseMetrics, mapMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const mapRoutes: any = async (server: AppFastifyInstance) => {
@@ -127,7 +127,6 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
           where: { id },
           select: {
             image: true,
-            imageSizeBytes: true,
           },
         });
 
@@ -158,7 +157,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
 
         span.setAttributes({
           'map.download.success': true,
-          'map.image.size_bytes': map.imageSizeBytes || (map.image ? map.image.length : 0),
+          'map.image.size_bytes': map.image ? map.image.length : 0,
           'db.query.duration_ms': Date.now() - startTime,
         });
         span.end();

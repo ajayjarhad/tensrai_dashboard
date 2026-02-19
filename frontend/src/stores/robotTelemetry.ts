@@ -12,6 +12,9 @@ import type {
 
 const SMOOTH_ALPHA = 0.25;
 const TF_FRESH_MS = 4000;
+const ODOM_MIN_INTERVAL_MS = 100;
+const LASER_MIN_INTERVAL_MS = 160;
+const PATH_MIN_INTERVAL_MS = 300;
 
 type RobotTelemetry = {
   pose?: Pose2D;
@@ -24,6 +27,8 @@ type RobotTelemetry = {
   path?: PathMessage;
   lastMessageAt?: number;
   lastOdomAt?: number;
+  lastLaserAt?: number;
+  lastPathAt?: number;
   lastAmclAt?: number;
   lastTfAt?: number;
   status: ConnectionStatus;
@@ -95,6 +100,29 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
       set(state => {
         const now = Date.now();
         const current = state.telemetry[robotId] ?? { status: client.getStatus() };
+
+        if (
+          event.channel === 'odom' &&
+          current.lastOdomAt &&
+          now - current.lastOdomAt < ODOM_MIN_INTERVAL_MS
+        ) {
+          return state;
+        }
+        if (
+          event.channel === 'laser' &&
+          current.lastLaserAt &&
+          now - current.lastLaserAt < LASER_MIN_INTERVAL_MS
+        ) {
+          return state;
+        }
+        if (
+          event.channel === 'waypoints' &&
+          current.lastPathAt &&
+          now - current.lastPathAt < PATH_MIN_INTERVAL_MS
+        ) {
+          return state;
+        }
+
         const next: RobotTelemetry = { ...current, lastMessageAt: now };
 
         if (event.channel === 'odom') {
@@ -142,9 +170,15 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
             // ignore bad amcl
           }
         } else if (event.channel === 'laser') {
-          next.laser = event.data as LaserScan;
+          const laser = event.data as LaserScan;
+          next.laser =
+            Array.isArray(laser?.points) && laser.points.length > 0
+              ? { ...laser, ranges: [] }
+              : laser;
+          next.lastLaserAt = now;
         } else if (event.channel === 'waypoints') {
           next.path = event.data as PathMessage;
+          next.lastPathAt = now;
         } else if (event.channel === 'state') {
           // optional: map to status; for now, leave as is
         }

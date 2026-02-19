@@ -94,6 +94,7 @@ model Robot {
   battery     Float?      // Battery percentage (0-100)
   bridgePort  Int?
   mappingBridgePort Int?
+  missionBridgePort Int?
   channels    Json?
   
   // Location info

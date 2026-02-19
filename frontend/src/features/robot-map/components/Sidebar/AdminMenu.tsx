@@ -1,58 +1,21 @@
 import { useNavigate } from '@tanstack/react-router';
-import { Cpu, LogOut, MoreVertical, Play, Users } from 'lucide-react';
+import { Cpu, LogOut, MoreVertical, Users } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { useAuth } from '@/stores/auth';
-import type { MissionWithContext } from '../MissionDialog'; // Adjust import as needed
 
 interface AdminMenuProps {
   isOpen: boolean;
   onToggle: () => void;
-  missions?: MissionWithContext[];
-  onOpenMissionDialog: () => void;
 }
 
-export function AdminMenu({
-  isOpen,
-  onToggle,
-  missions = [],
-  onOpenMissionDialog,
-}: AdminMenuProps) {
+export function AdminMenu({ isOpen, onToggle }: AdminMenuProps) {
   const navigate = useNavigate();
   const { user, isAdmin, logout } = useAuth();
   const isUserAdmin = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const [showMenu, setShowMenu] = useState(false);
 
-  const missionList = missions ?? [];
-
   return (
     <div className="p-4 border-border bg-card space-y-3">
-      <div className="flex justify-center">
-        {isOpen ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="w-full"
-            onClick={onOpenMissionDialog}
-            disabled={(missionList?.length ?? 0) === 0}
-          >
-            <Play className="h-4 w-4 mr-2" />
-            {missionList.length > 0 ? 'View Missions' : 'No Missions'}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            onClick={onOpenMissionDialog}
-            disabled={(missionList?.length ?? 0) === 0}
-            aria-label={missionList.length > 0 ? 'View missions' : 'No missions'}
-          >
-            <Play className="h-4 w-4" />
-          </Button>
-        )}
-      </div>
       <div className="border-b border-border/60" />
 
       {isOpen ? (

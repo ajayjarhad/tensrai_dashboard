@@ -8,6 +8,18 @@ interface RobotListProps {
   isOpen: boolean;
 }
 
+const statusToneClass = (robot: Robot) => {
+  if (robot.runtimeMode === 'teleop') return 'bg-amber-500';
+  if (robot.runtimeMode === 'autonomous') return 'bg-status-active';
+
+  const value = String(robot.status ?? 'UNKNOWN').toUpperCase();
+  if (value.includes('EMERGENCY')) return 'bg-status-error';
+  if (value === 'MISSION') return 'bg-status-active';
+  if (value === 'TELEOP') return 'bg-amber-500';
+  if (value === 'CHARGING' || value === 'DOCKING') return 'bg-sky-500';
+  return 'bg-status-offline';
+};
+
 export function RobotList({ robots, selectedRobotId, onSelectRobot, isOpen }: RobotListProps) {
   if (!isOpen) {
     return (
@@ -28,11 +40,7 @@ export function RobotList({ robots, selectedRobotId, onSelectRobot, isOpen }: Ro
             <div
               className={cn(
                 'absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white',
-                robot.status === 'MISSION'
-                  ? 'bg-status-active'
-                  : robot.status.includes('EMERGENCY')
-                    ? 'bg-status-error'
-                    : 'bg-status-offline'
+                statusToneClass(robot)
               )}
             />
             <span className="text-xs font-bold">{robot.name.substring(0, 2)}</span>
@@ -56,20 +64,13 @@ export function RobotList({ robots, selectedRobotId, onSelectRobot, isOpen }: Ro
         >
           <div className="flex justify-between items-start mb-1">
             <span className="font-medium text-foreground">{robot.name}</span>
-            <span
-              className={cn(
-                'w-2 h-2 rounded-full mt-2',
-                robot.status === 'MISSION'
-                  ? 'bg-status-active'
-                  : robot.status.includes('EMERGENCY')
-                    ? 'bg-status-error'
-                    : 'bg-status-offline'
-              )}
-            />
+            <span className={cn('w-2 h-2 rounded-full mt-2', statusToneClass(robot))} />
           </div>
-          <div className="flex justify-between items-center text-xs text-muted-foreground">
-            <span>{robot.status}</span>
-            <span>{robot.battery !== undefined ? `${robot.battery}%` : ''}</span>
+          <div className="flex justify-between items-center text-xs text-muted-foreground gap-2">
+            <span className="truncate">
+              {robot.runtimeMode ? robot.runtimeMode.toUpperCase() : robot.status}
+            </span>
+            <span>{robot.battery !== undefined ? `${Math.round(robot.battery)}%` : ''}</span>
           </div>
         </button>
       ))}
