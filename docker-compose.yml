@@ -87,6 +87,7 @@ services:
       BASE_URL: ${BASE_URL:-http://localhost:5001}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports:
       - "5001:5001"
     depends_on:
@@ -94,6 +95,8 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
     networks:
       - tensrai-network
@@ -110,6 +113,171 @@ services:
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bun --watch src/index.ts
       "
 
+  # --- SigNoz stack ---
+  otel-collector:
+    image: signoz/signoz-otel-collector:0.111.24
+    command:
+      - "--config=/etc/otel-collector-config.yaml"
+    volumes:
+      - ./infra/signoz/config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+      - "8889:8889"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
+      schema-migrator-sync:
+        condition: service_completed_successfully
+    networks:
+      - signoz-backend
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1.2-alpine
+    depends_on:
+      zookeeper:
+        condition: service_started
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    volumes:
+      - signoz-clickhouse-data:/var/lib/clickhouse
+      - ./infra/signoz/config/clickhouse-config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./infra/signoz/config/clickhouse-users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./infra/signoz/config/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query='SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - signoz-backend
+
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:24.1.2-alpine
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command: >
+      "until clickhouse-client --host clickhouse --user signoz --password password --query='SELECT 1'; do
+         echo 'Waiting for ClickHouse...';
+         sleep 2;
+       done;
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_logs';
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_metrics';
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_traces';
+       echo 'ClickHouse databases ensured.'"
+    networks:
+      - signoz-backend
+
+  zookeeper:
+    image: zookeeper:3.7
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "12181:2181"
+    networks:
+      - signoz-backend
+
+  schema-migrator-sync:
+    image: signoz/signoz-schema-migrator:v0.111.34
+    command:
+      - sync
+      - --dsn=tcp://signoz:password@clickhouse:9000
+      - --up=
+      - --cluster-name=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - signoz-backend
+
+  schema-migrator-async:
+    image: signoz/signoz-schema-migrator:v0.111.34
+    command:
+      - async
+      - --dsn=tcp://signoz:password@clickhouse:9000
+      - --up=
+      - --cluster-name=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator-sync:
+        condition: service_completed_successfully
+    restart: on-failure
+    networks:
+      - signoz-backend
+
+  signoz-frontend:
+    image: signoz/signoz:v0.76.2
+    environment:
+      - STORAGE=clickhouse
+      - CLICKHOUSE_ADDRESS=clickhouse:9000
+      - CLICKHOUSE_USER=signoz
+      - CLICKHOUSE_PASSWORD=password
+      - CLICKHOUSE_DATABASE=signoz
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://signoz:password@clickhouse:9000
+      - LOG_LEVEL=info
+      - AUTH_TYPE=multi-tenant
+      - REACT_APP_USER_ACCESS_KEY_ENABLED=false
+      - REACT_APP_ANONYMOUS_ACCESS_ENABLED=true
+      - SIGNOZ_FRONTEND_PORT=3301
+      - GODEBUG=netdns=go
+    ports:
+      - "3302:8080" # expose UI/API on host:3302
+      - "8081:8080" # existing mapping retained
+      - "7180:7180"
+      - "9090:9090"
+    volumes:
+      - signoz-data:/var/lib/signoz
+    depends_on:
+      schema-migrator-sync:
+        condition: service_completed_successfully
+    networks:
+      - signoz-backend
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./infra/signoz/config/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    networks:
+      - signoz-backend
+
+  redis:
+    image: redis:7.2.5-alpine
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    volumes:
+      - signoz-redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz-backend
+
 networks:
   tensrai-network:
     driver: bridge
@@ -119,4 +287,10 @@ networks:
 
 volumes:
   mongo-data:
+    driver: local
+  signoz-clickhouse-data:
+    driver: local
+  signoz-redis-data:
+    driver: local
+  signoz-data:
     driver: local

@@ -12,14 +12,21 @@ services:
       - "8888:8888"   # Prometheus metrics exposed by the collector
       - "8889:8889"   # Prometheus exporter metrics
     depends_on:
-      - clickhouse
-      - signoz-frontend
+      clickhouse:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
+      schema-migrator-sync:
+        condition: service_completed_successfully
     networks:
       - signoz-backend
 
   # ClickHouse Database
   clickhouse:
-    image: clickhouse/clickhouse-server:23.12-alpine
+    image: clickhouse/clickhouse-server:24.1.2-alpine
+    depends_on:
+      zookeeper:
+        condition: service_started
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -27,6 +34,7 @@ services:
       - signoz-clickhouse-data:/var/lib/clickhouse
       - ./config/clickhouse-config.xml:/etc/clickhouse-server/config.d/config.xml
       - ./config/clickhouse-users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./config/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml
     environment:
       CLICKHOUSE_DB: signoz
       CLICKHOUSE_USER: signoz
@@ -40,6 +48,63 @@ services:
     networks:
       - signoz-backend
 
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:24.1.2-alpine
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command: >
+      "until clickhouse-client --host clickhouse --user signoz --password password --query='SELECT 1'; do
+         echo 'Waiting for ClickHouse...';
+         sleep 2;
+       done;
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_logs';
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_metrics';
+       clickhouse-client --host clickhouse --user signoz --password password --query='CREATE DATABASE IF NOT EXISTS signoz_traces';
+       echo 'ClickHouse databases ensured.'"
+    networks:
+      - signoz-backend
+
+  zookeeper:
+    image: zookeeper:3.7
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    networks:
+      - signoz-backend
+
+  schema-migrator-sync:
+    image: signoz/signoz-schema-migrator:v0.111.34
+    command:
+      - sync
+      - --dsn=tcp://signoz:password@clickhouse:9000
+      - --up=
+      - --cluster-name=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - signoz-backend
+
+  schema-migrator-async:
+    image: signoz/signoz-schema-migrator:v0.111.34
+    command:
+      - async
+      - --dsn=tcp://signoz:password@clickhouse:9000
+      - --up=
+      - --cluster-name=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator-sync:
+        condition: service_completed_successfully
+    restart: on-failure
+    networks:
+      - signoz-backend
+
   # Signoz Application (Frontend + Query Service)
   signoz-frontend:
     image: signoz/signoz:v0.76.2
@@ -47,6 +112,11 @@ services:
       - STORAGE=clickhouse
       - CLICKHOUSE_ADDRESS=clickhouse:9000
       - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_USER=signoz
+      - CLICKHOUSE_PASSWORD=password
+      - CLICKHOUSE_DATABASE=signoz
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://signoz:password@clickhouse:9000
       - LOG_LEVEL=info
       - AUTH_TYPE="multi-tenant"
       - REACT_APP_USER_ACCESS_KEY_ENABLED=false
@@ -58,14 +128,15 @@ services:
       - FRONTEND_HOST=0.0.0.0
       - FRONTEND_PORT=3301
     ports:
-      - "3301:3301" # Frontend
-      - "8081:8080" # Query Service API (changed from 8080 to 8081)
+      - "3301:8080" # Frontend/API
+      - "8081:8080" # Query Service API
       - "7180:7180" # GRPC
-      - "9091:9090" # HTTP (changed from 9090 to 9091)
+      - "9091:9090" # HTTP
     volumes:
       - signoz-data:/var/lib/signoz
     depends_on:
-      - clickhouse
+      schema-migrator-sync:
+        condition: service_completed_successfully
     networks:
       - signoz-backend
 
@@ -103,7 +174,7 @@ services:
 
 networks:
   signoz-backend:
-    driver: bridge
+    external: true
     name: signoz-backend
 
 volumes:

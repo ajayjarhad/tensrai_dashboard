@@ -8,9 +8,6 @@
             </networks>
             <profile>default</profile>
             <quota>default</quota>
-            <databases>
-                <database>signoz</database>
-            </databases>
         </default>
 
         <signoz>
@@ -20,9 +17,6 @@
             </networks>
             <profile>default</profile>
             <quota>default</quota>
-            <databases>
-                <database>signoz</database>
-            </databases>
         </signoz>
     </users>
 

@@ -5,17 +5,29 @@ import { LocationPin } from '../LocationPin';
 interface LocationLayerProps {
   locations: TempLocation[];
   setPoseMode: boolean;
+  highlightTagIds?: Set<string>;
+  dimNonMissionTags?: boolean;
   onLocationSelect: (
     location: TempLocation,
     evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) => void;
 }
 
-export function LocationLayer({ locations, setPoseMode, onLocationSelect }: LocationLayerProps) {
+export function LocationLayer({
+  locations,
+  setPoseMode,
+  highlightTagIds,
+  dimNonMissionTags = false,
+  onLocationSelect,
+}: LocationLayerProps) {
   return (
     <>
       {locations.map(loc => {
+        const isHighlighted = highlightTagIds ? highlightTagIds.has(loc.id) : true;
+        const isDimmed = dimNonMissionTags && !isHighlighted;
+
         const handleLocationSelect = (evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+          if (isDimmed) return;
           if (setPoseMode) {
             if (evt) evt.cancelBubble = true;
           }
@@ -29,6 +41,9 @@ export function LocationLayer({ locations, setPoseMode, onLocationSelect }: Loca
             y={loc.y}
             rotation={loc.rotation}
             name="location-pin"
+            color={isDimmed ? '#6b7280' : '#01FF01'}
+            opacity={isDimmed ? 0.35 : 1}
+            listening={!isDimmed}
             onClick={handleLocationSelect}
             onTap={handleLocationSelect}
           />

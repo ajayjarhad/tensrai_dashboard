@@ -22,6 +22,7 @@ type EditableRobot = Partial<Robot> & {
   ipAddress?: string;
   bridgePort?: number;
   mappingBridgePort?: number;
+  missionBridgePort?: number;
   mapId?: string;
   status?: RobotMode;
   channels?: Robot['channels'];
@@ -32,6 +33,7 @@ const DEFAULT_ROBOT: EditableRobot = {
   ipAddress: '',
   bridgePort: 9090,
   mappingBridgePort: 8765,
+  missionBridgePort: 9487,
   mapId: '',
   status: 'UNKNOWN' as RobotMode,
 };
@@ -82,9 +84,10 @@ export function RobotManagement() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const loadRobots = useCallback(async () => {
+  const loadRobots = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await apiClient.get<{ success: boolean; data: Robot[]; message?: string }>(
         'robots'
       );
@@ -98,7 +101,7 @@ export function RobotManagement() {
       setError('Failed to load robots');
       console.error(err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -122,6 +125,14 @@ export function RobotManagement() {
     }
   }, [isAdminUser, loadRobots, loadMaps]);
 
+  useEffect(() => {
+    if (!isAdminUser) return;
+    const interval = setInterval(() => {
+      loadRobots({ silent: true });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [isAdminUser, loadRobots]);
+
   const handleEdit = (robot: Robot) => {
     const next: EditableRobot = {
       id: robot.id,
@@ -134,6 +145,9 @@ export function RobotManagement() {
 
     if (robot.mappingBridgePort !== undefined) {
       next.mappingBridgePort = robot.mappingBridgePort;
+    }
+    if (robot.missionBridgePort !== undefined) {
+      next.missionBridgePort = robot.missionBridgePort;
     }
     if (robot.channels) {
       next.channels = robot.channels;
@@ -168,6 +182,7 @@ export function RobotManagement() {
         ipAddress: form.ipAddress || undefined,
         bridgePort: form.bridgePort ? Number(form.bridgePort) : undefined,
         mappingBridgePort: form.mappingBridgePort ? Number(form.mappingBridgePort) : undefined,
+        missionBridgePort: form.missionBridgePort ? Number(form.missionBridgePort) : undefined,
         mapId: form.mapId || undefined,
         status: form.status ?? 'UNKNOWN',
         channels: finalChannels,
@@ -289,7 +304,7 @@ export function RobotManagement() {
             </button>
             <button
               type="button"
-              onClick={loadRobots}
+              onClick={() => loadRobots()}
               className="px-3 py-2 bg-muted text-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
             >
               <RefreshCcw className="h-4 w-4" />
@@ -351,6 +366,7 @@ export function RobotManagement() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {robot.ipAddress ?? '—'}:{robot.bridgePort ?? 9090}
                         {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
+                        {robot.missionBridgePort ? ` / ${robot.missionBridgePort}` : ''}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {maps.find(m => m.id === robot.mapId)?.name ?? '—'}
@@ -454,6 +470,27 @@ export function RobotManagement() {
                   <p className="text-xs text-muted-foreground">
                     Optional mapping ROS bridge on the same IP (e.g. 8765). Use channel connectionId
                     ("mapping") to target this socket.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm text-muted-foreground">Mission Bridge Port</label>
+                  <input
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
+                    value={form.missionBridgePort ?? ''}
+                    onChange={e =>
+                      setForm(f => ({
+                        ...f,
+                        missionBridgePort: e.target.value ? Number(e.target.value) : undefined,
+                      }))
+                    }
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder="9487"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional mission-control bridge on the same IP (e.g. 9487). Used for mission
+                    show-up and start commands.
                   </p>
                 </div>
                 <div className="space-y-1">

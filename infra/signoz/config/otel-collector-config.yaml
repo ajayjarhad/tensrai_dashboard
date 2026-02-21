@@ -33,13 +33,16 @@ exporters:
       environment: "development"
       service: "tensrai-dashboard"
 
-  # Export to SignOz (using file for now since collector isn't forwarding)
-  file:
-    path: /tmp/otel-output.json
+  logging:
+    loglevel: info
 
-  # Export to SignOz OTLP endpoint
-  otlphttp:
-    endpoint: http://signoz-frontend:8080
+  # Export telemetry to ClickHouse for SigNoz (use SigNoz-provided exporters)
+  clickhousetraces:
+    datasource: tcp://signoz:password@clickhouse:9000/signoz
+  clickhousemetricswritev2:
+    dsn: tcp://signoz:password@clickhouse:9000/signoz
+  clickhouselogsexporter:
+    dsn: tcp://signoz:password@clickhouse:9000/signoz
 
 extensions:
   health_check:
@@ -55,12 +58,12 @@ service:
     traces:
       receivers: [otlp, jaeger]
       processors: [memory_limiter, batch]
-      exporters: [file, otlphttp]
+      exporters: [clickhousetraces]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [prometheus, file]
+      exporters: [prometheus, clickhousemetricswritev2]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [file, otlphttp]
+      exporters: [clickhouselogsexporter]

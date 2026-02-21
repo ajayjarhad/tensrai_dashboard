@@ -1,5 +1,7 @@
+import { trace } from '@opentelemetry/api';
 import { z } from 'zod';
-
+import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
+import { getMissionState } from '../services/missionStatus.js';
 import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance } from '../types/app.js';
 
@@ -24,6 +26,7 @@ const CreateRobotSchema = z.object({
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
+  missionBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -48,6 +51,7 @@ const UpdateRobotSchema = z.object({
   ipAddress: z.string().optional(),
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
+  missionBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -64,12 +68,51 @@ const UpdateRobotSchema = z.object({
 
 const robotRoutes: any = async (server: AppFastifyInstance) => {
   // List all robots
-  server.get('/robots', async (_request: any, _replyy: any) => {
-    const prisma = server.prisma as any;
-    const robots = await prisma.robot.findMany({
-      orderBy: { name: 'asc' },
-    });
-    return { success: true, data: robots };
+  server.get('/robots', async (_request: any, _reply: any) => {
+    const tracer = trace.getTracer('robot-routes');
+    const span = tracer.startSpan('robots.list');
+
+    const startTime = Date.now();
+    try {
+      const prisma = server.prisma as any;
+      const robots = await prisma.robot.findMany({
+        orderBy: { name: 'asc' },
+      });
+
+      // Record query duration
+      databaseMetrics.queryDuration.record(Date.now() - startTime, {
+        'db.operation': 'findMany',
+        'db.collection': 'robots',
+      });
+
+      databaseMetrics.operationCount.add(1, {
+        'db.operation': 'findMany',
+        'db.collection': 'robots',
+      });
+
+      span.setAttributes({
+        'robots.count': robots.length,
+        'db.query.duration_ms': Date.now() - startTime,
+      });
+      span.end();
+
+      const withMission = robots.map((robot: any) => ({
+        ...robot,
+        mission: getMissionState(robot.id),
+      }));
+
+      return { success: true, data: withMission };
+    } catch (error) {
+      databaseMetrics.queryDuration.record(Date.now() - startTime, {
+        'db.operation': 'findMany',
+        'db.collection': 'robots',
+        'db.error': 'true',
+      });
+
+      span.recordException(error as Error);
+      span.end();
+      throw error;
+    }
   });
 
   // Get single robot
@@ -84,7 +127,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       return reply.status(404).send({ success: false, error: 'Robot not found' });
     }
 
-    return { success: true, data: robot };
+    return { success: true, data: { ...robot, mission: getMissionState(robot.id) } };
   });
 
   // Create robot (Backend/Testing only)
@@ -136,14 +179,32 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
     async (request: any, reply: any) => {
       const { id } = request.params;
       const result = UpdateRobotSchema.safeParse(request.body);
+      const tracer = trace.getTracer('robot-routes');
+      const span = tracer.startSpan('robots.update', {
+        attributes: {
+          'robot.id': id,
+        },
+      });
 
       if (!result.success) {
+        span.setAttributes({
+          'robot.update.success': false,
+          'robot.update.reason': 'validation_error',
+        });
+        span.end();
         return reply.status(400).send({ success: false, error: result.error });
       }
 
       const prisma = server.prisma as any;
+      const startTime = Date.now();
 
       try {
+        // Get current robot state before update
+        const currentRobot = await prisma.robot.findUnique({
+          where: { id },
+          select: { status: true, battery: true },
+        });
+
         const { mapId, channels, ...rest } = result.data;
         const robot = await prisma.robot.update({
           where: { id },
@@ -162,13 +223,63 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
             lastSeen: new Date(),
           } as any,
         });
+
+        // Track status changes
+        if (currentRobot && currentRobot.status !== robot.status) {
+          robotFleetMetrics.statusChanges.add(1, {
+            'robot.id': id,
+            'robot.status.from': currentRobot.status,
+            'robot.status.to': robot.status,
+          });
+
+          span.setAttributes({
+            'robot.status.from': currentRobot.status,
+            'robot.status.to': robot.status,
+            'robot.status.changed': true,
+          });
+        }
+
+        // Record database metrics
+        databaseMetrics.queryDuration.record(Date.now() - startTime, {
+          'db.operation': 'update',
+          'db.collection': 'robots',
+        });
+
+        databaseMetrics.operationCount.add(1, {
+          'db.operation': 'update',
+          'db.collection': 'robots',
+        });
+
+        span.setAttributes({
+          'robot.update.success': true,
+          'robot.status': robot.status,
+          'robot.battery': robot.battery,
+          'db.query.duration_ms': Date.now() - startTime,
+        });
+        span.end();
+
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
+        databaseMetrics.queryDuration.record(Date.now() - startTime, {
+          'db.operation': 'update',
+          'db.collection': 'robots',
+          'db.error': 'true',
+        });
+
+        span.setAttributes({
+          'robot.update.success': false,
+          'robot.update.reason': error.code === 'P2025' ? 'not_found' : 'database_error',
+        });
+
         if (error.code === 'P2025') {
+          span.end();
           return reply.status(404).send({ success: false, error: 'Robot not found' });
         }
+
+        span.recordException(error);
+        span.end();
         throw error;
       }
     }

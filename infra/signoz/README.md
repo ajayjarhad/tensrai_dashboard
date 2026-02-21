@@ -13,10 +13,10 @@ This directory contains the Docker Compose setup for SigNoz observability platfo
 
 ## Quick Start
 
-1. **Start the observability stack:**
+1. **Start the observability stack (auto-creates shared network):**
    ```bash
    cd infra/signoz
-   docker compose up -d
+   ./up.sh
    ```
 
 2. **Access the SignNoz UI:**

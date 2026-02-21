@@ -1,4 +1,6 @@
+import { trace } from '@opentelemetry/api';
 import type { Prisma } from '@prisma/client';
+import { apiMetrics } from '../metrics/index.js';
 import type {
   AppFastifyInstance,
   AppFastifyReply,
@@ -51,11 +53,36 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
 
   fastify.addHook('onResponse', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
     const duration = request.startTime ? Date.now() - request.startTime : 0;
+    const routePath = (request as any).routeOptions?.config?.url ?? request.url;
+
+    // Record API metrics
+    apiMetrics.requestDuration.record(duration, {
+      'http.method': request.method,
+      'http.route': routePath,
+      'http.status_code': reply.statusCode.toString(),
+    });
+
+    apiMetrics.requestCount.add(1, {
+      'http.method': request.method,
+      'http.route': routePath,
+      'http.status_code': reply.statusCode.toString(),
+    });
+
+    // Record errors separately
+    if (reply.statusCode >= 400) {
+      apiMetrics.errorRate.add(1, {
+        'http.method': request.method,
+        'http.route': routePath,
+        'error.type': reply.statusCode >= 500 ? 'server_error' : 'client_error',
+        'http.status_code': reply.statusCode.toString(),
+      });
+    }
 
     fastify.log.info(
       {
         method: request.method,
         url: request.url,
+        routePath,
         statusCode: reply.statusCode,
         duration: `${duration}ms`,
         ip: request.ip,
@@ -68,6 +95,16 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
   fastify.addHook(
     'onError',
     async (request: AppFastifyRequest, _reply: AppFastifyReply, error: Error) => {
+      const span = trace.getActiveSpan();
+
+      if (span) {
+        span.recordException(error);
+        span.setAttributes({
+          'error.message': error.message,
+          'error.type': error.constructor.name,
+        });
+      }
+
       fastify.log.error(
         {
           error: error.message,
@@ -88,15 +125,20 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
       logging: 'enabled',
       auditLogging: 'enabled',
       tracing: 'enabled',
+      metrics: {
+        enabled: true,
+        endpoint: 'http://localhost:9464/metrics',
+        exporter: 'prometheus',
+      },
       openTelemetry: {
         service: process.env['OTEL_SERVICE_NAME'] ?? 'tensrai-dashboard',
-        endpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4317/v1/traces',
-        exporter: 'otlp-proto',
+        endpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4318',
+        exporter: 'otlp-http',
         instrumentation: 'auto',
       },
       sigNoz: {
-        dashboard: 'http://localhost:8080',
-        collector: 'http://localhost:4317',
+        dashboard: 'http://localhost:3302',
+        collector: 'http://localhost:4318',
       },
       timestamp: new Date().toISOString(),
     },

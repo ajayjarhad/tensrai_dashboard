@@ -29,6 +29,8 @@ interface MapLayersProps {
   setPoseMode?: boolean;
   onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
+  highlightTagIds?: string[];
+  dimNonMissionTags?: boolean;
 }
 
 export function MapLayers({
@@ -47,6 +49,8 @@ export function MapLayers({
   setPoseMode = false,
   onPoseConfirm,
   onPoseCancel,
+  highlightTagIds,
+  dimNonMissionTags = false,
 }: MapLayersProps) {
   const { width: mapWidth, height: mapHeight, resolution, origin } = mapData.meta;
 
@@ -202,6 +206,8 @@ export function MapLayers({
           <LocationLayer
             locations={locations}
             setPoseMode={setPoseMode}
+            {...(highlightTagIds ? { highlightTagIds: new Set(highlightTagIds) } : {})}
+            {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
             onLocationSelect={handleLocationSelect}
           />
 

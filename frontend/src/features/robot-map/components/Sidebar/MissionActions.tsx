@@ -3,7 +3,9 @@ import { Button } from '@/components/ui/button';
 
 interface MissionActionsProps {
   isOpen: boolean;
+  showMissionControls?: boolean;
   isMissionPaused?: boolean;
+  isMissionActive?: boolean;
   onPause?: (() => void) | undefined;
   onResume?: (() => void) | undefined;
   onCancel?: (() => void) | undefined;
@@ -13,7 +15,9 @@ interface MissionActionsProps {
 
 export function MissionActions({
   isOpen: _isOpen,
+  showMissionControls = true,
   isMissionPaused,
+  isMissionActive,
   onPause,
   onResume,
   onCancel,
@@ -21,6 +25,7 @@ export function MissionActions({
   onSetPose,
 }: MissionActionsProps) {
   const paused = Boolean(isMissionPaused);
+  const active = Boolean(isMissionActive);
 
   const handlePauseResume = () => {
     if (paused) {
@@ -32,26 +37,42 @@ export function MissionActions({
 
   return (
     <div className="pt-3 mt-auto border-t border-border/60 space-y-3">
-      <div className="flex gap-2">
-        <Button type="button" variant="outline" className="flex-1" onClick={handlePauseResume}>
-          {paused ? (
-            <>
-              <Play className="h-4 w-4" />
-              Resume
-            </>
-          ) : (
-            <>
-              <Pause className="h-4 w-4" />
-              Pause
-            </>
-          )}
-        </Button>
-        <Button type="button" variant="destructive" className="flex-1" onClick={() => onCancel?.()}>
-          <XCircle className="h-4 w-4" />
-          Cancel
-        </Button>
-      </div>
-      <div className="border-b border-border/60" />
+      {showMissionControls && (
+        <>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              onClick={handlePauseResume}
+              disabled={!active}
+            >
+              {paused ? (
+                <>
+                  <Play className="h-4 w-4" />
+                  Resume
+                </>
+              ) : (
+                <>
+                  <Pause className="h-4 w-4" />
+                  Pause
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="flex-1"
+              onClick={() => onCancel?.()}
+              disabled={!active}
+            >
+              <XCircle className="h-4 w-4" />
+              Cancel
+            </Button>
+          </div>
+          <div className="border-b border-border/60" />
+        </>
+      )}
       <div className="flex gap-2">
         <Button
           type="button"

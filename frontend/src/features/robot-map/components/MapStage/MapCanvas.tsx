@@ -28,6 +28,8 @@ interface MapCanvasProps {
   width: number;
   height: number;
   onWheel?: (e: Konva.KonvaEventObject<WheelEvent>) => void;
+  highlightTagIds?: string[];
+  dimNonMissionTags?: boolean;
 }
 
 export function MapCanvas({
@@ -50,6 +52,8 @@ export function MapCanvas({
   width,
   height,
   onWheel,
+  highlightTagIds,
+  dimNonMissionTags,
 }: MapCanvasProps) {
   useEffect(() => {
     if (mapImage && stageRef.current) {
@@ -83,6 +87,8 @@ export function MapCanvas({
         setPoseMode={setPoseMode}
         onPoseConfirm={onPoseConfirm ?? (_payload => {})}
         onPoseCancel={onPoseCancel ?? (() => {})}
+        {...(highlightTagIds ? { highlightTagIds } : {})}
+        {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
       />
     </Stage>
   );

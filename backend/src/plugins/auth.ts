@@ -1,10 +1,11 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
-import { URL } from 'node:url';
 import { runWithEndpointContext } from '@better-auth/core/context';
+import { trace } from '@opentelemetry/api';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
 import fp from 'fastify-plugin';
 import { auth } from '../config/auth.js';
+import { authMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const toFetchHeaders = (headers: IncomingHttpHeaders) => {
@@ -584,50 +585,39 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
   };
 
   const localDevOrigins = Array.from({ length: 10 }, (_, idx) => `http://localhost:${5001 + idx}`);
-  const allowedOrigins = [
+  const fallbackAllowedOrigins = [
     process.env['FRONTEND_URL'],
     'http://localhost:5000',
     'http://localhost:5173',
     'http://localhost:5174',
     ...localDevOrigins,
   ].filter(Boolean) as string[];
-  const allowedOriginSet = new Set(allowedOrigins.map(origin => origin.toLowerCase()));
+  const fallbackAllowedOriginSet = new Set(
+    fallbackAllowedOrigins.map(origin => origin.toLowerCase())
+  );
+  const nodeEnv = process.env['NODE_ENV'] ?? 'development';
 
-  const isAllowedOrigin = (origin?: string | null) => {
+  const isFallbackAllowedOrigin = (origin?: string | null) => {
     if (!origin) return false;
-    const normalized = origin.toLowerCase();
-    if (allowedOriginSet.has(normalized)) {
-      return true;
-    }
-
-    try {
-      const parsed = new URL(origin);
-      const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
-      if (
-        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') &&
-        port >= 5001 &&
-        port <= 5010
-      ) {
-        return true;
-      }
-    } catch {
-      return false;
-    }
-
-    return false;
+    if (nodeEnv !== 'production') return true;
+    return fallbackAllowedOriginSet.has(origin.toLowerCase());
   };
 
   const applyCorsHeaders = (request: AppFastifyRequest, reply: AppFastifyReply) => {
     const origin = request.headers.origin;
-    if (isAllowedOrigin(origin)) {
-      if (origin) {
-        reply.header('Access-Control-Allow-Origin', origin);
-        reply.raw.setHeader('Access-Control-Allow-Origin', origin);
-      }
-    } else {
-      reply.removeHeader('Access-Control-Allow-Origin');
-      reply.raw.removeHeader('Access-Control-Allow-Origin');
+    const sharedCors = (fastify as any).applyCorsHeaders;
+    if (typeof sharedCors === 'function') {
+      sharedCors(reply, origin ?? null);
+      return;
     }
+
+    if (!isFallbackAllowedOrigin(origin)) {
+      reply.removeHeader('Access-Control-Allow-Origin');
+      reply.raw?.removeHeader?.('Access-Control-Allow-Origin');
+    } else if (origin) {
+      reply.header('Access-Control-Allow-Origin', origin);
+    }
+
     const credentials = 'true';
     const allowHeaders =
       'Origin, X-Requested-With, Accept, Authorization, Content-Type, Cache-Control, Pragma';
@@ -637,12 +627,6 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     reply.header('Access-Control-Allow-Methods', allowMethods);
     reply.header('Access-Control-Expose-Headers', 'Set-Cookie');
     reply.header('Vary', 'Origin');
-
-    reply.raw.setHeader('Access-Control-Allow-Credentials', credentials);
-    reply.raw.setHeader('Access-Control-Allow-Headers', allowHeaders);
-    reply.raw.setHeader('Access-Control-Allow-Methods', allowMethods);
-    reply.raw.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
-    reply.raw.setHeader('Vary', 'Origin');
   };
 
   fastify.options('/api/auth/*', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
@@ -696,23 +680,61 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
 
   // Custom sign-in route that handles both regular and temporary passwords
   fastify.post('/api/auth/sign-in', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    const tracer = trace.getTracer('auth-plugin');
+    const span = tracer.startSpan('auth.sign-in', {
+      attributes: {
+        'auth.method': 'password',
+        'auth.flow': 'custom-signin',
+      },
+    });
+
     try {
       applyCorsHeaders(request, reply);
 
       const credentialsResult = extractCredentials(request.body);
       if (!credentialsResult.ok) {
+        span.setAttributes({
+          'auth.success': false,
+          'auth.reason': 'missing_credentials',
+        });
+        span.end();
         return reply.status(credentialsResult.error.status).send(credentialsResult.error.body);
       }
 
       const prismaResult = ensurePrisma(fastify);
       if (!prismaResult.ok) {
+        span.setAttributes({
+          'auth.success': false,
+          'auth.reason': 'database_error',
+        });
+        span.end();
         return reply.status(prismaResult.error.status).send(prismaResult.error.body);
       }
 
       const { username, password } = credentialsResult.value;
+
+      // Record login attempt
+      authMetrics.loginAttempts.add(1, {
+        'auth.username': username,
+      });
+
       const authResult = await authenticateUserWithPrisma(prismaResult.value, username, password);
 
       if (!authResult.success) {
+        // Record failed login
+        authMetrics.loginFailures.add(1, {
+          'auth.username': username,
+          'auth.reason': 'invalid_credentials',
+          'auth.method': authResult.authMethod,
+        });
+
+        span.setAttributes({
+          'auth.success': false,
+          'auth.reason': authResult.error,
+          'auth.method': authResult.authMethod,
+        });
+        span.end();
+
         return reply.status(400).send({
           success: false,
           error: authResult.error,
@@ -731,8 +753,53 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       );
 
       if (!finalResult.ok) {
+        authMetrics.loginFailures.add(1, {
+          'auth.username': username,
+          'auth.reason': 'session_creation_failed',
+        });
+
+        span.setAttributes({
+          'auth.success': false,
+          'auth.reason': 'session_creation_failed',
+        });
+        span.end();
+
         return reply.status(finalResult.error.status).send(finalResult.error.body);
       }
+
+      // Record successful login
+      authMetrics.loginSuccess.add(1, {
+        'auth.username': username,
+        'auth.method': authResult.authMethod,
+        'user.role': finalResult.value.user.role,
+      });
+
+      // Create audit log entry (guard in case observability plugin is disabled)
+      if (typeof (fastify as any).audit === 'function') {
+        await fastify.audit({
+          userId: finalResult.value.user.id,
+          role: finalResult.value.user.role,
+          action: 'LOGIN',
+          metadata: {
+            authMethod: authResult.authMethod,
+            ip: request.ip,
+            userAgent: request.headers['user-agent'],
+          },
+        });
+      } else {
+        fastify.log.warn(
+          { userId: finalResult.value.user.id, action: 'LOGIN' },
+          'Audit logger not available; skipping audit event'
+        );
+      }
+
+      span.setAttributes({
+        'auth.success': true,
+        'auth.method': authResult.authMethod,
+        'user.id': finalResult.value.user.id,
+        'user.role': finalResult.value.user.role,
+      });
+      span.end();
 
       return reply.send({
         success: true,
@@ -742,6 +809,17 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         requiresPasswordSetup: finalResult.value.requiresPasswordSetup,
       });
     } catch (error) {
+      authMetrics.loginFailures.add(1, {
+        'auth.reason': 'system_error',
+      });
+
+      span.recordException(error as Error);
+      span.setAttributes({
+        'auth.success': false,
+        'auth.reason': 'system_error',
+      });
+      span.end();
+
       fastify.log.error(error, 'Custom authentication error');
       return reply.status(500).send({
         success: false,

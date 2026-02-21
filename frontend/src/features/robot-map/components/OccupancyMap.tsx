@@ -30,10 +30,13 @@ interface OccupancyMapProps {
   setPoseMode?: boolean;
   onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
+  highlightTagIds?: string[];
+  dimNonMissionTags?: boolean;
 }
 
 export function OccupancyMap({
   mapId,
+  onMapChange,
   enablePanning = true,
   enableZooming = true,
   width = '100%',
@@ -48,6 +51,8 @@ export function OccupancyMap({
   setPoseMode,
   onPoseConfirm,
   onPoseCancel,
+  highlightTagIds,
+  dimNonMissionTags,
 }: OccupancyMapProps) {
   const mapState = useOccupancyMap({
     mapId,
@@ -60,6 +65,10 @@ export function OccupancyMap({
       onMapFeaturesChange(mapState.data?.features);
     }
   }, [mapState.data?.features, onMapFeaturesChange]);
+
+  useEffect(() => {
+    onMapChange?.(mapId);
+  }, [mapId, onMapChange]);
 
   return (
     <>
@@ -104,6 +113,8 @@ export function OccupancyMap({
           setPoseMode={setPoseMode ?? false}
           onPoseConfirm={onPoseConfirm || ((_payload: PoseConfirmPayload) => {})}
           onPoseCancel={onPoseCancel || (() => {})}
+          {...(highlightTagIds ? { highlightTagIds } : {})}
+          {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
         />
       </div>
     );

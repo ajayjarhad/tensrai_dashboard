@@ -38,10 +38,16 @@ const normalizeMsgType = (msgType: string) => {
   return map[msgType] ?? msgType;
 };
 
+const parseRateLimit = (envKey: string, fallback: number) => {
+  const raw = Number(process.env[envKey] ?? fallback);
+  if (!Number.isFinite(raw) || raw <= 0) return fallback;
+  return raw;
+};
+
 const rateLimitOverrides: Record<string, number> = {
-  odom: 12,
-  laser: 5,
-  amcl: 6,
+  odom: parseRateLimit('ROS_ODOM_RATE_HZ', 8),
+  laser: parseRateLimit('ROS_LASER_RATE_HZ', 3),
+  amcl: parseRateLimit('ROS_AMCL_RATE_HZ', 4),
 };
 
 const normalizeChannels = (channels: any[] | undefined) => {

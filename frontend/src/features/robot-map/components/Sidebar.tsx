@@ -1,8 +1,6 @@
 import { ChevronLeft } from 'lucide-react';
-import { useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Robot } from '../../../types/robot';
-import { MissionDialog, type MissionWithContext } from './MissionDialog';
 import { AdminMenu } from './Sidebar/AdminMenu';
 import { MissionActions } from './Sidebar/MissionActions';
 import { RobotDetails } from './Sidebar/RobotDetails';
@@ -16,11 +14,7 @@ interface SidebarProps {
   isOpen: boolean;
   onToggle: () => void;
   className?: string;
-  missions?: MissionWithContext[];
-  isMissionPaused?: boolean;
-  onPause?: () => void;
-  onResume?: () => void;
-  onCancel?: () => void;
+  mapNameById?: Record<string, string>;
   onManualControl?: () => void;
   onSetPose?: () => void;
 }
@@ -32,27 +26,12 @@ export function Sidebar({
   isOpen,
   onToggle,
   className,
-  missions,
-  isMissionPaused,
-  onPause,
-  onResume,
-  onCancel,
+  mapNameById,
   onManualControl,
   onSetPose,
 }: SidebarProps) {
-  const [missionDialogOpen, setMissionDialogOpen] = useState(false);
   const selectedRobot = robots.find(r => r.id === selectedRobotId);
-  const mapName = selectedRobot?.mapId
-    ? missions?.find(m => m.mapId === selectedRobot.mapId)?.mapName
-    : undefined;
-
-  const handleStartMission = (missionId: string) => {
-    // TODO: Implement mission start functionality
-    if (missionId) {
-      console.log(missionId);
-    }
-    setMissionDialogOpen(false); // Close dialog after starting mission
-  };
+  const mapName = selectedRobot?.mapId ? mapNameById?.[selectedRobot.mapId] : undefined;
 
   return (
     <div
@@ -91,10 +70,7 @@ export function Sidebar({
 
             <MissionActions
               isOpen={isOpen}
-              isMissionPaused={isMissionPaused ?? false}
-              onPause={onPause}
-              onResume={onResume}
-              onCancel={onCancel}
+              showMissionControls={false}
               onManualControl={onManualControl}
               onSetPose={onSetPose}
             />
@@ -109,19 +85,7 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <AdminMenu
-        isOpen={isOpen}
-        onToggle={onToggle}
-        missions={missions ?? []}
-        onOpenMissionDialog={() => setMissionDialogOpen(true)}
-      />
-
-      <MissionDialog
-        open={missionDialogOpen}
-        onOpenChange={setMissionDialogOpen}
-        missions={missions ?? []}
-        onStartMission={handleStartMission}
-      />
+      <AdminMenu isOpen={isOpen} onToggle={onToggle} />
     </div>
   );
 }

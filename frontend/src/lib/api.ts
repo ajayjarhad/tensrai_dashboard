@@ -2,8 +2,71 @@ import { getEnv } from '@tensrai/shared';
 import type { Options } from 'ky';
 import ky, { HTTPError } from 'ky';
 
+const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1']);
+
+const browserProtocol = () =>
+  typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+
+const browserHost = () => (typeof window !== 'undefined' ? window.location.hostname : 'localhost');
+
+const ensureApiPath = (pathname: string) => {
+  const trimmed = pathname.replace(/\/+$/, '');
+  if (!trimmed || trimmed === '/') return '/api';
+  if (trimmed.toLowerCase().endsWith('/api')) return trimmed;
+  return `${trimmed}/api`;
+};
+
+const withProtocol = (raw: string, fallbackProtocol: 'http' | 'https') => {
+  if (
+    raw.startsWith('http://') ||
+    raw.startsWith('https://') ||
+    raw.startsWith('ws://') ||
+    raw.startsWith('wss://')
+  ) {
+    return raw;
+  }
+  return `${fallbackProtocol}://${raw}`;
+};
+
+export const resolveApiHttpBase = () => {
+  const fallbackProtocol = browserProtocol();
+  const fallbackHost = browserHost();
+  const fallbackOrigin = `${fallbackProtocol}://${fallbackHost}:5001`;
+  const raw = getEnv('VITE_API_URL', fallbackOrigin).trim();
+
+  try {
+    const parsed = new URL(withProtocol(raw, fallbackProtocol));
+    if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
+    if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      parsed.protocol = `${fallbackProtocol}:`;
+    }
+
+    // Default local dev backend port if omitted.
+    if (!parsed.port && LOCALHOST_HOSTS.has(parsed.hostname)) {
+      parsed.port = '5001';
+    }
+
+    parsed.pathname = ensureApiPath(parsed.pathname);
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return `${fallbackOrigin}/api`;
+  }
+};
+
+export const resolveWsBaseUrl = () => {
+  const parsed = new URL(resolveApiHttpBase());
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  parsed.pathname = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/$/, '');
+};
+
 export const api = ky.create({
-  prefixUrl: `${getEnv('VITE_API_URL', 'http://localhost:5001')}/api`,
+  prefixUrl: resolveApiHttpBase(),
   credentials: 'include',
   timeout: 10000,
   headers: {
@@ -26,13 +89,6 @@ export const api = ky.create({
           } catch {}
         }
         return error;
-      },
-    ],
-    afterResponse: [
-      async (request, _, response) => {
-        if (import.meta.env.DEV) {
-          console.log(`API Response: ${request.method} ${request.url} - ${response.status}`);
-        }
       },
     ],
   },

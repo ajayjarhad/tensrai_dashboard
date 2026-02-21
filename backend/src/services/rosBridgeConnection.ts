@@ -44,6 +44,11 @@ export type RosBridgeConnectionOptions = {
   maxReconnectDelayMs?: number;
 };
 
+type SubscribeOptions = {
+  throttleRateMs?: number;
+  queueLength?: number;
+};
+
 export class RosBridgeConnection extends EventEmitter {
   private ros: ROSLIB.Ros | null = null;
   private closed = false;
@@ -106,7 +111,12 @@ export class RosBridgeConnection extends EventEmitter {
     this.publishers.clear();
   }
 
-  subscribe<T>(topicName: string, messageType: string, handler: (message: T) => void): () => void {
+  subscribe<T>(
+    topicName: string,
+    messageType: string,
+    handler: (message: T) => void,
+    options?: SubscribeOptions
+  ): () => void {
     if (!this.ros) {
       throw new Error(`ROS connection ${this.options.id} not ready`);
     }
@@ -115,6 +125,8 @@ export class RosBridgeConnection extends EventEmitter {
       ros: this.ros,
       name: topicName,
       messageType,
+      throttle_rate: options?.throttleRateMs,
+      queue_length: options?.queueLength,
     });
 
     topic.subscribe(handler);

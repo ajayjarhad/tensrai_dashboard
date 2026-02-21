@@ -1,4 +1,4 @@
-import { getEnv } from '@tensrai/shared';
+import { resolveWsBaseUrl } from '@/lib/api';
 
 type WsEvent =
   | { type: 'event'; channel: string; data: unknown }
@@ -10,24 +10,17 @@ type StatusHandler = (status: ConnectionStatus) => void;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-const getWsBaseUrl = () => {
-  const apiBase = getEnv('VITE_API_URL', 'http://localhost:5001');
-  if (apiBase.startsWith('ws')) return apiBase;
-  if (apiBase.startsWith('http')) {
-    return apiBase.replace(/^http/, 'ws');
-  }
-  return `ws://${apiBase}`;
-};
-
 export const createRobotWsClient = (robotId: string) => {
   let socket: WebSocket | null = null;
   let status: ConnectionStatus = 'disconnected';
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  let shouldReconnect = true;
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
 
-  const wsUrl = `${getWsBaseUrl()}/ws/robots/${robotId}`;
+  const wsUrl = `${resolveWsBaseUrl()}/ws/robots/${robotId}`;
 
   const notifyStatus = (next: ConnectionStatus) => {
     status = next;
@@ -36,7 +29,25 @@ export const createRobotWsClient = (robotId: string) => {
     });
   };
 
+  const clearConnectTimer = () => {
+    if (!connectTimer) return;
+    clearTimeout(connectTimer);
+    connectTimer = null;
+  };
+
+  const scheduleConnectTimeout = () => {
+    clearConnectTimer();
+    connectTimer = setTimeout(() => {
+      if (!socket || socket.readyState !== WebSocket.CONNECTING) return;
+      notifyStatus('error');
+      try {
+        socket.close();
+      } catch {}
+    }, 8000);
+  };
+
   const connect = () => {
+    shouldReconnect = true;
     if (
       socket &&
       (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
@@ -46,8 +57,10 @@ export const createRobotWsClient = (robotId: string) => {
 
     notifyStatus('connecting');
     socket = new WebSocket(wsUrl);
+    scheduleConnectTimeout();
 
     socket.onopen = () => {
+      clearConnectTimer();
       reconnectAttempts = 0;
       notifyStatus('connected');
     };
@@ -71,22 +84,31 @@ export const createRobotWsClient = (robotId: string) => {
     };
 
     socket.onclose = () => {
+      clearConnectTimer();
       notifyStatus('disconnected');
-      scheduleReconnect();
+      if (shouldReconnect) scheduleReconnect();
     };
   };
 
   const disconnect = () => {
+    shouldReconnect = false;
+    clearConnectTimer();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    socket?.close();
+    if (socket) {
+      socket.onclose = null;
+      try {
+        socket.close();
+      } catch {}
+    }
     socket = null;
+    notifyStatus('disconnected');
   };
 
   const scheduleReconnect = () => {
-    if (reconnectTimer) return;
+    if (!shouldReconnect || reconnectTimer) return;
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
     reconnectAttempts += 1;
     reconnectTimer = setTimeout(() => {

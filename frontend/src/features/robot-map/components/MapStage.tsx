@@ -1,6 +1,6 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { createMapTransforms } from '@/lib/map/mapTransforms';
 import { laserToPixelPoints, pathToPixelPoints } from '@/lib/map/telemetryTransforms';
 import type { Robot } from '@/types/robot';
@@ -39,6 +39,8 @@ interface MapStageProps {
   setPoseMode?: boolean;
   onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
+  highlightTagIds?: string[];
+  dimNonMissionTags?: boolean;
 }
 
 export function MapStage({
@@ -55,6 +57,8 @@ export function MapStage({
   setPoseMode,
   onPoseConfirm,
   onPoseCancel,
+  highlightTagIds,
+  dimNonMissionTags,
 }: MapStageProps) {
   const { ref: containerRef, size: containerSize } = useElementSize<HTMLDivElement>();
   const [stageScale, setStageScale] = useState(1);
@@ -62,7 +66,7 @@ export function MapStage({
   const mapImage = useMapImage(mapData, 'default');
   const { locations } = useMapLocations({ mapData });
 
-  const { data: robotsFetched = [] } = useRobots();
+  const { data: robotsFetched = [] } = useRobots(!robotsProp);
   const robots = robotsProp ?? robotsFetched;
 
   // Stable refs for stage and map group so coordinate transforms and hit testing are reliable
@@ -95,33 +99,43 @@ export function MapStage({
     onZoom: scale => setStageScale(scale),
   });
 
-  const transforms = mapData
-    ? createMapTransforms({
-        width: mapData.meta.width,
-        height: mapData.meta.height,
-        resolution: mapData.meta.resolution,
-        origin: mapData.meta.origin,
-      })
-    : null;
+  const transforms = useMemo(
+    () =>
+      mapData
+        ? createMapTransforms({
+            width: mapData.meta.width,
+            height: mapData.meta.height,
+            resolution: mapData.meta.resolution,
+            origin: mapData.meta.origin,
+          })
+        : null,
+    [mapData]
+  );
 
-  const activeRobotPose: Pose2D | undefined =
-    (telemetry?.pose as Pose2D | undefined) ??
-    (() => {
-      if (!telemetryRobotId || !robots.length) return undefined;
-      const r = robots.find(robot => robot.id === telemetryRobotId);
-      if (r && r.x !== undefined && r.y !== undefined && r.theta !== undefined) {
-        return { x: r.x, y: r.y, theta: r.theta };
-      }
-      return undefined;
-    })();
+  const activeRobotPose: Pose2D | undefined = useMemo(() => {
+    if (telemetry?.pose) {
+      return telemetry.pose as Pose2D;
+    }
+    if (!telemetryRobotId || !robots.length) return undefined;
+    const robot = robots.find(item => item.id === telemetryRobotId);
+    if (robot && robot.x !== undefined && robot.y !== undefined && robot.theta !== undefined) {
+      return { x: robot.x, y: robot.y, theta: robot.theta };
+    }
+    return undefined;
+  }, [telemetry?.pose, telemetryRobotId, robots]);
 
-  const laserPoints =
-    transforms && telemetry?.laser && activeRobotPose
-      ? laserToPixelPoints(telemetry.laser, activeRobotPose, transforms, 2)
-      : [];
+  const laserPoints = useMemo(
+    () =>
+      transforms && telemetry?.laser && activeRobotPose
+        ? laserToPixelPoints(telemetry.laser, activeRobotPose, transforms, 2)
+        : [],
+    [transforms, telemetry?.laser, activeRobotPose]
+  );
 
-  const pathPoints =
-    transforms && telemetry?.path ? pathToPixelPoints(telemetry.path, transforms) : [];
+  const pathPoints = useMemo(
+    () => (transforms && telemetry?.path ? pathToPixelPoints(telemetry.path, transforms) : []),
+    [transforms, telemetry?.path]
+  );
 
   if (!mapData) {
     return (
@@ -156,6 +170,8 @@ export function MapStage({
           rotation={rotation}
           {...(handleWheel ? { onWheel: handleWheel } : {})}
           enablePanning={enablePanning}
+          {...(highlightTagIds ? { highlightTagIds } : {})}
+          {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
         />
 
         <MapControls

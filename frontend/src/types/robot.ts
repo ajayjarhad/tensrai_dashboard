@@ -17,6 +17,7 @@ export interface Robot {
   mapId?: string;
   bridgePort?: number;
   mappingBridgePort?: number;
+  missionBridgePort?: number;
   channels?: Array<{
     name: string;
     topic: string;
@@ -32,4 +33,25 @@ export interface Robot {
   lastSeen: string; // ISO Date string
   createdAt: string;
   updatedAt: string;
+  runtimeMode?: 'teleop' | 'autonomous';
+  runtimeBatteryPercentage?: number | null;
+  runtimeChargingStatus?: string | null;
+  runtimeLastSeenTs?: number;
+  waypointIndex?: number;
+  totalWaypoints?: number;
+  mission?: {
+    status?: string;
+    currentMissionId?: string;
+    message?: string;
+    lastEvent?: string;
+    updatedAt?: string;
+    lastEventStatus?: string;
+    lastRequestType?: string;
+    mode?: 'teleop' | 'autonomous';
+    batteryPercentage?: number | null;
+    chargingStatus?: string | null;
+    lastSeenTs?: number;
+    waypointIndex?: number;
+    totalWaypoints?: number;
+  };
 }
