@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Group, Rect, RegularPolygon } from 'react-konva';
 import { RobotMode } from '@/types/robot';
 
@@ -33,6 +33,26 @@ export const RobotMarker = React.memo(
     const widthPixels = widthMeters / resolution;
     const lengthPixels = lengthMeters / resolution;
     const indicatorColor = markerColorForStatus(status);
+    const isEmergency = status === RobotMode.HW_EMERGENCY || status === RobotMode.SW_EMERGENCY;
+    const [pulsePhase, setPulsePhase] = useState(0);
+
+    useEffect(() => {
+      if (!isEmergency) {
+        setPulsePhase(0);
+        return;
+      }
+
+      let frame = 0;
+      const timer = window.setInterval(() => {
+        frame += 1;
+        setPulsePhase(frame);
+      }, 90);
+
+      return () => window.clearInterval(timer);
+    }, [isEmergency]);
+
+    const pulseOpacity = isEmergency ? 0.6 + (Math.sin(pulsePhase * 0.45) + 1) * 0.2 : 1;
+    const pulseScale = isEmergency ? 1 + (Math.sin(pulsePhase * 0.45) + 1) * 0.06 : 1;
 
     return (
       <Group
@@ -47,13 +67,13 @@ export const RobotMarker = React.memo(
         <Rect
           width={widthPixels}
           height={lengthPixels}
-          stroke="black"
+          stroke={isEmergency ? indicatorColor : 'black'}
           strokeWidth={widthPixels * 0.1}
           cornerRadius={widthPixels * 0.2}
           fill="#828282"
-          shadowColor="black"
-          shadowBlur={5}
-          shadowOpacity={0.3}
+          shadowColor={isEmergency ? indicatorColor : 'black'}
+          shadowBlur={isEmergency ? 10 : 5}
+          shadowOpacity={isEmergency ? 0.45 : 0.3}
           shadowOffset={{ x: 2, y: 2 }}
         />
 
@@ -63,7 +83,13 @@ export const RobotMarker = React.memo(
           sides={3}
           radius={widthPixels * 0.25}
           fill={indicatorColor}
+          opacity={pulseOpacity}
           rotation={0}
+          scaleX={pulseScale}
+          scaleY={pulseScale}
+          shadowColor={indicatorColor}
+          shadowBlur={isEmergency ? 16 : 0}
+          shadowOpacity={isEmergency ? 0.7 : 0}
         />
       </Group>
     );

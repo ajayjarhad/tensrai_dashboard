@@ -70,7 +70,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   // Track active WebSocket connections
   let _activeConnections = 0;
 
-  fastify.get('/ws/robots/:robotId', { websocket: true }, (connection, request) => {
+  const robotBridgeHandler = (connection, request) => {
     const { robotId } = request.params as { robotId: string };
     const tracer = trace.getTracer('ros-gateway');
     const span = tracer.startSpan('websocket.robot.connection', {
@@ -208,7 +208,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
       });
       span.recordException(error);
     });
-  });
+  };
+
+  fastify.get('/ws/robots/:robotId', { websocket: true }, robotBridgeHandler);
+  fastify.get('/ws/robots/:robotId/telemetry/:label', { websocket: true }, robotBridgeHandler);
 
   fastify.get('/health/ros', async () => {
     return {
@@ -216,7 +219,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     };
   });
 
-  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, async (connection, request) => {
+  const unifiedMappingHandler = async (connection, request) => {
     const { robotId } = request.params as { robotId: string };
     const robot = await (fastify.prisma as any).robot.findUnique({ where: { id: robotId } });
 
@@ -312,7 +315,15 @@ const rosGateway = async (fastify: FastifyInstance) => {
 
       if (parsed.event === 'ROBOT_STATUS_UPDATE') {
         const syncResult = await syncRobotStatusUpdate(
-          { prisma: fastify.prisma as any, log: fastify.log },
+          {
+            prisma: fastify.prisma as any,
+            log: fastify.log,
+            rememberNonEmergencyStatus: (
+              fastify as any
+            ).emergencyRegistry?.rememberNonEmergencyStatus?.bind(
+              (fastify as any).emergencyRegistry
+            ),
+          },
           robotId,
           parsed.payload
         );
@@ -516,7 +527,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
       fastify.log.error({ robotId, err }, 'Dashboard WebSocket error');
       closeAll();
     });
-  });
+  };
+
+  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping/:label', { websocket: true }, unifiedMappingHandler);
 
   fastify.addHook('onClose', async () => {
     registry.stop();

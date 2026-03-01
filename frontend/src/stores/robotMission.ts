@@ -38,6 +38,8 @@ export type MissionStatus = {
   lastSeenTs?: number | undefined;
   waypointIndex?: number | undefined;
   totalWaypoints?: number | undefined;
+  runtimeUpdatedAt?: number | undefined;
+  modeUpdatedAt?: number | undefined;
 };
 
 export type MissionCommandDispatchResult = {
@@ -233,9 +235,14 @@ const updateFromModeChangeAck = (
   payload: ModeChangeAckPayload | undefined,
   base: MissionStatus
 ): MissionStatus => {
+  const modeTimestamp =
+    parseTimestampMs(payload?.timestamp) ??
+    parseTimestampMs(payload?.time) ??
+    current.modeUpdatedAt;
   return {
     ...base,
     mode: isRobotRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode,
+    modeUpdatedAt: modeTimestamp,
     message: payload?.message ?? payload?.error ?? current.message,
     lastEventStatus: payload?.status ?? current.lastEventStatus,
   };
@@ -244,8 +251,12 @@ const updateFromModeChangeAck = (
 const updateFromRobotStatusUpdate = (
   current: MissionStatus,
   payload: RobotStatusUpdatePayload | undefined,
-  base: MissionStatus
+  eventAt: number
 ): MissionStatus => {
+  if (current.runtimeUpdatedAt !== undefined && eventAt < current.runtimeUpdatedAt) {
+    return current;
+  }
+
   const runtimeStatus = fromRuntimeMissionStatus(payload?.mission?.status);
   const missionId = normalizeMissionId(payload?.mission?.currentMissionId);
   const hasMissionId =
@@ -257,14 +268,15 @@ const updateFromRobotStatusUpdate = (
   const clearMissionId = runtimeStatus === 'idle' && !hasMissionId;
   const missionChanged = hasMissionId && missionId !== current.currentMissionId;
   const clearWaypoint = missionChanged || !shouldKeepWaypointProgress(nextStatus);
+  const nextMode = isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode;
 
   return {
-    ...base,
+    ...current,
     status: nextStatus,
     currentMissionId: clearMissionId ? undefined : nextMissionId,
     waypointIndex: clearWaypoint ? undefined : current.waypointIndex,
     totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
-    mode: isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode,
+    mode: nextMode,
     batteryPercentage:
       typeof payload?.batteryPercentage === 'number' && Number.isFinite(payload.batteryPercentage)
         ? payload.batteryPercentage
@@ -277,12 +289,18 @@ const updateFromRobotStatusUpdate = (
         : payload?.chargingStatus === null
           ? null
           : current.chargingStatus,
-    lastSeenTs: resolveEventTimestamp('ROBOT_STATUS_UPDATE', payload),
+    lastSeenTs: eventAt,
+    runtimeUpdatedAt: eventAt,
+    modeUpdatedAt: isRobotRuntimeMode(payload?.mode) ? eventAt : current.modeUpdatedAt,
+    updatedAt: Math.max(current.updatedAt ?? 0, eventAt),
   };
 };
 
 const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): MissionStatus => {
   const eventAt = resolveEventTimestamp(event.event, event.payload);
+  if (event.event === 'ROBOT_STATUS_UPDATE') {
+    return updateFromRobotStatusUpdate(current, event.payload as RobotStatusUpdatePayload, eventAt);
+  }
   if (current.lastEventAt !== undefined && eventAt < current.lastEventAt) {
     return current;
   }
@@ -310,10 +328,6 @@ const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): Miss
   if (event.event === 'MODE_CHANGE_ACK') {
     return updateFromModeChangeAck(current, event.payload as ModeChangeAckPayload, base);
   }
-  if (event.event === 'ROBOT_STATUS_UPDATE') {
-    return updateFromRobotStatusUpdate(current, event.payload as RobotStatusUpdatePayload, base);
-  }
-
   return base;
 };
 
@@ -426,6 +440,11 @@ export const useRobotMissionStore = create<MissionState>(set => ({
           totalWaypoints: keepWaypoint
             ? (mission.totalWaypoints ?? existing?.totalWaypoints)
             : undefined,
+          runtimeUpdatedAt: mission.lastSeenTs ?? existing?.runtimeUpdatedAt,
+          modeUpdatedAt:
+            mission.lastSeenTs !== undefined && mission.mode !== undefined
+              ? mission.lastSeenTs
+              : existing?.modeUpdatedAt,
         };
 
         const hasChanged =
@@ -442,7 +461,9 @@ export const useRobotMissionStore = create<MissionState>(set => ({
           existing.chargingStatus !== nextStatus.chargingStatus ||
           existing.lastSeenTs !== nextStatus.lastSeenTs ||
           existing.waypointIndex !== nextStatus.waypointIndex ||
-          existing.totalWaypoints !== nextStatus.totalWaypoints;
+          existing.totalWaypoints !== nextStatus.totalWaypoints ||
+          existing.runtimeUpdatedAt !== nextStatus.runtimeUpdatedAt ||
+          existing.modeUpdatedAt !== nextStatus.modeUpdatedAt;
 
         if (!hasChanged) continue;
         next[robot.id] = nextStatus;

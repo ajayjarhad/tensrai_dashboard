@@ -88,27 +88,29 @@ enum Role {
 }
 
 model Robot {
-  id          String      @id @default(auto()) @map("_id") @db.ObjectId
-  name        String      @unique
-  status      RobotMode   @default(UNKNOWN)
-  battery     Float?      // Battery percentage (0-100)
-  bridgePort  Int?
-  mappingBridgePort Int?
-  missionBridgePort Int?
-  channels    Json?
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                String    @unique
+  status              RobotMode @default(UNKNOWN)
+  statusBeforeEmergency RobotMode?
+  battery             Float?    // Battery percentage (0-100)
+  bridgePort          Int?
+  mappingBridgePort   Int?
+  missionBridgePort   Int?
+  emergencyBridgePort Int?
+  channels            Json?
   
   // Location info
-  mapId       String?     @db.ObjectId // ID of the map the robot is on
-  map         Map?        @relation(fields: [mapId], references: [id])
-  x           Float?      // X coordinate
-  y           Float?      // Y coordinate
-  theta       Float?      // Orientation in radians
+  mapId               String?   @db.ObjectId // ID of the map the robot is on
+  map                 Map?      @relation(fields: [mapId], references: [id])
+  x                   Float?    // X coordinate
+  y                   Float?    // Y coordinate
+  theta               Float?    // Orientation in radians
   
-  ipAddress   String?     // For direct communication if needed
-  lastSeen    DateTime    @default(now())
+  ipAddress           String?   // For direct communication if needed
+  lastSeen            DateTime  @default(now())
   
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 model Map {

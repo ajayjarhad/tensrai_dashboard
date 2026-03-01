@@ -10,6 +10,7 @@ import mapRoutes from './routes/maps.js';
 import robotRoutes from './routes/robots.js';
 import rosGateway from './routes/rosGateway.js';
 import userRoutes from './routes/users.js';
+import { EmergencyRegistry } from './services/emergencyRegistry.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from './types/app.js';
 
 type FastifyFactory = (options?: Record<string, unknown>) => AppFastifyInstance;
@@ -32,6 +33,14 @@ const server = createFastify({
 
 const registerPlugins = async () => {
   await server.register(databasePlugin);
+  const emergencyRegistry = new EmergencyRegistry(server.prisma, server.log);
+  server.decorate('emergencyRegistry', emergencyRegistry);
+  await emergencyRegistry.reloadFromDb().catch(error => {
+    server.log.error({ error }, 'Failed to load emergency registry from DB');
+  });
+  server.addHook('onClose', async () => {
+    emergencyRegistry.stop();
+  });
   await server.register(observabilityPlugin);
   await server.register(securityPlugin);
   await server.register(authPlugin);

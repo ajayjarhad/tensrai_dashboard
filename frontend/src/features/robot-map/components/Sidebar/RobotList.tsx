@@ -1,3 +1,4 @@
+import { getRobotDisplayMode, getRobotDisplayStatusLabel } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
 import type { Robot } from '@/types/robot';
 
@@ -9,10 +10,7 @@ interface RobotListProps {
 }
 
 const statusToneClass = (robot: Robot) => {
-  if (robot.runtimeMode === 'teleop') return 'bg-amber-500';
-  if (robot.runtimeMode === 'autonomous') return 'bg-status-active';
-
-  const value = String(robot.status ?? 'UNKNOWN').toUpperCase();
+  const value = String(getRobotDisplayMode(robot) ?? 'UNKNOWN').toUpperCase();
   if (value.includes('EMERGENCY')) return 'bg-status-error';
   if (value === 'MISSION') return 'bg-status-active';
   if (value === 'TELEOP') return 'bg-amber-500';
@@ -67,9 +65,7 @@ export function RobotList({ robots, selectedRobotId, onSelectRobot, isOpen }: Ro
             <span className={cn('w-2 h-2 rounded-full mt-2', statusToneClass(robot))} />
           </div>
           <div className="flex justify-between items-center text-xs text-muted-foreground gap-2">
-            <span className="truncate">
-              {robot.runtimeMode ? robot.runtimeMode.toUpperCase() : robot.status}
-            </span>
+            <span className="truncate">{getRobotDisplayStatusLabel(robot)}</span>
             <span>{robot.battery !== undefined ? `${Math.round(robot.battery)}%` : ''}</span>
           </div>
         </button>

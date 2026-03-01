@@ -1,46 +1,45 @@
-import { parseRobotMissionEvent, type RobotMissionEvent } from '@tensrai/shared';
-import { resolveWsBaseUrl } from '@/lib/api';
+import { parseRobotEmergencyEvent, type RobotEmergencyBridgeEvent } from '@tensrai/shared';
 
-type EventHandler = (event: RobotMissionEvent) => void;
+type EventHandler = (event: RobotEmergencyBridgeEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
-
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
-export type SendEventResult = {
-  accepted: boolean;
-  queued: boolean;
-  reason?: string;
+type EmergencyWsClientOptions = {
+  robotId: string;
+  robotName?: string | undefined;
 };
 
-const MAX_OUTBOUND_QUEUE = 100;
-const MISSION_EVENTS = new Set([
-  'MISSION_CONTROL_ACK',
-  'MISSION_START_ACK',
-  'MISSION_COMPLETED',
-  'WAYPOINT_ACK',
-  'MODE_CHANGE_ACK',
-  'ROBOT_STATUS_UPDATE',
-]);
+export type ConnectionStatus =
+  | 'unconfigured'
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'error';
 
-const extractEventName = (message: string): string | null => {
-  const match = message.match(/"event"\s*:\s*"([A-Z_]+)"/);
-  if (!match || match.length < 2) return null;
-  return match[1];
+const resolveEmergencyWsUrl = (
+  ipAddress: string,
+  port: number,
+  options: EmergencyWsClientOptions
+) => {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const labelSource = options.robotName?.trim() || options.robotId;
+  const label = encodeURIComponent(`emergency-${labelSource}`);
+  return `${protocol}://${ipAddress}:${port}/dashboard/${label}`;
 };
 
-export const createRobotMappingWsClient = (robotId: string) => {
+export const createRobotEmergencyWsClient = (
+  ipAddress: string,
+  port: number,
+  options: EmergencyWsClientOptions
+) => {
   let socket: WebSocket | null = null;
   let status: ConnectionStatus = 'disconnected';
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let shouldReconnect = true;
-  const outboundQueue: string[] = [];
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
 
-  const wsUrl = `${resolveWsBaseUrl()}/ws/robots/${robotId}/mapping/${encodeURIComponent(
-    `mapping-${robotId}`
-  )}`;
+  const wsUrl = resolveEmergencyWsUrl(ipAddress, port, options);
 
   const notifyStatus = (next: ConnectionStatus) => {
     status = next;
@@ -63,41 +62,17 @@ export const createRobotMappingWsClient = (robotId: string) => {
       try {
         socket.close();
       } catch {}
-    }, 8000);
+    }, 8_000);
   };
 
   const scheduleReconnect = () => {
     if (!shouldReconnect || reconnectTimer) return;
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
+    const delay = Math.min(1_000 * 2 ** reconnectAttempts, 10_000);
     reconnectAttempts += 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
     }, delay);
-  };
-
-  const enqueueOutbound = (message: string): SendEventResult => {
-    if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
-      // Drop oldest command to keep memory bounded during prolonged disconnects.
-      outboundQueue.shift();
-    }
-    outboundQueue.push(message);
-    return { accepted: true, queued: true };
-  };
-
-  const flushOutbound = () => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    while (outboundQueue.length > 0) {
-      const next = outboundQueue.shift();
-      if (!next) continue;
-      try {
-        socket.send(next);
-      } catch {
-        outboundQueue.unshift(next);
-        notifyStatus('error');
-        break;
-      }
-    }
   };
 
   const connect = () => {
@@ -117,11 +92,9 @@ export const createRobotMappingWsClient = (robotId: string) => {
       clearConnectTimer();
       reconnectAttempts = 0;
       notifyStatus('connected');
-      flushOutbound();
     };
 
     socket.onmessage = (event: MessageEvent) => {
-      if (status !== 'connected') return;
       const rawText =
         typeof event.data === 'string'
           ? event.data
@@ -129,18 +102,14 @@ export const createRobotMappingWsClient = (robotId: string) => {
             ? ''
             : String(event.data ?? '');
 
-      const eventName = extractEventName(rawText);
-      if (!eventName || !MISSION_EVENTS.has(eventName)) return;
-
       try {
-        const raw = JSON.parse(rawText);
-        const parsed = parseRobotMissionEvent(raw);
+        const parsed = parseRobotEmergencyEvent(JSON.parse(rawText));
         if (!parsed) return;
         eventHandlers.forEach(handler => {
           handler(parsed);
         });
       } catch {
-        // Ignore malformed frames from upstream bridges.
+        // Ignore malformed frames from upstream emergency bridge.
       }
     };
 
@@ -158,7 +127,6 @@ export const createRobotMappingWsClient = (robotId: string) => {
   const disconnect = () => {
     shouldReconnect = false;
     clearConnectTimer();
-    outboundQueue.length = 0;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -173,33 +141,19 @@ export const createRobotMappingWsClient = (robotId: string) => {
     notifyStatus('disconnected');
   };
 
-  const sendEvent = (event: string, payload: unknown = {}): SendEventResult => {
-    const message = JSON.stringify({ event, payload });
-
-    if (!shouldReconnect) {
-      return { accepted: false, queued: false, reason: 'client_disconnected' };
+  const sendSoftwareEmergency = (desiredStatus: boolean) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(
+        JSON.stringify({
+          event: 'SOFTWARE_EMERGENCY',
+          payload: { status: desiredStatus },
+        })
+      );
+      return true;
+    } catch {
+      return false;
     }
-
-    if (!socket) {
-      connect();
-      return enqueueOutbound(message);
-    }
-
-    if (socket.readyState === WebSocket.OPEN) {
-      try {
-        socket.send(message);
-        return { accepted: true, queued: false };
-      } catch {
-        return enqueueOutbound(message);
-      }
-    }
-
-    if (socket.readyState === WebSocket.CONNECTING) {
-      return enqueueOutbound(message);
-    }
-
-    connect();
-    return enqueueOutbound(message);
   };
 
   const addEventListener = (handler: EventHandler) => {
@@ -216,9 +170,11 @@ export const createRobotMappingWsClient = (robotId: string) => {
   return {
     connect,
     disconnect,
-    sendEvent,
+    sendSoftwareEmergency,
     addEventListener,
     addStatusListener,
     getStatus: () => status,
+    isOpen: () => socket?.readyState === WebSocket.OPEN,
+    getUrl: () => wsUrl,
   };
 };

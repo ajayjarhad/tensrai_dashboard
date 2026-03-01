@@ -27,6 +27,7 @@ const CreateRobotSchema = z.object({
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
   missionBridgePort: z.number().int().min(1).max(65535).optional(),
+  emergencyBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -52,6 +53,7 @@ const UpdateRobotSchema = z.object({
   bridgePort: z.number().int().min(1).max(65535).optional(),
   mappingBridgePort: z.number().int().min(1).max(65535).optional(),
   missionBridgePort: z.number().int().min(1).max(65535).optional(),
+  emergencyBridgePort: z.number().int().min(1).max(65535).optional(),
   channels: z
     .array(
       z.object({
@@ -159,6 +161,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
           } as any,
         });
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
+        (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
         // Try to fetch and store map in the background (fire and forget)
         fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
@@ -259,6 +262,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         span.end();
 
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
+        (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
         fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
@@ -294,6 +298,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         where: { id },
       });
       (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
+      (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
       return { success: true, message: 'Robot deleted successfully' };
     } catch (error: any) {
       if (error.code === 'P2025') {

@@ -1,6 +1,7 @@
 import { CheckCircle2, ChevronDown, ChevronUp, Pause, Play, Target, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { getRobotDisplayStatusLabel, isRobotEmergencyActive } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
 import type { Robot } from '@/types/robot';
 import type { MissionWithContext } from '../MissionDialog';
@@ -176,6 +177,8 @@ export function MissionDock({
     selectedStartRobot !== null
       ? (ongoingMissionByRobotId.get(selectedStartRobot.id) ?? null)
       : null;
+  const selectedRobotEmergencyActive =
+    selectedStartRobot !== null ? isRobotEmergencyActive(selectedStartRobot) : false;
   const nowMs = Date.now();
   const selectedRobotBlockingMission =
     selectedRobotOngoingMission &&
@@ -193,6 +196,12 @@ export function MissionDock({
             (focusedMission.missionId ? mission.missionId === focusedMission.missionId : true)
         ) ?? ongoingMissions[0])
       : ongoingMissions[0];
+  const summaryMissionRobot =
+    summaryMission !== undefined && summaryMission !== null
+      ? (robots.find(robot => robot.id === summaryMission.robotId) ?? null)
+      : null;
+  const summaryMissionEmergencyActive =
+    summaryMissionRobot !== null ? isRobotEmergencyActive(summaryMissionRobot) : false;
 
   const focusedMissionMeta =
     focusedMission !== null
@@ -283,6 +292,7 @@ export function MissionDock({
                   variant="outline"
                   className="h-8 pointer-events-auto"
                   onClick={() => onResumeMission(summaryMission.robotId, summaryMission.missionId)}
+                  disabled={summaryMissionEmergencyActive}
                 >
                   <Play className="h-3.5 w-3.5 mr-1" />
                   Resume
@@ -294,6 +304,7 @@ export function MissionDock({
                   variant="outline"
                   className="h-8 pointer-events-auto"
                   onClick={() => onPauseMission(summaryMission.robotId, summaryMission.missionId)}
+                  disabled={summaryMissionEmergencyActive}
                 >
                   <Pause className="h-3.5 w-3.5 mr-1" />
                   Pause
@@ -305,6 +316,7 @@ export function MissionDock({
                 variant="destructive"
                 className="h-8 pointer-events-auto"
                 onClick={() => onCancelMission(summaryMission.robotId, summaryMission.missionId)}
+                disabled={summaryMissionEmergencyActive}
               >
                 <XCircle className="h-3.5 w-3.5 mr-1" />
                 Cancel
@@ -455,6 +467,7 @@ export function MissionDock({
                           const isSelected = selectedStartRobot?.id === robot.id;
                           const isPinned = selectedRobotId !== null && selectedRobotId === robot.id;
                           const activeMission = ongoingMissionByRobotId.get(robot.id) ?? null;
+                          const emergencyActive = isRobotEmergencyActive(robot);
                           const isBusy =
                             activeMission !== null &&
                             (activeMission.status === 'running' ||
@@ -463,9 +476,7 @@ export function MissionDock({
                           const mapLabel = robot.mapId
                             ? (missionMapNameById.get(robot.mapId) ?? robot.mapId)
                             : 'No map';
-                          const runtimeLabel = robot.runtimeMode
-                            ? robot.runtimeMode.toUpperCase()
-                            : robot.status;
+                          const runtimeLabel = getRobotDisplayStatusLabel(robot);
 
                           return (
                             <button
@@ -497,12 +508,14 @@ export function MissionDock({
                                 <span
                                   className={cn(
                                     'px-1.5 py-0.5 rounded-full',
-                                    isBusy
-                                      ? 'bg-amber-500/20 text-amber-700'
-                                      : 'bg-status-active/20 text-status-active'
+                                    emergencyActive
+                                      ? 'bg-status-error/20 text-status-error'
+                                      : isBusy
+                                        ? 'bg-amber-500/20 text-amber-700'
+                                        : 'bg-status-active/20 text-status-active'
                                   )}
                                 >
-                                  {isBusy ? 'Busy' : 'Available'}
+                                  {emergencyActive ? 'Emergency' : isBusy ? 'Busy' : 'Available'}
                                 </span>
                               </div>
                             </button>
@@ -530,7 +543,12 @@ export function MissionDock({
                     </div>
 
                     {selectedStartRobot ? (
-                      selectedRobotBlockingMission ? (
+                      selectedRobotEmergencyActive ? (
+                        <div className="rounded-md border border-status-error/40 bg-status-error/10 p-3 text-sm text-status-error">
+                          {selectedStartRobot.name} is in emergency stop. Clear emergency before
+                          starting or previewing a mission.
+                        </div>
+                      ) : selectedRobotBlockingMission ? (
                         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800">
                           {selectedStartRobot.name}{' '}
                           {selectedRobotBlockingMission.status === 'paused'
@@ -619,7 +637,12 @@ export function MissionDock({
                       SHOW_UP acknowledged. Confirm to send START_MISSION.
                     </div>
                     <div className="flex gap-2">
-                      <Button type="button" className="flex-1" onClick={onConfirmStart}>
+                      <Button
+                        type="button"
+                        className="flex-1"
+                        onClick={onConfirmStart}
+                        disabled={selectedRobotEmergencyActive}
+                      >
                         Confirm Start
                       </Button>
                       <Button

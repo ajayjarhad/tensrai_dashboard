@@ -1,8 +1,19 @@
 import type { ProcessedMapData, ROSPoseWithCovarianceStamped } from '@tensrai/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useRobotTelemetry } from '@/hooks/useRobotTelemetry';
 import { worldToRosPose } from '@/lib/map/mapTransforms';
+import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
+import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import { type MissionStatus, useRobotMissionStore } from '@/stores/robotMission';
 import { type Robot, RobotMode } from '@/types/robot';
 import { useMapRobots } from '../hooks/useMapRobots';
@@ -47,6 +58,9 @@ const resolveRuntimeStatus = (
   if (!missionIsFresh(mission, nowMs)) return robot.status;
   if (missionIsLive(mission, nowMs)) return RobotMode.MISSION;
   if (mission.mode === 'teleop') return RobotMode.TELEOP;
+  if (mission.mode === 'autonomous' && robot.status === RobotMode.TELEOP) {
+    return RobotMode.UNKNOWN;
+  }
   return robot.status;
 };
 
@@ -108,6 +122,13 @@ type MissionClock = {
   startedAt: number;
 };
 
+type EmergencyAlert = {
+  id: string;
+  robotId: string;
+  robotName: string;
+  kind: 'software' | 'hardware';
+};
+
 const resolveMissionSortRank = (status: OngoingMissionView['status']) => {
   if (status === 'running') return 0;
   if (status === 'paused') return 1;
@@ -131,8 +152,16 @@ export function Dashboard() {
   const [startMissionId, setStartMissionId] = useState<string | null>(null);
   const [missionClocks, setMissionClocks] = useState<Record<string, MissionClock>>({});
   const [missionLogs, setMissionLogs] = useState<MissionLogView[]>([]);
+  const [emergencyAlerts, setEmergencyAlerts] = useState<EmergencyAlert[]>([]);
 
   const missionStatusByRobot = useRobotMissionStore(state => state.statusByRobot);
+  const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
+  const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
+  const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
+  const sendFleetSoftwareEmergency = useRobotEmergencyStore(
+    state => state.sendFleetSoftwareEmergency
+  );
+  const emergencyPendingDispatch = useRobotEmergencyStore(state => state.pendingDispatch);
   const connectMission = useRobotMissionStore(state => state.connect);
   const disconnectMission = useRobotMissionStore(state => state.disconnect);
   const sendMissionEvent = useRobotMissionStore(state => state.sendEvent);
@@ -140,13 +169,18 @@ export function Dashboard() {
   const missionConnectionsRef = useRef<Set<string>>(new Set());
   const loggedResultKeysRef = useRef<Set<string>>(new Set());
   const lastMissionToastRef = useRef<Record<string, number>>({});
+  const lastEmergencyAckAtRef = useRef<Record<string, number>>({});
+  const hasShownInitialEmergencyPopupRef = useRef<Record<string, boolean>>({});
 
   const robots = useMemo(() => {
     const nowMs = Date.now();
     return robotsFromApi.map(robot =>
-      mergeMissionRuntimeIntoRobot(robot, missionStatusByRobot[robot.id], nowMs)
+      mergeEmergencyRuntimeIntoRobot(
+        mergeMissionRuntimeIntoRobot(robot, missionStatusByRobot[robot.id], nowMs),
+        emergencyByRobot[robot.id]
+      )
     );
-  }, [missionStatusByRobot, robotsFromApi]);
+  }, [emergencyByRobot, missionStatusByRobot, robotsFromApi]);
 
   const {
     selectedRobotId,
@@ -175,6 +209,63 @@ export function Dashboard() {
     return map;
   }, [prioritizedMissions]);
 
+  const robotsById = useMemo(() => {
+    const map = new Map<string, Robot>();
+    robots.forEach(robot => {
+      map.set(robot.id, robot);
+    });
+    return map;
+  }, [robots]);
+
+  const emergencySummary = useMemo(() => {
+    let connectedRobots = 0;
+    let softwareEmergencyCount = 0;
+    let hardwareEmergencyCount = 0;
+    let unknownCount = 0;
+    let anyEmergencyActive = false;
+
+    for (const robot of robots) {
+      const state = robot.emergency;
+      if (state?.effectiveEmergencyActive) {
+        anyEmergencyActive = true;
+      }
+      if (!robot.ipAddress || !state || state.connectionStatus !== 'connected') {
+        unknownCount += 1;
+        continue;
+      }
+
+      connectedRobots += 1;
+      if (state.hardwareEmergencyActive) {
+        hardwareEmergencyCount += 1;
+      } else if (state.softwareEmergencyActive) {
+        softwareEmergencyCount += 1;
+      }
+    }
+
+    return {
+      totalRobots: robots.length,
+      connectedRobots,
+      softwareEmergencyCount,
+      hardwareEmergencyCount,
+      unknownCount,
+      anyEmergencyActive,
+    };
+  }, [robots]);
+
+  const hasReachableEmergencyRobot = emergencySummary.connectedRobots > 0;
+  const canReleaseSoftwareEmergency = robots.some(
+    robot =>
+      robot.emergency?.connectionStatus === 'connected' && robot.emergency.softwareEmergencyActive
+  );
+  const currentEmergencyAlert = emergencyAlerts[0] ?? null;
+
+  const isRobotEmergencyBlocked = useCallback(
+    (robotId: string) => {
+      return Boolean(robotsById.get(robotId)?.emergency?.effectiveEmergencyActive);
+    },
+    [robotsById]
+  );
+
   const resolveMissionContext = useCallback(
     (missionId?: string, mapId?: string) => {
       if (!missionId) return null;
@@ -202,6 +293,59 @@ export function Dashboard() {
   }, [hydrateMissionFromRobots, robotsFromApi]);
 
   useEffect(() => {
+    syncEmergencyRobots(robotsFromApi);
+  }, [robotsFromApi, syncEmergencyRobots]);
+
+  useEffect(() => {
+    for (const robot of robots) {
+      const eventType = robot.emergency?.lastEventType;
+      const eventAt = robot.emergency?.lastEventAt;
+      const active = Boolean(robot.emergency?.effectiveEmergencyActive);
+      const canShowInitialSnapshot =
+        active &&
+        eventType === 'EMERGENCY_STATE' &&
+        !hasShownInitialEmergencyPopupRef.current[robot.id];
+      const canShowAckPopup =
+        active &&
+        !!eventAt &&
+        (eventType === 'SOFTWARE_EMERGENCY_ACK' || eventType === 'HARDWARE_EMERGENCY_ACK') &&
+        (lastEmergencyAckAtRef.current[robot.id] ?? 0) < eventAt;
+
+      if (!active) {
+        delete hasShownInitialEmergencyPopupRef.current[robot.id];
+        continue;
+      }
+
+      if (!canShowInitialSnapshot && !canShowAckPopup) {
+        continue;
+      }
+
+      if (canShowInitialSnapshot) {
+        hasShownInitialEmergencyPopupRef.current[robot.id] = true;
+      }
+      if (canShowAckPopup && eventAt) {
+        lastEmergencyAckAtRef.current[robot.id] = eventAt;
+      }
+
+      setEmergencyAlerts(current => {
+        const alertId = canShowAckPopup
+          ? `ack:${robot.id}:${eventType}:${eventAt}`
+          : `snapshot:${robot.id}:${robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software'}`;
+        if (current.some(alert => alert.id === alertId)) return current;
+        return [
+          ...current,
+          {
+            id: alertId,
+            robotId: robot.id,
+            robotName: robot.name,
+            kind: robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software',
+          },
+        ];
+      });
+    }
+  }, [robots]);
+
+  useEffect(() => {
     const nextIds = new Set(robots.map(robot => robot.id));
 
     nextIds.forEach(id => {
@@ -223,8 +367,9 @@ export function Dashboard() {
         disconnectMission(id);
       }
       missionConnectionsRef.current.clear();
+      disconnectEmergencyRobots();
     },
-    [disconnectMission]
+    [disconnectEmergencyRobots, disconnectMission]
   );
 
   useEffect(() => {
@@ -502,8 +647,68 @@ export function Dashboard() {
     [sendMissionEvent]
   );
 
+  const handleFleetEmergencyDispatch = useCallback(
+    async (desiredStatus: boolean) => {
+      const result = await sendFleetSoftwareEmergency(desiredStatus);
+      const successCount = result.results.filter(entry => entry.applied).length;
+      const failureCount = result.results.length - successCount;
+      const failureSummary = result.results
+        .filter(entry => !entry.applied)
+        .map(entry => `${entry.robotName ?? entry.robotId}: ${entry.error ?? 'unknown error'}`)
+        .join('; ');
+      const hardwareLockedCount = result.results.filter(
+        entry => entry.applied && entry.hardwareEmergencyActive
+      ).length;
+
+      if (desiredStatus) {
+        if (result.status === 'success') {
+          toast.success(`Emergency sent to ${successCount} robot${successCount === 1 ? '' : 's'}`);
+        } else if (result.status === 'partial_failure') {
+          toast.error(`Emergency sent to ${successCount} robots, ${failureCount} failed`, {
+            description: failureSummary || undefined,
+          });
+        } else {
+          toast.error('Emergency command failed for all robots', {
+            description: failureSummary || undefined,
+          });
+        }
+        return;
+      }
+
+      if (result.status === 'failure') {
+        toast.error('Release command failed for all robots', {
+          description: failureSummary || undefined,
+        });
+        return;
+      }
+
+      if (hardwareLockedCount > 0) {
+        toast.message(
+          `Software emergency released; ${hardwareLockedCount} robot${
+            hardwareLockedCount === 1 ? '' : 's'
+          } remain stopped due to hardware emergency`
+        );
+        return;
+      }
+
+      if (result.status === 'partial_failure') {
+        toast.error(`Release sent to ${successCount} robots, ${failureCount} failed`, {
+          description: failureSummary || undefined,
+        });
+        return;
+      }
+
+      toast.success(`Release sent to ${successCount} robot${successCount === 1 ? '' : 's'}`);
+    },
+    [sendFleetSoftwareEmergency]
+  );
+
   const handleShowUpForRobot = useCallback(
     (robotId: string, missionId: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const mission = resolveMissionForRobot(robotId, missionId);
       if (!mission) {
         toast.error('Mission does not belong to selected robot map');
@@ -527,11 +732,22 @@ export function Dashboard() {
       const robot = robots.find(item => item.id === robotId) ?? null;
       if (robot) handleSelectRobot(robot);
     },
-    [dispatchMissionEvent, handleSelectRobot, resolveMissionForRobot, robots, setActiveMapId]
+    [
+      dispatchMissionEvent,
+      handleSelectRobot,
+      isRobotEmergencyBlocked,
+      resolveMissionForRobot,
+      robots,
+      setActiveMapId,
+    ]
   );
 
   const handleConfirmMissionStart = useCallback(() => {
     if (!pendingMissionStart) return;
+    if (isRobotEmergencyBlocked(pendingMissionStart.robotId)) {
+      toast.error('Controls unavailable while emergency stop is active');
+      return;
+    }
     const dispatched = dispatchMissionEvent(
       pendingMissionStart.robotId,
       'START_MISSION',
@@ -545,7 +761,7 @@ export function Dashboard() {
     );
     if (!dispatched) return;
     setPendingMissionStart(null);
-  }, [dispatchMissionEvent, pendingMissionStart]);
+  }, [dispatchMissionEvent, isRobotEmergencyBlocked, pendingMissionStart]);
 
   const handleCancelMissionStart = useCallback(() => {
     setPendingMissionStart(null);
@@ -563,6 +779,10 @@ export function Dashboard() {
 
   const handlePauseMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No active mission to pause');
@@ -575,11 +795,15 @@ export function Dashboard() {
         { queuedMessage: 'Pause command queued', errorMessage: 'Unable to send pause command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const handleResumeMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No paused mission to resume');
@@ -592,11 +816,15 @@ export function Dashboard() {
         { queuedMessage: 'Resume command queued', errorMessage: 'Unable to send resume command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const handleCancelMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No mission to cancel');
@@ -609,7 +837,7 @@ export function Dashboard() {
         { queuedMessage: 'Cancel command queued', errorMessage: 'Unable to send cancel command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const sendModeChange = useCallback(
@@ -758,134 +986,174 @@ export function Dashboard() {
     [handleSelectRobot]
   );
 
+  const acknowledgeEmergencyAlert = useCallback(() => {
+    setEmergencyAlerts(current => current.slice(1));
+  }, []);
+
   return (
-    <DashboardLayout
-      map={
-        activeMapId ? (
-          <OccupancyMap
-            mapId={activeMapId}
-            onMapChange={mapId => {
-              if (focusedMission) return;
-              setActiveMapId(mapId);
-            }}
-            width="100%"
-            height="100%"
-            enablePanning={true}
-            enableZooming={true}
-            robots={robotsOnActiveMap.map(robot => {
-              if (
-                robot.id === activeRobotId &&
-                telemetry?.pose &&
-                Number.isFinite(telemetry.pose.x) &&
-                Number.isFinite(telemetry.pose.y) &&
-                Number.isFinite(telemetry.pose.theta)
-              ) {
-                return {
-                  ...robot,
-                  x: telemetry.pose.x,
-                  y: telemetry.pose.y,
-                  theta: telemetry.pose.theta,
-                };
-              }
-              return robot;
-            })}
-            telemetryRobotId={activeRobotId}
-            telemetry={telemetry}
-            selectedRobotId={selectedRobotId}
-            onRobotSelect={id => {
-              const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
-              handleSidebarRobotSelect(robot);
-            }}
-            onMapFeaturesChange={setMapFeatures}
-            setPoseMode={isSettingPose}
-            onPoseConfirm={handlePoseConfirm}
-            onPoseCancel={handlePoseCancel}
-            highlightTagIds={highlightTagIds}
-            dimNonMissionTags={dimNonMissionTags}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
-          </div>
-        )
-      }
-      missionDock={
-        <MissionDock
-          robots={robots}
-          missions={prioritizedMissions}
-          ongoingMissions={ongoingMissions}
-          missionLogs={missionLogs}
-          focusedMission={
-            focusedMission
-              ? {
-                  robotId: focusedMission.robotId,
-                  ...(focusedMission.missionId ? { missionId: focusedMission.missionId } : {}),
+    <>
+      <DashboardLayout
+        emergencyHeader={{
+          summary: emergencySummary,
+          pendingDispatch: emergencyPendingDispatch !== null,
+          canSendEmergency: hasReachableEmergencyRobot,
+          canReleaseSoftware: canReleaseSoftwareEmergency,
+          onEmergencyAll: () => {
+            void handleFleetEmergencyDispatch(true);
+          },
+          onReleaseSoftware: () => {
+            void handleFleetEmergencyDispatch(false);
+          },
+        }}
+        map={
+          activeMapId ? (
+            <OccupancyMap
+              mapId={activeMapId}
+              onMapChange={mapId => {
+                if (focusedMission) return;
+                setActiveMapId(mapId);
+              }}
+              width="100%"
+              height="100%"
+              enablePanning={true}
+              enableZooming={true}
+              robots={robotsOnActiveMap.map(robot => {
+                if (
+                  robot.id === activeRobotId &&
+                  telemetry?.pose &&
+                  Number.isFinite(telemetry.pose.x) &&
+                  Number.isFinite(telemetry.pose.y) &&
+                  Number.isFinite(telemetry.pose.theta)
+                ) {
+                  return {
+                    ...robot,
+                    x: telemetry.pose.x,
+                    y: telemetry.pose.y,
+                    theta: telemetry.pose.theta,
+                  };
                 }
-              : null
-          }
-          selectedRobotId={selectedRobotId}
-          startRobotId={startRobotId}
-          startMissionId={startMissionId}
-          pendingStart={pendingMissionStart}
-          onSetStartRobot={robotId => {
-            if (robotId !== startRobotId) {
-              setPendingMissionStart(null);
-              setFocusedMission(null);
+                return robot;
+              })}
+              telemetryRobotId={activeRobotId}
+              telemetry={telemetry}
+              selectedRobotId={selectedRobotId}
+              onRobotSelect={id => {
+                const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
+                handleSidebarRobotSelect(robot);
+              }}
+              onMapFeaturesChange={setMapFeatures}
+              setPoseMode={isSettingPose}
+              onPoseConfirm={handlePoseConfirm}
+              onPoseCancel={handlePoseCancel}
+              highlightTagIds={highlightTagIds}
+              dimNonMissionTags={dimNonMissionTags}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-muted-foreground">
+              {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
+            </div>
+          )
+        }
+        missionDock={
+          <MissionDock
+            robots={robots}
+            missions={prioritizedMissions}
+            ongoingMissions={ongoingMissions}
+            missionLogs={missionLogs}
+            focusedMission={
+              focusedMission
+                ? {
+                    robotId: focusedMission.robotId,
+                    ...(focusedMission.missionId ? { missionId: focusedMission.missionId } : {}),
+                  }
+                : null
             }
-            setStartRobotId(robotId);
-            if (robotId) {
-              const robot = robots.find(item => item.id === robotId) ?? null;
-              if (robot) {
-                handleSelectRobot(robot);
+            selectedRobotId={selectedRobotId}
+            startRobotId={startRobotId}
+            startMissionId={startMissionId}
+            pendingStart={pendingMissionStart}
+            onSetStartRobot={robotId => {
+              if (robotId !== startRobotId) {
+                setPendingMissionStart(null);
+                setFocusedMission(null);
               }
-            } else {
-              setStartMissionId(null);
-            }
-          }}
-          onSetStartMission={missionId => setStartMissionId(missionId)}
-          onShowUp={handleShowUpForRobot}
-          onConfirmStart={handleConfirmMissionStart}
-          onCancelStart={handleCancelMissionStart}
-          onFocusMission={handleFocusMission}
-          onClearFocus={handleClearMissionFocus}
-          onPauseMission={handlePauseMission}
-          onResumeMission={handleResumeMission}
-          onCancelMission={handleCancelMission}
-        />
-      }
-      teleopPanel={
-        teleopRobot && teleopRobotId ? (
-          <TeleopPanel
-            robotId={teleopRobotId}
-            robotName={teleopRobot.name}
-            sendTeleop={sendTeleop}
-            onClose={() => disableManualControl(teleopRobotId)}
-            className={isSidebarOpen ? 'right-2 md:right-4 bottom-28' : 'right-2 bottom-28'}
+              setStartRobotId(robotId);
+              if (robotId) {
+                const robot = robots.find(item => item.id === robotId) ?? null;
+                if (robot) {
+                  handleSelectRobot(robot);
+                }
+              } else {
+                setStartMissionId(null);
+              }
+            }}
+            onSetStartMission={missionId => setStartMissionId(missionId)}
+            onShowUp={handleShowUpForRobot}
+            onConfirmStart={handleConfirmMissionStart}
+            onCancelStart={handleCancelMissionStart}
+            onFocusMission={handleFocusMission}
+            onClearFocus={handleClearMissionFocus}
+            onPauseMission={handlePauseMission}
+            onResumeMission={handleResumeMission}
+            onCancelMission={handleCancelMission}
           />
-        ) : null
-      }
-      sidebar={
-        <Sidebar
-          robots={robots}
-          selectedRobotId={selectedRobotId}
-          onSelectRobot={handleSidebarRobotSelect}
-          isOpen={isSidebarOpen}
-          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
-          mapNameById={mapNameById}
-          className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
-          onManualControl={() => {
-            if (!selectedRobotId) {
-              toast.error('Select a robot to start teleop');
-              return;
-            }
-            enableManualControl(selectedRobotId);
-          }}
-          onSetPose={() => {
-            setIsSidebarOpen(true);
-            handleStartSetPose();
-          }}
-        />
-      }
-    />
+        }
+        teleopPanel={
+          teleopRobot && teleopRobotId ? (
+            <TeleopPanel
+              robotId={teleopRobotId}
+              robotName={teleopRobot.name}
+              sendTeleop={sendTeleop}
+              onClose={() => disableManualControl(teleopRobotId)}
+              className={isSidebarOpen ? 'right-2 md:right-4 bottom-28' : 'right-2 bottom-28'}
+            />
+          ) : null
+        }
+        sidebar={
+          <Sidebar
+            robots={robots}
+            selectedRobotId={selectedRobotId}
+            onSelectRobot={handleSidebarRobotSelect}
+            isOpen={isSidebarOpen}
+            onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+            mapNameById={mapNameById}
+            className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
+            onManualControl={() => {
+              if (!selectedRobotId) {
+                toast.error('Select a robot to start teleop');
+                return;
+              }
+              enableManualControl(selectedRobotId);
+            }}
+            onSetPose={() => {
+              setIsSidebarOpen(true);
+              handleStartSetPose();
+            }}
+          />
+        }
+      />
+
+      <Dialog open={currentEmergencyAlert !== null}>
+        <DialogContent
+          className="bg-card border-safety-estop/30"
+          onPointerDownOutside={event => event.preventDefault()}
+          onEscapeKeyDown={event => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-safety-estop">Emergency Active</DialogTitle>
+            <DialogDescription className="text-foreground/80">
+              {currentEmergencyAlert
+                ? `${currentEmergencyAlert.kind === 'hardware' ? 'Hardware' : 'Software'} emergency acknowledged for ${currentEmergencyAlert.robotName}.`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="destructive" onClick={acknowledgeEmergencyAlert}>
+              Acknowledge
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

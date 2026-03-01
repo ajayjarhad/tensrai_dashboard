@@ -20,7 +20,9 @@ export const createRobotWsClient = (robotId: string) => {
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
 
-  const wsUrl = `${resolveWsBaseUrl()}/ws/robots/${robotId}`;
+  const wsUrl = `${resolveWsBaseUrl()}/ws/robots/${robotId}/telemetry/${encodeURIComponent(
+    `telemetry-${robotId}`
+  )}`;
 
   const notifyStatus = (next: ConnectionStatus) => {
     status = next;

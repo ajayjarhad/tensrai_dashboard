@@ -1,4 +1,5 @@
 import { Battery, MapPin } from 'lucide-react';
+import { getRobotDisplayMode, getRobotDisplayStatusLabel } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
 import type { Robot } from '@/types/robot';
 
@@ -8,10 +9,7 @@ interface RobotDetailsProps {
 }
 
 const statusBadgeClass = (robot: Robot) => {
-  if (robot.runtimeMode === 'teleop') return 'bg-amber-500/20 text-amber-600';
-  if (robot.runtimeMode === 'autonomous') return 'bg-status-active/15 text-status-active';
-
-  const value = String(robot.status ?? 'UNKNOWN').toUpperCase();
+  const value = String(getRobotDisplayMode(robot) ?? 'UNKNOWN').toUpperCase();
   if (value.includes('EMERGENCY')) return 'bg-status-error/15 text-status-error';
   if (value === 'MISSION') return 'bg-status-active/15 text-status-active';
   if (value === 'TELEOP') return 'bg-amber-500/20 text-amber-600';
@@ -20,7 +18,7 @@ const statusBadgeClass = (robot: Robot) => {
 };
 
 export function RobotDetails({ robot, mapName }: RobotDetailsProps) {
-  const badgeLabel = robot.runtimeMode ? robot.runtimeMode.toUpperCase() : robot.status;
+  const badgeLabel = getRobotDisplayStatusLabel(robot);
 
   return (
     <div className="space-y-4">

@@ -23,6 +23,7 @@ type SyncDeps = {
   log: {
     error: (obj: Record<string, unknown>, msg: string) => void;
   };
+  rememberNonEmergencyStatus?: (robotId: string, status: 'TELEOP' | 'UNKNOWN') => void;
 };
 
 type SyncResult = {
@@ -96,6 +97,14 @@ export const syncRobotStatusUpdate = async (
   if (parsed.value.mode === 'teleop' && robot.status !== 'TELEOP') {
     updateData['status'] = 'TELEOP';
     hasFieldChange = true;
+  }
+  if (parsed.value.mode === 'teleop') {
+    deps.rememberNonEmergencyStatus?.(robotId, 'TELEOP');
+  }
+  if (parsed.value.mode === 'autonomous' && robot.status === 'TELEOP') {
+    updateData['status'] = 'UNKNOWN';
+    hasFieldChange = true;
+    deps.rememberNonEmergencyStatus?.(robotId, 'UNKNOWN');
   }
 
   const lastSeenMs = robot.lastSeen ? new Date(robot.lastSeen).getTime() : 0;

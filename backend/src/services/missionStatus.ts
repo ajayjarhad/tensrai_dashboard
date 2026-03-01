@@ -42,6 +42,8 @@ export type MissionState = {
   batteryPercentage?: number | null | undefined;
   chargingStatus?: string | null | undefined;
   lastSeenTs?: number | undefined;
+  runtimeUpdatedAt?: number | undefined;
+  modeUpdatedAt?: number | undefined;
 };
 
 const missionStateByRobot = new Map<string, MissionState>();
@@ -55,6 +57,19 @@ export const getMissionState = (robotId: string): MissionState => {
       updatedAt: nowIso(),
     }
   );
+};
+
+export const deriveRobotModeFromMissionState = (
+  robotId: string
+): 'MISSION' | 'TELEOP' | undefined => {
+  const state = getMissionState(robotId);
+  if (state.status === 'running' || state.status === 'paused' || state.status === 'showing') {
+    return 'MISSION';
+  }
+  if (state.mode === 'teleop') {
+    return 'TELEOP';
+  }
+  return undefined;
 };
 
 export const setMissionState = (
@@ -246,6 +261,8 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
   }
 
   if (event === 'MODE_CHANGE_ACK') {
+    const modeTimestamp =
+      timestampMs(payload?.timestamp) ?? timestampMs(payload?.time) ?? current.modeUpdatedAt;
     const mode = isRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode;
     const ackStatus =
       typeof payload?.status === 'string' ? payload.status : current.lastEventStatus;
@@ -259,6 +276,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
       robotId,
       {
         mode,
+        modeUpdatedAt: modeTimestamp,
         lastEvent: event,
         lastEventStatus: ackStatus,
         message,
@@ -268,6 +286,10 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
   }
 
   if (event === 'ROBOT_STATUS_UPDATE') {
+    if (current.runtimeUpdatedAt !== undefined && appliedAtMs < current.runtimeUpdatedAt) {
+      return current;
+    }
+
     const missionStatus = missionStatusFromRuntime(payload?.mission?.status);
     const missionId = normalizeMissionId(payload?.mission?.currentMissionId);
     const hasMissionId =
@@ -292,6 +314,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
         : payload?.chargingStatus === null
           ? null
           : current.chargingStatus;
+    const safeUpdatedAt = Math.max(Date.parse(current.updatedAt) || 0, appliedAtMs);
 
     return setMissionState(
       robotId,
@@ -302,11 +325,13 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
         totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
         lastEvent: event,
         mode,
+        modeUpdatedAt: isRuntimeMode(payload?.mode) ? appliedAtMs : current.modeUpdatedAt,
         batteryPercentage: battery,
         chargingStatus,
         lastSeenTs: appliedAtMs,
+        runtimeUpdatedAt: appliedAtMs,
       },
-      appliedAtMs
+      safeUpdatedAt
     );
   }
 
