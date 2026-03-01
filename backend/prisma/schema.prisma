@@ -111,6 +111,8 @@ model Robot {
   
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+
+  missionRuns         MissionRun[]
 }
 
 model Map {
@@ -130,6 +132,47 @@ enum RobotMode {
   SW_EMERGENCY
   HW_EMERGENCY
   TELEOP
+  AUTONOMOUS
   HRI
   UNKNOWN
+}
+
+model MissionRun {
+  id                  String           @id @default(auto()) @map("_id") @db.ObjectId
+  robotId             String           @db.ObjectId
+  robot               Robot             @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  robotNameSnapshot   String
+  missionId           String?
+  missionNameSnapshot String?
+  mapId               String?          @db.ObjectId
+  runId               String?
+  status              MissionRunStatus
+  phase               MissionRunStatus
+  requestIdLast       String?
+  startedAt           DateTime?
+  endedAt             DateTime?
+  durationMs          Int?
+  waypointIndex       Int?
+  totalWaypoints      Int?
+  lastMessage         String?
+  lastEvent           String?
+  lastEventAt         DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([robotId, updatedAt])
+  @@index([runId])
+  @@index([status, updatedAt])
+}
+
+enum MissionRunStatus {
+  PREVIEW_PENDING
+  SHOWING
+  START_PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+  UNKNOWN_TERMINATION
 }

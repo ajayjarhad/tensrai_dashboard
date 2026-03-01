@@ -1,29 +1,16 @@
-import type { PixelPoint } from '@tensrai/shared';
 import { Shape } from 'react-konva';
 
 interface LaserLayerProps {
-  points: PixelPoint[];
+  points: Float32Array;
   scale?: number;
 }
-
-const MAX_RENDER_POINTS = 450;
 
 export function LaserLayer({ points, scale = 1 }: LaserLayerProps) {
   // Make laser points visually larger; 1.7x the previous baseline.
   const baseRadius = 2 * 1.7;
   const radius = Math.max(0.75, baseRadius / Math.max(scale, 0.001));
-  const pointSize = Math.max(1, radius * 2);
-  const sampledPoints = (() => {
-    if (points.length <= MAX_RENDER_POINTS) return points;
-    const stride = Math.ceil(points.length / MAX_RENDER_POINTS);
-    const reduced: PixelPoint[] = [];
-    for (let i = 0; i < points.length; i += stride) {
-      reduced.push(points[i]);
-    }
-    return reduced;
-  })();
 
-  if (!sampledPoints.length) return null;
+  if (points.length < 2) return null;
 
   return (
     <Shape
@@ -33,9 +20,12 @@ export function LaserLayer({ points, scale = 1 }: LaserLayerProps) {
         ctx.save();
         ctx.globalAlpha = 0.8;
         ctx.fillStyle = '#ef4444';
-        for (let i = 0; i < sampledPoints.length; i += 1) {
-          const point = sampledPoints[i];
-          ctx.fillRect(point.x - radius, point.y - radius, pointSize, pointSize);
+        for (let index = 0; index < points.length; index += 2) {
+          const x = points[index] ?? 0;
+          const y = points[index + 1] ?? 0;
+          ctx.beginPath();
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+          ctx.fill();
         }
         ctx.restore();
       }}

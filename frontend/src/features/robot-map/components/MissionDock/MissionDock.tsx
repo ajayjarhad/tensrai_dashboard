@@ -51,6 +51,8 @@ interface MissionDockProps {
     robotId: string;
     mission: MissionWithContext;
   } | null;
+  pendingPhase?: 'preview_pending' | 'showing' | 'start_pending' | 'running' | 'paused' | undefined;
+  pendingMessage?: string | undefined;
   onSetStartRobot: (robotId: string | null) => void;
   onSetStartMission: (missionId: string | null) => void;
   onShowUp: (robotId: string, missionId: string) => void;
@@ -109,6 +111,8 @@ export function MissionDock({
   startRobotId,
   startMissionId,
   pendingStart,
+  pendingPhase,
+  pendingMessage,
   onSetStartRobot,
   onSetStartMission,
   onShowUp,
@@ -125,9 +129,11 @@ export function MissionDock({
   const [clockNowMs, setClockNowMs] = useState(() => Date.now());
 
   useEffect(() => {
+    const shouldTick = expanded || ongoingMissions.length > 0;
+    if (!shouldTick) return;
     const timer = setInterval(() => setClockNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [expanded, ongoingMissions.length]);
 
   const robotsWithMap = useMemo(() => robots.filter(robot => Boolean(robot.mapId)), [robots]);
   const missionMapNameById = useMemo(() => {
@@ -180,11 +186,19 @@ export function MissionDock({
   const selectedRobotEmergencyActive =
     selectedStartRobot !== null ? isRobotEmergencyActive(selectedStartRobot) : false;
   const nowMs = Date.now();
+  const selectedRobotHasCurrentPreviewSelection =
+    selectedRobotOngoingMission?.status === 'showing' &&
+    ((selectedStartMission?.id !== null &&
+      selectedStartMission?.id !== undefined &&
+      selectedRobotOngoingMission?.missionId === selectedStartMission.id) ||
+      (pendingStart?.robotId === selectedStartRobot?.id &&
+        pendingStart?.mission.id === selectedRobotOngoingMission?.missionId));
   const selectedRobotBlockingMission =
     selectedRobotOngoingMission &&
     (selectedRobotOngoingMission.status === 'running' ||
       selectedRobotOngoingMission.status === 'paused') &&
-    isMissionFresh(selectedRobotOngoingMission, nowMs)
+    isMissionFresh(selectedRobotOngoingMission, nowMs) &&
+    !selectedRobotHasCurrentPreviewSelection
       ? selectedRobotOngoingMission
       : null;
 
@@ -553,11 +567,13 @@ export function MissionDock({
                           {selectedStartRobot.name}{' '}
                           {selectedRobotBlockingMission.status === 'paused'
                             ? 'has a paused mission'
-                            : 'is already running'}{' '}
+                            : selectedRobotBlockingMission.status === 'showing'
+                              ? 'already has a mission preview open for'
+                              : 'is already running'}{' '}
                           <span className="font-semibold">
                             {selectedRobotBlockingMission.missionName}
                           </span>
-                          . Pause or cancel it from Ongoing before starting another mission.
+                          . Resolve it from Ongoing before starting another mission.
                         </div>
                       ) : startMissionOptions.length === 0 ? (
                         <div className="text-sm text-muted-foreground">
@@ -589,6 +605,7 @@ export function MissionDock({
                                     onShowUp(selectedStartRobot.id, mission.id);
                                   }
                                 }}
+                                disabled={false}
                               >
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="text-sm font-semibold truncate">
@@ -596,7 +613,11 @@ export function MissionDock({
                                   </div>
                                   {isPending ? (
                                     <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-status-active/20 text-status-active">
-                                      Ready
+                                      {pendingPhase === 'preview_pending'
+                                        ? 'Sending'
+                                        : pendingPhase === 'start_pending'
+                                          ? 'Starting'
+                                          : 'Ready'}
                                     </span>
                                   ) : (
                                     isSelected && (
@@ -626,7 +647,7 @@ export function MissionDock({
                   </div>
                 </div>
 
-                {pendingStart ? (
+                {pendingStart && (
                   <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
                     <div className="text-sm font-semibold">
                       Ready to start {pendingStart.mission.name} on{' '}
@@ -634,16 +655,26 @@ export function MissionDock({
                         pendingStart.robotId}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      SHOW_UP acknowledged. Confirm to send START_MISSION.
+                      {pendingPhase === 'preview_pending'
+                        ? (pendingMessage ?? 'SHOW_UP sent... waiting for robot')
+                        : pendingPhase === 'start_pending'
+                          ? (pendingMessage ?? 'Starting... waiting for robot ack')
+                          : pendingPhase === 'showing'
+                            ? (pendingMessage ?? 'Ready to start')
+                            : (pendingMessage ?? 'Ready to start')}
                     </div>
                     <div className="flex gap-2">
                       <Button
                         type="button"
                         className="flex-1"
                         onClick={onConfirmStart}
-                        disabled={selectedRobotEmergencyActive}
+                        disabled={
+                          selectedRobotEmergencyActive ||
+                          pendingPhase === 'preview_pending' ||
+                          pendingPhase === 'start_pending'
+                        }
                       >
-                        Confirm Start
+                        {pendingPhase === 'start_pending' ? 'Starting...' : 'Confirm Start'}
                       </Button>
                       <Button
                         type="button"
@@ -654,10 +685,6 @@ export function MissionDock({
                         Cancel
                       </Button>
                     </div>
-                  </div>
-                ) : (
-                  <div className="text-xs text-muted-foreground">
-                    Click a mission card to send SHOW_UP and load that mission map.
                   </div>
                 )}
               </div>

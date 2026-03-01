@@ -32,6 +32,10 @@ export type RobotStatusUpdatePayload = {
   mission?: {
     status?: RobotMissionRuntimeStatus;
     currentMissionId?: string | number | null;
+    runId?: string | null;
+    startedAt?: string | null;
+    currentWaypointIndex?: number | null;
+    totalWaypoints?: number | null;
   };
 };
 
@@ -41,6 +45,8 @@ export type MissionControlAckPayload = {
   missionId?: string | number | null;
   message?: string;
   timestamp?: string;
+  requestId?: string;
+  runId?: string | null;
 };
 
 export type MissionStartAckPayload = {
@@ -48,6 +54,9 @@ export type MissionStartAckPayload = {
   missionId?: string | number | null;
   message?: string;
   timestamp?: string;
+  requestId?: string;
+  runId?: string | null;
+  startedAt?: string | null;
 };
 
 export type MissionCompletedPayload = {
@@ -55,6 +64,7 @@ export type MissionCompletedPayload = {
   status?: string;
   completionTime?: string;
   message?: string;
+  runId?: string | null;
 };
 
 export type WaypointAckPayload = {
@@ -64,6 +74,7 @@ export type WaypointAckPayload = {
   status?: string;
   message?: string;
   time?: string;
+  runId?: string | null;
 };
 
 export type ModeChangeAckPayload = {

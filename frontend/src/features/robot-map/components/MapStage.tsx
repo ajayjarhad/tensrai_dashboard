@@ -2,7 +2,6 @@ import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import { useMemo, useRef, useState } from 'react';
 import { createMapTransforms } from '@/lib/map/mapTransforms';
-import { laserToPixelPoints, pathToPixelPoints } from '@/lib/map/telemetryTransforms';
 import type { Robot } from '@/types/robot';
 import type { LaserScan, PathMessage, Pose2D } from '@/types/telemetry';
 import { useElementSize } from '../../../hooks/useElementSize';
@@ -10,6 +9,7 @@ import { useMapFitting } from '../hooks/useMapFitting';
 import { useMapImage } from '../hooks/useMapImage';
 import { useMapLocations } from '../hooks/useMapLocations';
 import { useRobots } from '../hooks/useRobots';
+import { useTelemetryOverlayData } from '../hooks/useTelemetryOverlayData';
 import { useZoom } from '../hooks/useZoom';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import { MapErrorBoundary } from './MapErrorBoundary';
@@ -124,18 +124,13 @@ export function MapStage({
     return undefined;
   }, [telemetry?.pose, telemetryRobotId, robots]);
 
-  const laserPoints = useMemo(
-    () =>
-      transforms && telemetry?.laser && activeRobotPose
-        ? laserToPixelPoints(telemetry.laser, activeRobotPose, transforms, 2)
-        : [],
-    [transforms, telemetry?.laser, activeRobotPose]
-  );
-
-  const pathPoints = useMemo(
-    () => (transforms && telemetry?.path ? pathToPixelPoints(telemetry.path, transforms) : []),
-    [transforms, telemetry?.path]
-  );
+  const { laserPoints, pathPoints, overlayBitmap } = useTelemetryOverlayData({
+    transforms,
+    laser: telemetry?.laser,
+    path: telemetry?.path,
+    robotPose: activeRobotPose,
+    stageScale,
+  });
 
   if (!mapData) {
     return (
@@ -165,6 +160,7 @@ export function MapStage({
           {...(onPoseCancel ? { onPoseCancel } : {})}
           laserPoints={laserPoints}
           pathPoints={pathPoints}
+          overlayBitmap={overlayBitmap}
           width={resolvedWidth}
           height={resolvedHeight}
           rotation={rotation}

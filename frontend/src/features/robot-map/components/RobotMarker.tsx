@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useSyncExternalStore } from 'react';
 import { Group, Rect, RegularPolygon } from 'react-konva';
 import { RobotMode } from '@/types/robot';
 
@@ -22,10 +22,57 @@ const markerColorForStatus = (status: RobotMode) => {
   if (status === RobotMode.TELEOP) {
     return '#F59E0B';
   }
+  if (status === RobotMode.AUTONOMOUS) {
+    return '#64748B';
+  }
   if (status === RobotMode.CHARGING || status === RobotMode.DOCKING) {
     return '#0EA5E9';
   }
   return '#94A3B8';
+};
+
+const PULSE_INTERVAL_MS = 90;
+const pulseListeners = new Set<() => void>();
+let pulseTimer: number | null = null;
+let pulsePhase = 0;
+
+const emitPulsePhase = () => {
+  pulsePhase += 1;
+  for (const listener of pulseListeners) {
+    listener();
+  }
+};
+
+const ensurePulseTimer = () => {
+  if (pulseTimer !== null || pulseListeners.size === 0) return;
+  pulseTimer = window.setInterval(emitPulsePhase, PULSE_INTERVAL_MS);
+};
+
+const teardownPulseTimer = () => {
+  if (pulseListeners.size > 0 || pulseTimer === null) return;
+  window.clearInterval(pulseTimer);
+  pulseTimer = null;
+  pulsePhase = 0;
+};
+
+const subscribePulse = (listener: () => void) => {
+  pulseListeners.add(listener);
+  ensurePulseTimer();
+  return () => {
+    pulseListeners.delete(listener);
+    teardownPulseTimer();
+  };
+};
+
+const getPulseSnapshot = () => pulsePhase;
+
+const useSharedPulsePhase = (enabled: boolean) => {
+  const subscribe = useCallback(
+    (listener: () => void) => (enabled ? subscribePulse(listener) : () => {}),
+    [enabled]
+  );
+  const getSnapshot = useCallback(() => (enabled ? getPulseSnapshot() : 0), [enabled]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 };
 
 export const RobotMarker = React.memo(
@@ -34,25 +81,10 @@ export const RobotMarker = React.memo(
     const lengthPixels = lengthMeters / resolution;
     const indicatorColor = markerColorForStatus(status);
     const isEmergency = status === RobotMode.HW_EMERGENCY || status === RobotMode.SW_EMERGENCY;
-    const [pulsePhase, setPulsePhase] = useState(0);
+    const sharedPulsePhase = useSharedPulsePhase(isEmergency);
 
-    useEffect(() => {
-      if (!isEmergency) {
-        setPulsePhase(0);
-        return;
-      }
-
-      let frame = 0;
-      const timer = window.setInterval(() => {
-        frame += 1;
-        setPulsePhase(frame);
-      }, 90);
-
-      return () => window.clearInterval(timer);
-    }, [isEmergency]);
-
-    const pulseOpacity = isEmergency ? 0.6 + (Math.sin(pulsePhase * 0.45) + 1) * 0.2 : 1;
-    const pulseScale = isEmergency ? 1 + (Math.sin(pulsePhase * 0.45) + 1) * 0.06 : 1;
+    const pulseOpacity = isEmergency ? 0.6 + (Math.sin(sharedPulsePhase * 0.45) + 1) * 0.2 : 1;
+    const pulseScale = isEmergency ? 1 + (Math.sin(sharedPulsePhase * 0.45) + 1) * 0.06 : 1;
 
     return (
       <Group

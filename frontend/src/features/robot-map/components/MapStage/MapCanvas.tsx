@@ -22,8 +22,9 @@ interface MapCanvasProps {
   setPoseMode?: boolean;
   onPoseConfirm?: (payload: PoseConfirmPayload) => void;
   onPoseCancel?: () => void;
-  laserPoints: import('@tensrai/shared').PixelPoint[];
-  pathPoints: import('@tensrai/shared').PixelPoint[];
+  laserPoints: Float32Array;
+  pathPoints: Float32Array;
+  overlayBitmap?: ImageBitmap | undefined;
   rotation: number;
   width: number;
   height: number;
@@ -48,6 +49,7 @@ export function MapCanvas({
   onPoseCancel,
   laserPoints,
   pathPoints,
+  overlayBitmap,
   rotation,
   width,
   height,
@@ -81,6 +83,7 @@ export function MapCanvas({
         robots={robots}
         laserPoints={laserPoints}
         pathPoints={pathPoints}
+        overlayBitmap={overlayBitmap}
         onRobotSelect={onRobotSelect}
         stageScale={stageScale}
         selectedRobotId={selectedRobotId ?? null}

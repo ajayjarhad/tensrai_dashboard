@@ -7,10 +7,12 @@ import databasePlugin from './plugins/database.js';
 import observabilityPlugin from './plugins/observability.js';
 import securityPlugin from './plugins/security.js';
 import mapRoutes from './routes/maps.js';
+import missionRunRoutes from './routes/missionRuns.js';
 import robotRoutes from './routes/robots.js';
 import rosGateway from './routes/rosGateway.js';
 import userRoutes from './routes/users.js';
 import { EmergencyRegistry } from './services/emergencyRegistry.js';
+import { MissionRegistry } from './services/missionRegistry.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from './types/app.js';
 
 type FastifyFactory = (options?: Record<string, unknown>) => AppFastifyInstance;
@@ -35,11 +37,20 @@ const registerPlugins = async () => {
   await server.register(databasePlugin);
   const emergencyRegistry = new EmergencyRegistry(server.prisma, server.log);
   server.decorate('emergencyRegistry', emergencyRegistry);
+  const missionRegistry = new MissionRegistry(server.prisma, server.log, {
+    rememberNonEmergencyStatus:
+      emergencyRegistry.rememberNonEmergencyStatus.bind(emergencyRegistry),
+  });
+  server.decorate('missionRegistry', missionRegistry);
   await emergencyRegistry.reloadFromDb().catch(error => {
     server.log.error({ error }, 'Failed to load emergency registry from DB');
   });
+  await missionRegistry.reloadFromDb().catch(error => {
+    server.log.error({ error }, 'Failed to load mission registry from DB');
+  });
   server.addHook('onClose', async () => {
     emergencyRegistry.stop();
+    missionRegistry.stop();
   });
   await server.register(observabilityPlugin);
   await server.register(securityPlugin);
@@ -48,6 +59,7 @@ const registerPlugins = async () => {
 
   await server.register(userRoutes, { prefix: '/api' });
   await server.register(robotRoutes, { prefix: '/api' });
+  await server.register(missionRunRoutes, { prefix: '/api' });
   await server.register(mapRoutes, { prefix: '/api' });
 
   server.log.info('All plugins and routes registered successfully');

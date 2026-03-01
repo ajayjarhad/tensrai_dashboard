@@ -20,6 +20,7 @@ type RobotEmergencyRuntimeState = {
   hardwareEmergencyActive: boolean;
   effectiveEmergencyActive: boolean;
   connectionStatus: RobotEmergencyConnectionStatus;
+  source: 'live' | 'fallback' | 'unknown';
   updatedAt?: number;
   lastObservedAt?: number;
   lastEventType?: KnownEmergencyEventType;
@@ -44,7 +45,8 @@ type EmergencyStoreState = {
 };
 
 const DEFAULT_EMERGENCY_PORT = 8766;
-const DISPATCH_TIMEOUT_MS = 2_000;
+const DISPATCH_TIMEOUT_MS = Number(import.meta.env['VITE_EMERGENCY_ACK_TIMEOUT_MS'] ?? 5000);
+const POLL_MS = 50;
 
 const clients = new Map<
   string,
@@ -64,6 +66,19 @@ const toEventTimestamp = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : Date.now();
 };
 
+const createBaseState = (
+  robot: EmergencyRobotConfig,
+  connectionStatus: RobotEmergencyConnectionStatus
+): RobotEmergencyRuntimeState => ({
+  robotId: robot.id,
+  robotName: robot.name,
+  softwareEmergencyActive: false,
+  hardwareEmergencyActive: false,
+  effectiveEmergencyActive: false,
+  connectionStatus,
+  source: 'unknown',
+});
+
 const resolveLegacyEmergencyState = (
   current: RobotEmergencyRuntimeState | undefined,
   event: RobotEmergencyBridgeEvent
@@ -72,9 +87,7 @@ const resolveLegacyEmergencyState = (
   'softwareEmergencyActive' | 'hardwareEmergencyActive' | 'effectiveEmergencyActive'
 > | null => {
   if (!event.payload || typeof event.payload !== 'object') return null;
-  const payload = event.payload as {
-    status?: unknown;
-  };
+  const payload = event.payload as { status?: unknown };
   if (typeof payload.status !== 'boolean') return null;
 
   const currentHardware = current?.hardwareEmergencyActive ?? false;
@@ -141,6 +154,7 @@ const applyEventToState = (
     hardwareEmergencyActive: resolvedState.hardwareEmergencyActive,
     effectiveEmergencyActive: resolvedState.effectiveEmergencyActive,
     connectionStatus: 'connected',
+    source: 'live',
     updatedAt: eventAt,
     lastObservedAt,
     lastEventType: event.event as KnownEmergencyEventType,
@@ -154,25 +168,118 @@ const applyEventToState = (
   };
 };
 
-const createUnconfiguredState = (robot: EmergencyRobotConfig): RobotEmergencyRuntimeState => ({
-  robotId: robot.id,
-  robotName: robot.name,
-  softwareEmergencyActive: false,
-  hardwareEmergencyActive: false,
-  effectiveEmergencyActive: false,
-  connectionStatus: 'unconfigured',
-});
-
-const createDisconnectedState = (robot: EmergencyRobotConfig): RobotEmergencyRuntimeState => ({
-  robotId: robot.id,
+const toDisconnectedState = (
+  robot: EmergencyRobotConfig,
+  current?: RobotEmergencyRuntimeState
+): RobotEmergencyRuntimeState => ({
+  ...(current ?? createBaseState(robot, 'disconnected')),
   robotName: robot.name,
   softwareEmergencyActive: false,
   hardwareEmergencyActive: false,
   effectiveEmergencyActive: false,
   connectionStatus: 'disconnected',
+  source: 'unknown',
 });
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const toStatusChangeState = (
+  robot: EmergencyRobotConfig,
+  status: RobotEmergencyConnectionStatus,
+  current?: RobotEmergencyRuntimeState
+): RobotEmergencyRuntimeState => {
+  if (status === 'connected') {
+    return {
+      ...(current ?? createBaseState(robot, status)),
+      robotName: robot.name,
+      connectionStatus: status,
+      source: current?.source ?? 'unknown',
+    };
+  }
+
+  return {
+    ...(current ?? createBaseState(robot, status)),
+    robotName: robot.name,
+    softwareEmergencyActive: false,
+    hardwareEmergencyActive: false,
+    effectiveEmergencyActive: false,
+    connectionStatus: status,
+    source: 'unknown',
+  };
+};
+
+const waitForAck = (
+  getState: () => EmergencyStoreState,
+  robotId: string,
+  desiredStatus: boolean,
+  startedAt: number,
+  immediateFailure?: string
+) =>
+  new Promise<{
+    robotId: string;
+    robotName?: string | undefined;
+    applied: boolean;
+    connectionStatus: RobotEmergencyConnectionStatus;
+    softwareEmergencyActive: boolean | null;
+    hardwareEmergencyActive: boolean | null;
+    effectiveEmergencyActive: boolean | null;
+    error: string | null;
+  }>(resolve => {
+    const deadline = Date.now() + DISPATCH_TIMEOUT_MS;
+
+    const tick = () => {
+      const state = getState().byRobot[robotId];
+      if (immediateFailure) {
+        resolve({
+          robotId,
+          ...(state?.robotName ? { robotName: state.robotName } : {}),
+          applied: false,
+          connectionStatus: state?.connectionStatus ?? 'unconfigured',
+          softwareEmergencyActive: state?.softwareEmergencyActive ?? null,
+          hardwareEmergencyActive: state?.hardwareEmergencyActive ?? null,
+          effectiveEmergencyActive: state?.effectiveEmergencyActive ?? null,
+          error: immediateFailure,
+        });
+        return;
+      }
+
+      const applied =
+        state?.connectionStatus === 'connected' &&
+        typeof state.lastSoftwareAckAt === 'number' &&
+        state.lastSoftwareAckAt >= startedAt &&
+        state.lastSoftwareAckStatus === desiredStatus;
+
+      if (applied) {
+        resolve({
+          robotId,
+          ...(state?.robotName ? { robotName: state.robotName } : {}),
+          applied: true,
+          connectionStatus: state?.connectionStatus ?? 'unconfigured',
+          softwareEmergencyActive: state?.softwareEmergencyActive ?? null,
+          hardwareEmergencyActive: state?.hardwareEmergencyActive ?? null,
+          effectiveEmergencyActive: state?.effectiveEmergencyActive ?? null,
+          error: null,
+        });
+        return;
+      }
+
+      if (Date.now() >= deadline) {
+        resolve({
+          robotId,
+          ...(state?.robotName ? { robotName: state.robotName } : {}),
+          applied: false,
+          connectionStatus: state?.connectionStatus ?? 'unconfigured',
+          softwareEmergencyActive: state?.softwareEmergencyActive ?? null,
+          hardwareEmergencyActive: state?.hardwareEmergencyActive ?? null,
+          effectiveEmergencyActive: state?.effectiveEmergencyActive ?? null,
+          error: 'No matching emergency acknowledgment received',
+        });
+        return;
+      }
+
+      window.setTimeout(tick, POLL_MS);
+    };
+
+    tick();
+  });
 
 export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => ({
   byRobot: {},
@@ -191,9 +298,13 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
         clients.get(robot.id)?.client.disconnect();
         clients.delete(robot.id);
         nextByRobot[robot.id] = {
-          ...(current ?? createUnconfiguredState(robot)),
+          ...(current ?? createBaseState(robot, 'unconfigured')),
           robotName: robot.name,
+          softwareEmergencyActive: false,
+          hardwareEmergencyActive: false,
+          effectiveEmergencyActive: false,
           connectionStatus: 'unconfigured',
+          source: 'unknown',
         };
         continue;
       }
@@ -213,15 +324,11 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
 
         client.addStatusListener(status => {
           set(store => {
-            const currentState = store.byRobot[robot.id] ?? createDisconnectedState(robot);
+            const currentState = store.byRobot[robot.id];
             return {
               byRobot: {
                 ...store.byRobot,
-                [robot.id]: {
-                  ...currentState,
-                  robotName: robot.name,
-                  connectionStatus: status,
-                },
+                [robot.id]: toStatusChangeState(robot, status, currentState),
               },
             };
           });
@@ -251,7 +358,7 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
       }
 
       nextByRobot[robot.id] = {
-        ...(current ?? createDisconnectedState(robot)),
+        ...(current ?? toDisconnectedState(robot)),
         robotName: robot.name,
         connectionStatus:
           (clients.get(robot.id)?.client.getStatus() as RobotEmergencyConnectionStatus) ??
@@ -318,32 +425,11 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
       }
     }
 
-    await sleep(DISPATCH_TIMEOUT_MS);
-
-    const snapshot = get().byRobot;
-    const results = robotIds.map(robotId => {
-      const state = snapshot[robotId];
-      const immediateFailure = immediateFailures.get(robotId);
-      const applied =
-        !immediateFailure &&
-        state?.connectionStatus === 'connected' &&
-        typeof state.lastSoftwareAckAt === 'number' &&
-        state.lastSoftwareAckAt >= startedAt &&
-        state.lastSoftwareAckStatus === desiredStatus;
-
-      return {
-        robotId,
-        robotName: state?.robotName,
-        applied,
-        connectionStatus: state?.connectionStatus ?? 'unconfigured',
-        softwareEmergencyActive: state?.softwareEmergencyActive ?? null,
-        hardwareEmergencyActive: state?.hardwareEmergencyActive ?? null,
-        effectiveEmergencyActive: state?.effectiveEmergencyActive ?? null,
-        error: applied
-          ? null
-          : (immediateFailure ?? 'No matching emergency acknowledgment received'),
-      };
-    });
+    const results = await Promise.all(
+      robotIds.map(robotId =>
+        waitForAck(get, robotId, desiredStatus, startedAt, immediateFailures.get(robotId))
+      )
+    );
 
     const successCount = results.filter(result => result.applied).length;
     const status =
@@ -353,20 +439,19 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
           ? 'failure'
           : 'partial_failure';
 
-    const completedAt = new Date().toISOString();
     const result: FleetEmergencyDispatchResult = {
       desiredStatus,
       status,
       results,
       dispatchedAt: new Date(startedAt).toISOString(),
-      completedAt,
+      completedAt: new Date().toISOString(),
     };
 
-    set({
+    set(state => ({
       lastDispatchResult: result,
       pendingDispatch:
-        get().pendingDispatch?.startedAt === startedAt ? null : get().pendingDispatch,
-    });
+        state.pendingDispatch?.startedAt === startedAt ? null : state.pendingDispatch,
+    }));
 
     return result;
   },

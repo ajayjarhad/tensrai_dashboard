@@ -575,6 +575,7 @@ export function RobotManagement() {
                     <option value="SW_EMERGENCY">SW_EMERGENCY</option>
                     <option value="HW_EMERGENCY">HW_EMERGENCY</option>
                     <option value="TELEOP">TELEOP</option>
+                    <option value="AUTONOMOUS">AUTONOMOUS</option>
                     <option value="HRI">HRI</option>
                     <option value="UNKNOWN">UNKNOWN</option>
                   </select>

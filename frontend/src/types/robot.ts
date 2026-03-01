@@ -7,6 +7,7 @@ export enum RobotMode {
   SW_EMERGENCY = 'SW_EMERGENCY',
   HW_EMERGENCY = 'HW_EMERGENCY',
   TELEOP = 'TELEOP',
+  AUTONOMOUS = 'AUTONOMOUS',
   HRI = 'HRI',
   UNKNOWN = 'UNKNOWN',
 }
@@ -45,6 +46,7 @@ export interface Robot {
     hardwareEmergencyActive: boolean;
     effectiveEmergencyActive: boolean;
     connectionStatus: RobotEmergencyConnectionStatus;
+    source?: 'live' | 'fallback' | 'unknown';
     updatedAt?: number;
     lastObservedAt?: number;
     lastEventType?: 'EMERGENCY_STATE' | 'SOFTWARE_EMERGENCY_ACK' | 'HARDWARE_EMERGENCY_ACK';
@@ -60,11 +62,15 @@ export interface Robot {
     updatedAt?: string;
     lastEventStatus?: string;
     lastRequestType?: string;
+    requestIdLast?: string;
+    runId?: string;
+    startedAt?: string;
     mode?: 'teleop' | 'autonomous';
     batteryPercentage?: number | null;
     chargingStatus?: string | null;
     lastSeenTs?: number;
     waypointIndex?: number;
     totalWaypoints?: number;
+    phase?: string;
   };
 }

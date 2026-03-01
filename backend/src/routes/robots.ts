@@ -12,6 +12,7 @@ const RobotModeSchema = z.enum([
   'SW_EMERGENCY',
   'HW_EMERGENCY',
   'TELEOP',
+  'AUTONOMOUS',
   'HRI',
   'UNKNOWN',
 ]);
@@ -162,6 +163,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         });
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
+        (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
         // Try to fetch and store map in the background (fire and forget)
         fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
@@ -263,6 +265,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
 
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
+        (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
         fetchMapViaMappingBridge(server, robot).catch(() => {});
         return { success: true, data: robot };
       } catch (error: any) {
@@ -299,6 +302,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       });
       (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
       (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
+      (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
       return { success: true, message: 'Robot deleted successfully' };
     } catch (error: any) {
       if (error.code === 'P2025') {

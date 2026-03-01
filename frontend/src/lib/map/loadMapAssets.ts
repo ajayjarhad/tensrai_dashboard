@@ -29,6 +29,7 @@ const cacheAccessOrder = new Map<string, number>();
 let accessCounter = 0;
 
 let mapWorker: Worker | null = null;
+let mapWorkerRequestId = 0;
 
 const cacheKeyForMap = (mapId: string) => `map_${mapId}`;
 
@@ -82,20 +83,32 @@ const processMapInWorker = async (
 ) => {
   const worker = getWorker();
   return await new Promise<MapWorkerResponse>((resolve, reject) => {
-    const handleMessage = (e: MessageEvent<MapWorkerResponse>) => {
-      if (e.data.type !== 'MAP_PROCESSED') return;
+    mapWorkerRequestId += 1;
+    const requestId = mapWorkerRequestId;
+    const cleanup = () => {
       worker.removeEventListener('message', handleMessage);
+      window.clearTimeout(timeoutId);
+    };
+    const handleMessage = (e: MessageEvent<MapWorkerResponse>) => {
+      if (e.data.requestId !== requestId) return;
+      if (e.data.type !== 'MAP_PROCESSED') return;
+      cleanup();
       if (e.data.error) {
         reject(new Error(e.data.error));
         return;
       }
       resolve(e.data);
     };
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Map worker timed out'));
+    }, options.timeout ?? CACHE_CONFIG.DEFAULT_TIMEOUT);
 
     worker.addEventListener('message', handleMessage);
     worker.postMessage(
       {
         type: 'PROCESS_MAP',
+        requestId,
         pgmBuffer,
         yaml: metadata,
         useOptimized: options.useOptimizedParser ?? pgmBuffer.byteLength > 5 * 1024 * 1024,

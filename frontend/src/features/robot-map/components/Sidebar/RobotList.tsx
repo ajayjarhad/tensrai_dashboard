@@ -14,6 +14,7 @@ const statusToneClass = (robot: Robot) => {
   if (value.includes('EMERGENCY')) return 'bg-status-error';
   if (value === 'MISSION') return 'bg-status-active';
   if (value === 'TELEOP') return 'bg-amber-500';
+  if (value === 'AUTONOMOUS') return 'bg-slate-500';
   if (value === 'CHARGING' || value === 'DOCKING') return 'bg-sky-500';
   return 'bg-status-offline';
 };

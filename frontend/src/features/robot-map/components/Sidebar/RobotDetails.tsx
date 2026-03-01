@@ -13,6 +13,7 @@ const statusBadgeClass = (robot: Robot) => {
   if (value.includes('EMERGENCY')) return 'bg-status-error/15 text-status-error';
   if (value === 'MISSION') return 'bg-status-active/15 text-status-active';
   if (value === 'TELEOP') return 'bg-amber-500/20 text-amber-600';
+  if (value === 'AUTONOMOUS') return 'bg-slate-500/15 text-slate-600';
   if (value === 'CHARGING' || value === 'DOCKING') return 'bg-sky-500/20 text-sky-600';
   return 'bg-status-offline/20 text-status-offline';
 };

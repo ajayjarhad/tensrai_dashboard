@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 const LAST_SEEN_STALE_MS = 90_000;
 const BATTERY_EPSILON = 0.01;
+const isEmergencyStatus = (value: unknown) => value === 'SW_EMERGENCY' || value === 'HW_EMERGENCY';
 
 const statusUpdateSchema = z.object({
   robotId: z.union([z.string(), z.number(), z.null()]).optional(),
@@ -23,10 +24,10 @@ type SyncDeps = {
   log: {
     error: (obj: Record<string, unknown>, msg: string) => void;
   };
-  rememberNonEmergencyStatus?: (robotId: string, status: 'TELEOP' | 'UNKNOWN') => void;
+  rememberNonEmergencyStatus?: (robotId: string, status: 'TELEOP' | 'AUTONOMOUS') => void;
 };
 
-type SyncResult = {
+export type SyncResult = {
   ok: boolean;
   updated: boolean;
   reason?: string;
@@ -94,17 +95,25 @@ export const syncRobotStatusUpdate = async (
     hasFieldChange = true;
   }
 
-  if (parsed.value.mode === 'teleop' && robot.status !== 'TELEOP') {
+  if (
+    parsed.value.mode === 'teleop' &&
+    robot.status !== 'TELEOP' &&
+    !isEmergencyStatus(robot.status)
+  ) {
     updateData['status'] = 'TELEOP';
     hasFieldChange = true;
   }
   if (parsed.value.mode === 'teleop') {
     deps.rememberNonEmergencyStatus?.(robotId, 'TELEOP');
   }
-  if (parsed.value.mode === 'autonomous' && robot.status === 'TELEOP') {
-    updateData['status'] = 'UNKNOWN';
+  if (
+    parsed.value.mode === 'autonomous' &&
+    robot.status !== 'AUTONOMOUS' &&
+    !isEmergencyStatus(robot.status)
+  ) {
+    updateData['status'] = 'AUTONOMOUS';
     hasFieldChange = true;
-    deps.rememberNonEmergencyStatus?.(robotId, 'UNKNOWN');
+    deps.rememberNonEmergencyStatus?.(robotId, 'AUTONOMOUS');
   }
 
   const lastSeenMs = robot.lastSeen ? new Date(robot.lastSeen).getTime() : 0;

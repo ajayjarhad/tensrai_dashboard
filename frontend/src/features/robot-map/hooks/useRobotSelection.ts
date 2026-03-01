@@ -10,11 +10,11 @@ export function useRobotSelection(robots: Robot[], options: RobotSelectionOption
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // Derived active robot (selected or first on map)
-  // Note: The original logic in Dashboard.tsx line 21 was:
-  // const activeRobotId = selectedRobotId ?? robots.find(robot => robot.mapId)?.id ?? null;
-  // We'll expose this as well.
-  const activeRobotId = selectedRobotId ?? robots.find(robot => robot.mapId)?.id ?? null;
+  const activeRobotId =
+    selectedRobotId ??
+    robots.find(robot => robot.mapId && robot.mapId === activeMapId)?.id ??
+    robots.find(robot => robot.mapId)?.id ??
+    null;
 
   // Initialize or recover active map when robots load or change
   useEffect(() => {
