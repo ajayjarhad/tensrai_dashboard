@@ -143,6 +143,12 @@ const normalizeMissionResult = (status?: MissionStatus): MissionLogView['result'
   return 'failed';
 };
 
+const formatRobotNames = (names: string[]) => {
+  if (names.length === 0) return '';
+  if (names.length <= 3) return names.join(', ');
+  return `${names.slice(0, 3).join(', ')} +${names.length - 3} more`;
+};
+
 export function Dashboard() {
   const { data: robotsData } = useRobots();
   const robotsFromApi = useMemo(() => robotsData ?? [], [robotsData]);
@@ -328,17 +334,20 @@ export function Dashboard() {
       }
 
       setEmergencyAlerts(current => {
+        const kind = robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software';
         const alertId = canShowAckPopup
           ? `ack:${robot.id}:${eventType}:${eventAt}`
-          : `snapshot:${robot.id}:${robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software'}`;
+          : `snapshot:${robot.id}:${kind}`;
         if (current.some(alert => alert.id === alertId)) return current;
+        if (current.some(alert => alert.robotId === robot.id && alert.kind === kind))
+          return current;
         return [
           ...current,
           {
             id: alertId,
             robotId: robot.id,
             robotName: robot.name,
-            kind: robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software',
+            kind,
           },
         ];
       });
@@ -650,6 +659,9 @@ export function Dashboard() {
   const handleFleetEmergencyDispatch = useCallback(
     async (desiredStatus: boolean) => {
       const result = await sendFleetSoftwareEmergency(desiredStatus);
+      const successfulNames = result.results
+        .filter(entry => entry.applied)
+        .map(entry => entry.robotName ?? entry.robotId);
       const successCount = result.results.filter(entry => entry.applied).length;
       const failureCount = result.results.length - successCount;
       const failureSummary = result.results
@@ -659,14 +671,24 @@ export function Dashboard() {
       const hardwareLockedCount = result.results.filter(
         entry => entry.applied && entry.hardwareEmergencyActive
       ).length;
+      const successSummary = formatRobotNames(successfulNames);
 
       if (desiredStatus) {
         if (result.status === 'success') {
-          toast.success(`Emergency sent to ${successCount} robot${successCount === 1 ? '' : 's'}`);
+          toast.success(
+            successSummary
+              ? `Emergency sent to ${successSummary}`
+              : `Emergency sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
+          );
         } else if (result.status === 'partial_failure') {
-          toast.error(`Emergency sent to ${successCount} robots, ${failureCount} failed`, {
-            description: failureSummary || undefined,
-          });
+          toast.error(
+            successSummary
+              ? `Emergency sent to ${successSummary}; ${failureCount} failed`
+              : `Emergency sent to ${successCount} robots, ${failureCount} failed`,
+            {
+              description: failureSummary || undefined,
+            }
+          );
         } else {
           toast.error('Emergency command failed for all robots', {
             description: failureSummary || undefined,
@@ -692,13 +714,22 @@ export function Dashboard() {
       }
 
       if (result.status === 'partial_failure') {
-        toast.error(`Release sent to ${successCount} robots, ${failureCount} failed`, {
-          description: failureSummary || undefined,
-        });
+        toast.error(
+          successSummary
+            ? `Release sent to ${successSummary}; ${failureCount} failed`
+            : `Release sent to ${successCount} robots, ${failureCount} failed`,
+          {
+            description: failureSummary || undefined,
+          }
+        );
         return;
       }
 
-      toast.success(`Release sent to ${successCount} robot${successCount === 1 ? '' : 's'}`);
+      toast.success(
+        successSummary
+          ? `Release sent to ${successSummary}`
+          : `Release sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
+      );
     },
     [sendFleetSoftwareEmergency]
   );
@@ -1143,7 +1174,7 @@ export function Dashboard() {
             <DialogTitle className="text-safety-estop">Emergency Active</DialogTitle>
             <DialogDescription className="text-foreground/80">
               {currentEmergencyAlert
-                ? `${currentEmergencyAlert.kind === 'hardware' ? 'Hardware' : 'Software'} emergency acknowledged for ${currentEmergencyAlert.robotName}.`
+                ? `${currentEmergencyAlert.kind === 'hardware' ? 'Hardware' : 'Software'} emergency set on ${currentEmergencyAlert.robotName}.`
                 : ''}
             </DialogDescription>
           </DialogHeader>

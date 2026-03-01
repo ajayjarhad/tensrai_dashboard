@@ -24,6 +24,8 @@ type RobotEmergencyRuntimeState = {
   lastObservedAt?: number;
   lastEventType?: KnownEmergencyEventType;
   lastEventAt?: number;
+  lastSoftwareAckAt?: number;
+  lastSoftwareAckStatus?: boolean;
 };
 
 type PendingDispatch = {
@@ -126,6 +128,11 @@ const applyEventToState = (
   if (!resolvedState) return null;
 
   const eventAt = toEventTimestamp(payload.timestamp);
+  const isSoftwareAck = event.event === 'SOFTWARE_EMERGENCY_ACK';
+  const ackStatus =
+    typeof (event.payload as { status?: unknown }).status === 'boolean'
+      ? ((event.payload as { status: boolean }).status as boolean)
+      : resolvedState.softwareEmergencyActive;
 
   return {
     robotId,
@@ -137,7 +144,13 @@ const applyEventToState = (
     updatedAt: eventAt,
     lastObservedAt,
     lastEventType: event.event as KnownEmergencyEventType,
-    lastEventAt: eventAt,
+    lastEventAt: lastObservedAt,
+    ...(isSoftwareAck
+      ? {
+          lastSoftwareAckAt: lastObservedAt,
+          lastSoftwareAckStatus: ackStatus,
+        }
+      : {}),
   };
 };
 
@@ -314,10 +327,9 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
       const applied =
         !immediateFailure &&
         state?.connectionStatus === 'connected' &&
-        state?.lastEventType === 'SOFTWARE_EMERGENCY_ACK' &&
-        typeof state.lastEventAt === 'number' &&
-        state.lastEventAt >= startedAt &&
-        state.softwareEmergencyActive === desiredStatus;
+        typeof state.lastSoftwareAckAt === 'number' &&
+        state.lastSoftwareAckAt >= startedAt &&
+        state.lastSoftwareAckStatus === desiredStatus;
 
       return {
         robotId,
