@@ -146,3 +146,19 @@ export const mapMetrics = {
   }),
   // Note: storageSize removed due to Bun runtime compatibility issues with gauges
 };
+
+export const emergencyMetrics = {
+  connectionEvents: safeCounter('emergency.bridge.connections.total', {
+    description: 'Total number of emergency bridge connection lifecycle events',
+  }),
+  stateTransitions: safeCounter('emergency.bridge.state_transitions.total', {
+    description: 'Total number of observed emergency state transitions',
+  }),
+  dbSyncWrites: safeCounter('emergency.bridge.db_sync_writes.total', {
+    description: 'Total number of robot status writes caused by emergency bridge state changes',
+  }),
+  snapshotTimeouts: safeCounter('emergency.bridge.snapshot_timeouts.total', {
+    description:
+      'Total number of emergency bridge connections that did not send an initial snapshot',
+  }),
+};

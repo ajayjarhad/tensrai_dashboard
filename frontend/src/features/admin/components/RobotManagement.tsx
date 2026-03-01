@@ -13,7 +13,9 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api';
+import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { useAuth } from '@/stores/auth';
+import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import type { Robot, RobotMode } from '@/types/robot';
 
 type EditableRobot = Partial<Robot> & {
@@ -23,6 +25,7 @@ type EditableRobot = Partial<Robot> & {
   bridgePort?: number;
   mappingBridgePort?: number;
   missionBridgePort?: number;
+  emergencyBridgePort?: number;
   mapId?: string;
   status?: RobotMode;
   channels?: Robot['channels'];
@@ -34,6 +37,7 @@ const DEFAULT_ROBOT: EditableRobot = {
   bridgePort: 9090,
   mappingBridgePort: 8765,
   missionBridgePort: 9487,
+  emergencyBridgePort: 8766,
   mapId: '',
   status: 'UNKNOWN' as RobotMode,
 };
@@ -83,6 +87,9 @@ export function RobotManagement() {
   const [customChannels, setCustomChannels] = useState<any[]>(defaultChannels);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
+  const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
+  const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
 
   const loadRobots = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false;
@@ -133,6 +140,23 @@ export function RobotManagement() {
     return () => clearInterval(interval);
   }, [isAdminUser, loadRobots]);
 
+  useEffect(() => {
+    if (!isAdminUser) return;
+    syncEmergencyRobots(robots);
+  }, [isAdminUser, robots, syncEmergencyRobots]);
+
+  useEffect(
+    () => () => {
+      disconnectEmergencyRobots();
+    },
+    [disconnectEmergencyRobots]
+  );
+
+  const displayedRobots = useMemo(
+    () => robots.map(robot => mergeEmergencyRuntimeIntoRobot(robot, emergencyByRobot[robot.id])),
+    [emergencyByRobot, robots]
+  );
+
   const handleEdit = (robot: Robot) => {
     const next: EditableRobot = {
       id: robot.id,
@@ -148,6 +172,9 @@ export function RobotManagement() {
     }
     if (robot.missionBridgePort !== undefined) {
       next.missionBridgePort = robot.missionBridgePort;
+    }
+    if (robot.emergencyBridgePort !== undefined) {
+      next.emergencyBridgePort = robot.emergencyBridgePort;
     }
     if (robot.channels) {
       next.channels = robot.channels;
@@ -183,6 +210,9 @@ export function RobotManagement() {
         bridgePort: form.bridgePort ? Number(form.bridgePort) : undefined,
         mappingBridgePort: form.mappingBridgePort ? Number(form.mappingBridgePort) : undefined,
         missionBridgePort: form.missionBridgePort ? Number(form.missionBridgePort) : undefined,
+        emergencyBridgePort: form.emergencyBridgePort
+          ? Number(form.emergencyBridgePort)
+          : undefined,
         mapId: form.mapId || undefined,
         status: form.status ?? 'UNKNOWN',
         channels: finalChannels,
@@ -333,7 +363,7 @@ export function RobotManagement() {
               <div className="flex justify-center py-12">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
               </div>
-            ) : robots.length === 0 ? (
+            ) : displayedRobots.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">No robots found</div>
             ) : (
               <table className="min-w-full divide-y divide-border">
@@ -357,7 +387,7 @@ export function RobotManagement() {
                   </tr>
                 </thead>
                 <tbody className="bg-background divide-y divide-border">
-                  {robots.map(robot => (
+                  {displayedRobots.map(robot => (
                     <tr key={robot.id}>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <div className="text-sm font-medium text-foreground">{robot.name}</div>
@@ -367,17 +397,20 @@ export function RobotManagement() {
                         {robot.ipAddress ?? '—'}:{robot.bridgePort ?? 9090}
                         {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
                         {robot.missionBridgePort ? ` / ${robot.missionBridgePort}` : ''}
+                        {robot.emergencyBridgePort ? ` / ${robot.emergencyBridgePort}` : ''}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {maps.find(m => m.id === robot.mapId)?.name ?? '—'}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
-                        {robot.status}
+                        {getRobotDisplayStatusLabel(robot)}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-medium space-x-2">
                         <button
                           type="button"
-                          onClick={() => handleEdit(robot)}
+                          onClick={() =>
+                            handleEdit(robots.find(item => item.id === robot.id) ?? robot)
+                          }
                           className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
                         >
                           <Save className="h-4 w-4 rotate-90" />
@@ -494,6 +527,27 @@ export function RobotManagement() {
                   </p>
                 </div>
                 <div className="space-y-1">
+                  <label className="text-sm text-muted-foreground">Emergency Bridge Port</label>
+                  <input
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
+                    value={form.emergencyBridgePort ?? ''}
+                    onChange={e =>
+                      setForm(f => ({
+                        ...f,
+                        emergencyBridgePort: e.target.value ? Number(e.target.value) : undefined,
+                      }))
+                    }
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder="8766"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional direct emergency bridge on the same IP (e.g. 8766). Used by the
+                    dashboard for emergency stop control and backend sync.
+                  </p>
+                </div>
+                <div className="space-y-1">
                   <label className="text-sm text-muted-foreground">Map</label>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
@@ -521,6 +575,7 @@ export function RobotManagement() {
                     <option value="SW_EMERGENCY">SW_EMERGENCY</option>
                     <option value="HW_EMERGENCY">HW_EMERGENCY</option>
                     <option value="TELEOP">TELEOP</option>
+                    <option value="AUTONOMOUS">AUTONOMOUS</option>
                     <option value="HRI">HRI</option>
                     <option value="UNKNOWN">UNKNOWN</option>
                   </select>

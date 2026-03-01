@@ -2,6 +2,8 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import type { PrismaClient, User as PrismaUser } from '@prisma/client';
 import type { Auth } from '../config/auth.js';
+import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
+import type { MissionRegistry } from '../services/missionRegistry.js';
 
 export interface AuditEvent {
   userId: string;
@@ -43,6 +45,8 @@ import type { FastifyInstance } from 'fastify';
 export type AppFastifyInstance = FastifyInstance & {
   prisma: PrismaClient;
   auth: Auth;
+  emergencyRegistry?: EmergencyRegistry;
+  missionRegistry?: MissionRegistry;
   audit(event: AuditEvent): Promise<void>;
   register: <T = any>(...args: any[]) => T;
   get: <T = any>(...args: any[]) => T;

@@ -123,6 +123,7 @@ const validateAndClampTeleop = (
 export class RosRobotManager extends EventEmitter {
   private connections = new Map<string, RosBridgeConnection>();
   private channels = new Map<string, ChannelRuntime>();
+  private latestChannelData = new Map<string, unknown>();
   private started = false;
   private laserOffset = { ...DEFAULT_LASER_OFFSET };
   private mapPose?: Pose2D;
@@ -270,6 +271,7 @@ export class RosRobotManager extends EventEmitter {
         else if (name === 'odom') processed = this.processOdom(data as any);
         else if (name === 'amcl') processed = this.processAmcl(data as any);
         const sanitized = sanitizeChannelPayload(name, processed);
+        this.latestChannelData.set(name, sanitized);
         this.emit('channel-data', { channel: name, data: sanitized });
       });
       try {
@@ -592,22 +594,31 @@ export class RosRobotManager extends EventEmitter {
 
     const orientation = this.yawToQuaternion(pose.yaw ?? 0);
     this.lastPublishedPose = { ...pose, stampMs, source };
-    this.emit('channel-data', {
-      channel: 'pose',
-      data: {
-        x: pose.x,
-        y: pose.y,
-        yaw: pose.yaw,
-        theta: pose.yaw,
-        stampMs,
-        source,
+    const posePayload = {
+      x: pose.x,
+      y: pose.y,
+      yaw: pose.yaw,
+      theta: pose.yaw,
+      stampMs,
+      source,
+      pose: {
         pose: {
-          pose: {
-            position: { x: pose.x, y: pose.y, z: 0 },
-            orientation,
-          },
+          position: { x: pose.x, y: pose.y, z: 0 },
+          orientation,
         },
       },
+    };
+    this.latestChannelData.set('pose', posePayload);
+    this.emit('channel-data', {
+      channel: 'pose',
+      data: posePayload,
     });
+  }
+
+  getLatestChannelEvents() {
+    return Array.from(this.latestChannelData.entries()).map(([channel, data]) => ({
+      channel,
+      data,
+    }));
   }
 }

@@ -1,7 +1,7 @@
-import type { PixelPoint, ProcessedMapData } from '@tensrai/shared';
+import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
-import { type RefObject, useCallback, useEffect, useState } from 'react';
-import { Group, Image as KonvaImage, Layer } from 'react-konva';
+import { type RefObject, useCallback, useEffect, useMemo, useState } from 'react';
+import { Group, Image as KonvaImage, Layer, Rect } from 'react-konva';
 import { toast } from 'sonner';
 import { clampPixelToBounds, createMapTransforms } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
@@ -13,6 +13,8 @@ import { LocationLayer } from './LocationLayer';
 import { RobotLayer } from './RobotLayer';
 import { type PendingPose, type PoseConfirmPayload, SetPoseLayer } from './SetPoseLayer';
 
+const EMPTY_FLOATS = new Float32Array(0);
+
 interface MapLayersProps {
   stageRef: RefObject<Konva.Stage | null>;
   mapGroupRef: RefObject<Konva.Group | null>;
@@ -21,8 +23,9 @@ interface MapLayersProps {
   rotation: number;
   locations: TempLocation[];
   robots: Robot[];
-  laserPoints?: PixelPoint[];
-  pathPoints?: PixelPoint[];
+  laserPoints?: Float32Array;
+  pathPoints?: Float32Array;
+  overlayBitmap?: ImageBitmap | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   stageScale?: number;
   selectedRobotId?: string | null;
@@ -41,8 +44,9 @@ export function MapLayers({
   rotation,
   locations,
   robots,
-  laserPoints = [],
-  pathPoints = [],
+  laserPoints = EMPTY_FLOATS,
+  pathPoints = EMPTY_FLOATS,
+  overlayBitmap,
   onRobotSelect,
   stageScale = 1,
   selectedRobotId,
@@ -60,6 +64,17 @@ export function MapLayers({
     resolution,
     origin,
   });
+  const highlightTagIdSet = useMemo(
+    () => (highlightTagIds ? new Set(highlightTagIds) : undefined),
+    [highlightTagIds]
+  );
+  const sharedGroupProps = {
+    x: mapWidth / 2,
+    y: mapHeight / 2,
+    offsetX: mapWidth / 2,
+    offsetY: mapHeight / 2,
+    rotation,
+  } as const;
 
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [pendingPose, setPendingPose] = useState<PendingPose | null>(null);
@@ -187,26 +202,32 @@ export function MapLayers({
 
   return (
     <>
-      {/* Invisible rect to catch clicks on the stage background */}
       <Layer>
-        <Group
-          ref={mapGroupRef}
-          x={mapWidth / 2}
-          y={mapHeight / 2}
-          offsetX={mapWidth / 2}
-          offsetY={mapHeight / 2}
-          rotation={rotation}
-          onClick={handleStageClick}
-          onTap={handleStageClick}
-        >
+        <Group ref={mapGroupRef} {...sharedGroupProps}>
           {mapImage && <KonvaImage image={mapImage} width={mapWidth} height={mapHeight} />}
+        </Group>
+      </Layer>
 
-          <PathLayer points={pathPoints} />
+      <Layer listening={false}>
+        <Group {...sharedGroupProps}>
+          {overlayBitmap ? (
+            <KonvaImage image={overlayBitmap} width={mapWidth} height={mapHeight} />
+          ) : (
+            <>
+              <PathLayer points={pathPoints} />
+              <LaserLayer points={laserPoints} scale={stageScale} />
+            </>
+          )}
+        </Group>
+      </Layer>
 
+      <Layer>
+        <Group {...sharedGroupProps} onClick={handleStageClick} onTap={handleStageClick}>
+          <Rect width={mapWidth} height={mapHeight} fill="rgba(0,0,0,0)" />
           <LocationLayer
             locations={locations}
             setPoseMode={setPoseMode}
-            {...(highlightTagIds ? { highlightTagIds: new Set(highlightTagIds) } : {})}
+            {...(highlightTagIdSet ? { highlightTagIds: highlightTagIdSet } : {})}
             {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
             onLocationSelect={handleLocationSelect}
           />
@@ -218,8 +239,6 @@ export function MapLayers({
             onRobotSelect={(onRobotSelect || (() => {})) ?? undefined}
             setSelectedLocationId={setSelectedLocationId}
           />
-
-          <LaserLayer points={laserPoints} scale={stageScale} />
 
           <LabelsLayer
             selectedLocation={selectedLocation}

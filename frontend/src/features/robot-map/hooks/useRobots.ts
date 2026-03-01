@@ -7,8 +7,7 @@ export function useRobots(enabled = true) {
     queryKey: queryKeys.robots.lists,
     queryFn: getRobots,
     enabled,
-    // Avoid hammering the endpoint; rely on focus revalidation/manual refetch
-    refetchInterval: false,
+    refetchInterval: 10_000,
     staleTime: 5_000,
   });
 }

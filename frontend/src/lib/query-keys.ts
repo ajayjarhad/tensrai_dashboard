@@ -13,6 +13,8 @@ const missions = {
   all: [ROBOT_MAP, 'missions'] as const,
   lists: [ROBOT_MAP, 'missions', 'list'] as const,
   detail: (id: string) => [ROBOT_MAP, 'missions', id] as const,
+  runs: (filters?: string) => [ROBOT_MAP, 'missions', 'runs', filters ?? 'all'] as const,
+  current: (robotId: string) => [ROBOT_MAP, 'missions', 'current', robotId] as const,
 };
 
 // Query keys for Admin feature

@@ -5,6 +5,7 @@ import { parsePGMOptimized } from './pgm-parser-optimized';
 // Define message types
 export type MapWorkerRequest = {
   type: 'PROCESS_MAP';
+  requestId: number;
   pgmBuffer: ArrayBuffer;
   yaml: MapYamlMetadata;
   useOptimized?: boolean;
@@ -13,6 +14,7 @@ export type MapWorkerRequest = {
 
 export type MapWorkerResponse = {
   type: 'MAP_PROCESSED';
+  requestId: number;
   bitmap: ImageBitmap;
   width: number;
   height: number;
@@ -22,7 +24,7 @@ export type MapWorkerResponse = {
 const ctx: Worker = self as any;
 
 ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
-  const { type, pgmBuffer, yaml, useOptimized, pgmQuality } = e.data;
+  const { type, requestId, pgmBuffer, yaml, useOptimized, pgmQuality } = e.data;
 
   if (type !== 'PROCESS_MAP') return;
 
@@ -66,6 +68,7 @@ ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
     ctx.postMessage(
       {
         type: 'MAP_PROCESSED',
+        requestId,
         bitmap,
         width,
         height,
@@ -75,6 +78,7 @@ ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
   } catch (error) {
     ctx.postMessage({
       type: 'MAP_PROCESSED',
+      requestId,
       error: error instanceof Error ? error.message : 'Unknown worker error',
     } as any);
   }

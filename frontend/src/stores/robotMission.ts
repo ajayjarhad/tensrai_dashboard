@@ -15,7 +15,9 @@ import type { Robot } from '@/types/robot';
 
 export type MissionLifecycleStatus =
   | 'idle'
+  | 'preview_pending'
   | 'showing'
+  | 'start_pending'
   | 'running'
   | 'paused'
   | 'completed'
@@ -24,7 +26,11 @@ export type MissionLifecycleStatus =
 
 export type MissionStatus = {
   status: MissionLifecycleStatus;
+  phase: MissionLifecycleStatus;
   currentMissionId?: string | undefined;
+  requestIdLast?: string | undefined;
+  runId?: string | undefined;
+  startedAt?: string | undefined;
   message?: string | undefined;
   updatedAt?: number | undefined;
   lastEvent?: string | undefined;
@@ -38,6 +44,8 @@ export type MissionStatus = {
   lastSeenTs?: number | undefined;
   waypointIndex?: number | undefined;
   totalWaypoints?: number | undefined;
+  runtimeUpdatedAt?: number | undefined;
+  modeUpdatedAt?: number | undefined;
 };
 
 export type MissionCommandDispatchResult = {
@@ -66,12 +74,19 @@ const normalizeMissionId = (value: unknown) => {
   return str.length ? str : undefined;
 };
 
+const normalizeRequestId = (value: unknown) => {
+  if (typeof value !== 'string') return undefined;
+  const str = value.trim();
+  return str.length ? str : undefined;
+};
+
 const normalizeRequestType = (value: unknown) => {
   if (!value) return undefined;
   const raw = String(value).trim().toUpperCase();
   if (raw === 'PAUSE_MISSION' || raw === 'PAUSE') return 'PAUSE';
   if (raw === 'RESUME_MISSION' || raw === 'RESUME') return 'RESUME';
   if (raw === 'CANCEL_MISSION' || raw === 'CANCEL') return 'CANCEL';
+  if (raw === 'START_MISSION') return 'START_MISSION';
   if (raw === 'SHOW_UP') return 'SHOW_UP';
   return raw;
 };
@@ -108,7 +123,31 @@ const toFiniteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const shouldKeepWaypointProgress = (status: MissionLifecycleStatus | undefined) =>
-  status === 'running' || status === 'paused' || status === 'showing';
+  status === 'running' || status === 'paused' || status === 'showing' || status === 'start_pending';
+
+const isPreviewLikePhase = (status: MissionLifecycleStatus | undefined) =>
+  status === 'preview_pending' || status === 'showing' || status === 'start_pending';
+
+const shouldAcceptRunId = (current: MissionStatus, eventRunId: string | undefined) => {
+  if (!eventRunId || !current.runId) return true;
+  return eventRunId === current.runId;
+};
+
+const shouldAcceptRequest = (
+  current: MissionStatus,
+  requestId: string | undefined,
+  eventAt: number
+) => {
+  if (!requestId || !current.requestIdLast) return true;
+  if (requestId === current.requestIdLast) return true;
+  return (current.lastEventAt ?? 0) <= eventAt;
+};
+
+const setPhase = (base: MissionStatus, phase: MissionLifecycleStatus): MissionStatus => ({
+  ...base,
+  phase,
+  status: phase,
+});
 
 const updateFromMissionStartAck = (
   current: MissionStatus,
@@ -116,44 +155,40 @@ const updateFromMissionStartAck = (
   base: MissionStatus
 ): MissionStatus => {
   const missionId = normalizeMissionId(payload?.missionId);
+  const requestId = normalizeRequestId(payload?.requestId);
+  if (!shouldAcceptRequest(current, requestId, base.lastEventAt ?? 0)) return current;
   const ackStatus = payload?.status;
   const message = payload?.message ?? current.message;
+  const runId = normalizeRequestId(payload?.runId) ?? current.runId;
+  const startedAt = typeof payload?.startedAt === 'string' ? payload.startedAt : current.startedAt;
 
   if (ackStatus === 'success') {
-    return {
-      ...base,
-      status: 'running',
-      currentMissionId: missionId,
-      waypointIndex: 0,
-      totalWaypoints: undefined,
-      message,
-      lastEventStatus: ackStatus,
-    };
+    return setPhase(
+      {
+        ...base,
+        currentMissionId: missionId ?? current.currentMissionId,
+        requestIdLast: requestId ?? current.requestIdLast,
+        runId,
+        startedAt,
+        waypointIndex: 0,
+        totalWaypoints: current.totalWaypoints,
+        message,
+        lastEventStatus: ackStatus,
+      },
+      'running'
+    );
   }
 
-  const lowerMessage = String(message ?? '').toLowerCase();
-  if (
-    lowerMessage.includes('already running') &&
-    (current.status === 'running' || current.status === 'paused' || current.status === 'showing')
-  ) {
-    return {
+  return setPhase(
+    {
       ...base,
-      status: current.status,
-      currentMissionId: current.currentMissionId ?? missionId,
+      currentMissionId: missionId ?? current.currentMissionId,
+      requestIdLast: requestId ?? current.requestIdLast,
       message,
       lastEventStatus: ackStatus,
-    };
-  }
-
-  return {
-    ...base,
-    status: 'idle',
-    currentMissionId: missionId,
-    waypointIndex: undefined,
-    totalWaypoints: undefined,
-    message,
-    lastEventStatus: ackStatus,
-  };
+    },
+    current.phase === 'start_pending' ? 'showing' : current.phase
+  );
 };
 
 const updateFromMissionControlAck = (
@@ -162,36 +197,42 @@ const updateFromMissionControlAck = (
   base: MissionStatus
 ): MissionStatus => {
   const requestType = normalizeRequestType(payload?.requestType);
+  const requestId = normalizeRequestId(payload?.requestId);
+  if (!shouldAcceptRequest(current, requestId, base.lastEventAt ?? 0)) return current;
   const missionId = normalizeMissionId(payload?.missionId);
   const ackStatus = payload?.status;
   const message = payload?.message ?? current.message;
 
-  let status = current.status;
+  let phase = current.phase;
   if (ackStatus === 'success') {
-    if (requestType === 'SHOW_UP') status = 'showing';
-    if (requestType === 'PAUSE') status = 'paused';
-    if (requestType === 'RESUME') status = 'running';
-    if (requestType === 'CANCEL') status = 'cancelled';
+    if (requestType === 'SHOW_UP') phase = 'showing';
+    if (requestType === 'PAUSE') phase = 'paused';
+    if (requestType === 'RESUME') phase = 'running';
+    if (requestType === 'CANCEL') phase = 'cancelled';
+  } else if (requestType === 'SHOW_UP' && current.phase === 'preview_pending') {
+    phase = 'idle';
   }
 
-  const nextMissionId =
-    ackStatus === 'success' && requestType === 'CANCEL'
-      ? undefined
-      : (missionId ?? current.currentMissionId);
+  const clearMission = ackStatus === 'success' && requestType === 'CANCEL';
   const clearWaypoint =
     (ackStatus === 'success' && requestType === 'SHOW_UP') ||
     (ackStatus === 'success' && requestType === 'CANCEL');
 
-  return {
-    ...base,
-    status,
-    currentMissionId: nextMissionId,
-    waypointIndex: clearWaypoint ? undefined : current.waypointIndex,
-    totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
-    message,
-    lastEventStatus: ackStatus,
-    lastRequestType: requestType,
-  };
+  return setPhase(
+    {
+      ...base,
+      currentMissionId: clearMission ? undefined : (missionId ?? current.currentMissionId),
+      requestIdLast: requestId ?? current.requestIdLast,
+      runId: clearMission ? undefined : current.runId,
+      startedAt: clearMission ? undefined : current.startedAt,
+      waypointIndex: clearWaypoint ? undefined : current.waypointIndex,
+      totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
+      message,
+      lastEventStatus: ackStatus,
+      lastRequestType: requestType,
+    },
+    phase
+  );
 };
 
 const updateFromMissionCompleted = (
@@ -199,18 +240,23 @@ const updateFromMissionCompleted = (
   payload: MissionCompletedPayload | undefined,
   base: MissionStatus
 ): MissionStatus => {
+  const runId = normalizeRequestId(payload?.runId);
+  if (!shouldAcceptRunId(current, runId)) return current;
   const rawStatus = String(payload?.status ?? '').toLowerCase();
   const missionId = normalizeMissionId(payload?.missionId);
-  const status: MissionLifecycleStatus =
+  const phase: MissionLifecycleStatus =
     rawStatus === 'success' ? 'completed' : rawStatus === 'cancelled' ? 'cancelled' : 'failed';
 
-  return {
-    ...base,
-    status,
-    currentMissionId: missionId ?? current.currentMissionId,
-    message: payload?.message ?? current.message,
-    lastEventStatus: rawStatus || current.lastEventStatus,
-  };
+  return setPhase(
+    {
+      ...base,
+      currentMissionId: missionId ?? current.currentMissionId,
+      runId: runId ?? current.runId,
+      message: payload?.message ?? current.message,
+      lastEventStatus: rawStatus || current.lastEventStatus,
+    },
+    phase
+  );
 };
 
 const updateFromWaypointAck = (
@@ -218,9 +264,12 @@ const updateFromWaypointAck = (
   payload: WaypointAckPayload | undefined,
   base: MissionStatus
 ): MissionStatus => {
+  const runId = normalizeRequestId(payload?.runId);
+  if (!shouldAcceptRunId(current, runId)) return current;
   return {
     ...base,
     currentMissionId: normalizeMissionId(payload?.missionId) ?? current.currentMissionId,
+    runId: runId ?? current.runId,
     waypointIndex: toFiniteNumber(payload?.waypointIndex) ?? current.waypointIndex,
     totalWaypoints: toFiniteNumber(payload?.totalWaypoints) ?? current.totalWaypoints,
     message: payload?.message ?? current.message,
@@ -233,9 +282,14 @@ const updateFromModeChangeAck = (
   payload: ModeChangeAckPayload | undefined,
   base: MissionStatus
 ): MissionStatus => {
+  const modeTimestamp =
+    parseTimestampMs(payload?.timestamp) ??
+    parseTimestampMs(payload?.time) ??
+    current.modeUpdatedAt;
   return {
     ...base,
     mode: isRobotRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode,
+    modeUpdatedAt: modeTimestamp,
     message: payload?.message ?? payload?.error ?? current.message,
     lastEventStatus: payload?.status ?? current.lastEventStatus,
   };
@@ -244,45 +298,81 @@ const updateFromModeChangeAck = (
 const updateFromRobotStatusUpdate = (
   current: MissionStatus,
   payload: RobotStatusUpdatePayload | undefined,
-  base: MissionStatus
+  eventAt: number
 ): MissionStatus => {
-  const runtimeStatus = fromRuntimeMissionStatus(payload?.mission?.status);
+  if (current.runtimeUpdatedAt !== undefined && eventAt < current.runtimeUpdatedAt) {
+    return current;
+  }
+
+  const runtimePhase = fromRuntimeMissionStatus(payload?.mission?.status);
   const missionId = normalizeMissionId(payload?.mission?.currentMissionId);
+  const runtimeRunId = normalizeRequestId(payload?.mission?.runId);
   const hasMissionId =
     payload?.mission !== undefined &&
     payload?.mission !== null &&
     Object.hasOwn(payload.mission, 'currentMissionId');
-  const nextStatus = runtimeStatus ?? current.status;
-  const nextMissionId = hasMissionId ? missionId : current.currentMissionId;
-  const clearMissionId = runtimeStatus === 'idle' && !hasMissionId;
+  const shouldPreserveLocalPreview =
+    isPreviewLikePhase(current.phase) && runtimePhase === 'idle' && !missionId && !runtimeRunId;
+  const nextPhase = shouldPreserveLocalPreview ? current.phase : (runtimePhase ?? current.phase);
+  const nextMissionId = shouldPreserveLocalPreview
+    ? current.currentMissionId
+    : hasMissionId
+      ? missionId
+      : current.currentMissionId;
+  const clearMissionId = shouldPreserveLocalPreview
+    ? false
+    : runtimePhase === 'idle' && !hasMissionId;
   const missionChanged = hasMissionId && missionId !== current.currentMissionId;
-  const clearWaypoint = missionChanged || !shouldKeepWaypointProgress(nextStatus);
+  const clearWaypoint = missionChanged || !shouldKeepWaypointProgress(nextPhase);
+  const nextMode = isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode;
 
-  return {
-    ...base,
-    status: nextStatus,
-    currentMissionId: clearMissionId ? undefined : nextMissionId,
-    waypointIndex: clearWaypoint ? undefined : current.waypointIndex,
-    totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
-    mode: isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode,
-    batteryPercentage:
-      typeof payload?.batteryPercentage === 'number' && Number.isFinite(payload.batteryPercentage)
-        ? payload.batteryPercentage
-        : payload?.batteryPercentage === null
-          ? null
-          : current.batteryPercentage,
-    chargingStatus:
-      typeof payload?.chargingStatus === 'string'
-        ? payload.chargingStatus
-        : payload?.chargingStatus === null
-          ? null
-          : current.chargingStatus,
-    lastSeenTs: resolveEventTimestamp('ROBOT_STATUS_UPDATE', payload),
-  };
+  return setPhase(
+    {
+      ...current,
+      currentMissionId: clearMissionId ? undefined : nextMissionId,
+      runId: shouldPreserveLocalPreview
+        ? current.runId
+        : (runtimeRunId ?? (nextPhase === 'idle' ? undefined : current.runId)),
+      startedAt: shouldPreserveLocalPreview
+        ? current.startedAt
+        : typeof payload?.mission?.startedAt === 'string'
+          ? payload.mission.startedAt
+          : nextPhase === 'idle'
+            ? undefined
+            : current.startedAt,
+      waypointIndex: clearWaypoint
+        ? undefined
+        : (toFiniteNumber(payload?.mission?.currentWaypointIndex) ?? current.waypointIndex),
+      totalWaypoints: clearWaypoint
+        ? undefined
+        : (toFiniteNumber(payload?.mission?.totalWaypoints) ?? current.totalWaypoints),
+      mode: nextMode,
+      batteryPercentage:
+        typeof payload?.batteryPercentage === 'number' && Number.isFinite(payload.batteryPercentage)
+          ? payload.batteryPercentage
+          : payload?.batteryPercentage === null
+            ? null
+            : current.batteryPercentage,
+      chargingStatus:
+        typeof payload?.chargingStatus === 'string'
+          ? payload.chargingStatus
+          : payload?.chargingStatus === null
+            ? null
+            : current.chargingStatus,
+      lastSeenTs: eventAt,
+      runtimeUpdatedAt: eventAt,
+      modeUpdatedAt: isRobotRuntimeMode(payload?.mode) ? eventAt : current.modeUpdatedAt,
+      updatedAt: Math.max(current.updatedAt ?? 0, eventAt),
+    },
+    nextPhase
+  );
 };
 
 const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): MissionStatus => {
   const eventAt = resolveEventTimestamp(event.event, event.payload);
+  if (event.event === 'ROBOT_STATUS_UPDATE') {
+    return updateFromRobotStatusUpdate(current, event.payload as RobotStatusUpdatePayload, eventAt);
+  }
   if (current.lastEventAt !== undefined && eventAt < current.lastEventAt) {
     return current;
   }
@@ -310,8 +400,53 @@ const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): Miss
   if (event.event === 'MODE_CHANGE_ACK') {
     return updateFromModeChangeAck(current, event.payload as ModeChangeAckPayload, base);
   }
-  if (event.event === 'ROBOT_STATUS_UPDATE') {
-    return updateFromRobotStatusUpdate(current, event.payload as RobotStatusUpdatePayload, base);
+  return base;
+};
+
+const recordIntent = (
+  current: MissionStatus,
+  event: string,
+  payload: Record<string, unknown>
+): MissionStatus => {
+  const now = Date.now();
+  const missionId = normalizeMissionId(payload['missionId']);
+  const requestId = normalizeRequestId(payload['requestId']);
+  const requestType = normalizeRequestType(event);
+  const base: MissionStatus = {
+    ...current,
+    lastEvent: event,
+    lastEventAt: now,
+    updatedAt: now,
+    lastEventMissionId: missionId ?? current.currentMissionId,
+    lastEventStatus: 'pending',
+    lastRequestType: requestType,
+    requestIdLast: requestId,
+  };
+
+  if (event === 'SHOW_UP') {
+    return setPhase(
+      {
+        ...base,
+        currentMissionId: missionId,
+        runId: undefined,
+        startedAt: undefined,
+        waypointIndex: undefined,
+        totalWaypoints: undefined,
+        message: 'SHOW_UP sent… waiting for robot',
+      },
+      'preview_pending'
+    );
+  }
+
+  if (event === 'START_MISSION') {
+    return setPhase(
+      {
+        ...base,
+        currentMissionId: missionId ?? current.currentMissionId,
+        message: 'Starting… waiting for robot ack',
+      },
+      'start_pending'
+    );
   }
 
   return base;
@@ -329,7 +464,8 @@ export const useRobotMissionStore = create<MissionState>(set => ({
     client.addEventListener(event => {
       if (!isRobotMissionStatusEvent(event.event)) return;
       set(state => {
-        const current = state.statusByRobot[robotId] ?? ({ status: 'idle' } as MissionStatus);
+        const current =
+          state.statusByRobot[robotId] ?? ({ status: 'idle', phase: 'idle' } as MissionStatus);
         const next = updateFromEvent(current, event);
         return {
           statusByRobot: {
@@ -368,7 +504,21 @@ export const useRobotMissionStore = create<MissionState>(set => ({
       return { accepted: false, queued: false, reason: 'client_unavailable' };
     }
 
-    return client.sendEvent(event, payload);
+    const result = client.sendEvent(event, payload);
+    if (result.accepted) {
+      set(state => {
+        const current =
+          state.statusByRobot[robotId] ?? ({ status: 'idle', phase: 'idle' } as MissionStatus);
+        return {
+          statusByRobot: {
+            ...state.statusByRobot,
+            [robotId]: recordIntent(current, event, payload),
+          },
+        };
+      });
+    }
+
+    return result;
   },
 
   hydrateFromRobots: (robots: Robot[]) => {
@@ -397,19 +547,48 @@ export const useRobotMissionStore = create<MissionState>(set => ({
         const resolvedUpdatedAt = Number.isFinite(parsedUpdatedAt)
           ? parsedUpdatedAt
           : existing?.updatedAt;
-        const resolvedStatus =
-          (mission.status as MissionLifecycleStatus) ?? existing?.status ?? 'idle';
-        const keepWaypoint = shouldKeepWaypointProgress(resolvedStatus);
+        const incomingPhase =
+          (mission.phase as MissionLifecycleStatus) ??
+          (mission.status as MissionLifecycleStatus) ??
+          existing?.phase ??
+          'idle';
+        const preserveLocalPreview =
+          isPreviewLikePhase(existing?.phase) &&
+          incomingPhase === 'idle' &&
+          !mission.currentMissionId &&
+          !mission.runId;
+        const resolvedPhase = preserveLocalPreview
+          ? (existing?.phase ?? incomingPhase)
+          : incomingPhase;
+        const keepWaypoint = shouldKeepWaypointProgress(resolvedPhase);
 
         const nextStatus: MissionStatus = {
           ...existing,
-          status: resolvedStatus,
-          currentMissionId: mission.currentMissionId ?? existing?.currentMissionId,
-          message: mission.message ?? existing?.message,
-          lastEvent: mission.lastEvent ?? existing?.lastEvent,
+          status: resolvedPhase,
+          phase: resolvedPhase,
+          currentMissionId: preserveLocalPreview
+            ? existing?.currentMissionId
+            : (mission.currentMissionId ?? existing?.currentMissionId),
+          requestIdLast: preserveLocalPreview
+            ? existing?.requestIdLast
+            : (mission.requestIdLast ?? existing?.requestIdLast),
+          runId: preserveLocalPreview ? existing?.runId : (mission.runId ?? existing?.runId),
+          startedAt: preserveLocalPreview
+            ? existing?.startedAt
+            : (mission.startedAt ?? existing?.startedAt),
+          message: preserveLocalPreview
+            ? existing?.message
+            : (mission.message ?? existing?.message),
+          lastEvent: preserveLocalPreview
+            ? existing?.lastEvent
+            : (mission.lastEvent ?? existing?.lastEvent),
           updatedAt: resolvedUpdatedAt,
-          lastEventStatus: mission.lastEventStatus ?? existing?.lastEventStatus,
-          lastRequestType: mission.lastRequestType ?? existing?.lastRequestType,
+          lastEventStatus: preserveLocalPreview
+            ? existing?.lastEventStatus
+            : (mission.lastEventStatus ?? existing?.lastEventStatus),
+          lastRequestType: preserveLocalPreview
+            ? existing?.lastRequestType
+            : (mission.lastRequestType ?? existing?.lastRequestType),
           mode: mission.mode ?? existing?.mode,
           batteryPercentage:
             mission.batteryPercentage !== undefined
@@ -426,24 +605,14 @@ export const useRobotMissionStore = create<MissionState>(set => ({
           totalWaypoints: keepWaypoint
             ? (mission.totalWaypoints ?? existing?.totalWaypoints)
             : undefined,
+          runtimeUpdatedAt: mission.lastSeenTs ?? existing?.runtimeUpdatedAt,
+          modeUpdatedAt:
+            mission.lastSeenTs !== undefined && mission.mode !== undefined
+              ? mission.lastSeenTs
+              : existing?.modeUpdatedAt,
         };
 
-        const hasChanged =
-          !existing ||
-          existing.status !== nextStatus.status ||
-          existing.currentMissionId !== nextStatus.currentMissionId ||
-          existing.message !== nextStatus.message ||
-          existing.lastEvent !== nextStatus.lastEvent ||
-          existing.updatedAt !== nextStatus.updatedAt ||
-          existing.lastEventStatus !== nextStatus.lastEventStatus ||
-          existing.lastRequestType !== nextStatus.lastRequestType ||
-          existing.mode !== nextStatus.mode ||
-          existing.batteryPercentage !== nextStatus.batteryPercentage ||
-          existing.chargingStatus !== nextStatus.chargingStatus ||
-          existing.lastSeenTs !== nextStatus.lastSeenTs ||
-          existing.waypointIndex !== nextStatus.waypointIndex ||
-          existing.totalWaypoints !== nextStatus.totalWaypoints;
-
+        const hasChanged = JSON.stringify(existing ?? {}) !== JSON.stringify(nextStatus);
         if (!hasChanged) continue;
         next[robot.id] = nextStatus;
         changed = true;

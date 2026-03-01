@@ -1,15 +1,28 @@
 import type { ProcessedMapData, ROSPoseWithCovarianceStamped } from '@tensrai/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { useRobotTelemetry } from '@/hooks/useRobotTelemetry';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { worldToRosPose } from '@/lib/map/mapTransforms';
+import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
+import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import { type MissionStatus, useRobotMissionStore } from '@/stores/robotMission';
+import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { type Robot, RobotMode } from '@/types/robot';
 import { useMapRobots } from '../hooks/useMapRobots';
+import { useMissionRuns } from '../hooks/useMissionRuns';
 import { useRobotMissions } from '../hooks/useRobotMissions';
 import { useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
 import { DashboardLayout } from './DashboardLayout';
+import { LiveOccupancyMap } from './LiveOccupancyMap';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import type { MissionWithContext } from './MissionDialog';
 import {
@@ -17,26 +30,52 @@ import {
   type MissionLogView,
   type OngoingMissionView,
 } from './MissionDock/MissionDock';
-import { OccupancyMap } from './OccupancyMap';
 import { Sidebar } from './Sidebar';
 import { TeleopPanel } from './TeleopPanel';
 
 const MISSION_STALE_MS = 120_000;
+const MISSION_PREVIEW_STALE_MS = 30_000;
 
 const missionTimestamp = (status?: MissionStatus) => status?.lastSeenTs ?? status?.updatedAt;
 
 const missionIsFresh = (status?: MissionStatus, nowMs = Date.now()) => {
   const ts = missionTimestamp(status);
   if (!Number.isFinite(ts)) return false;
-  return nowMs - (ts as number) <= MISSION_STALE_MS;
+  const maxAgeMs =
+    status?.phase === 'preview_pending' ||
+    status?.phase === 'showing' ||
+    status?.phase === 'start_pending'
+      ? MISSION_PREVIEW_STALE_MS
+      : MISSION_STALE_MS;
+  return nowMs - (ts as number) <= maxAgeMs;
 };
 
 const missionIsLive = (status?: MissionStatus, nowMs = Date.now()) =>
   missionIsFresh(status, nowMs) &&
-  (status?.status === 'running' || status?.status === 'paused' || status?.status === 'showing');
+  (status?.phase === 'running' ||
+    status?.phase === 'paused' ||
+    status?.phase === 'showing' ||
+    status?.phase === 'start_pending');
 
-const isMissionActiveStatus = (status?: MissionStatus['status']) =>
-  status === 'running' || status === 'paused' || status === 'showing';
+const isMissionActiveStatus = (status?: MissionStatus['phase']) =>
+  status === 'running' || status === 'paused' || status === 'showing' || status === 'start_pending';
+
+const toDisplayWaypointIndex = (
+  rawWaypointIndex?: number,
+  totalWaypoints?: number
+): number | undefined => {
+  if (typeof rawWaypointIndex !== 'number' || !Number.isFinite(rawWaypointIndex)) return undefined;
+  const candidate = rawWaypointIndex + 1;
+  if (typeof totalWaypoints === 'number' && Number.isFinite(totalWaypoints) && totalWaypoints > 0) {
+    return Math.min(Math.max(candidate, 1), totalWaypoints);
+  }
+  return Math.max(candidate, 1);
+};
+
+type PendingMissionPhase = Extract<
+  MissionStatus['phase'],
+  'preview_pending' | 'showing' | 'start_pending' | 'running' | 'paused'
+>;
 
 const resolveRuntimeStatus = (
   robot: Robot,
@@ -47,6 +86,9 @@ const resolveRuntimeStatus = (
   if (!missionIsFresh(mission, nowMs)) return robot.status;
   if (missionIsLive(mission, nowMs)) return RobotMode.MISSION;
   if (mission.mode === 'teleop') return RobotMode.TELEOP;
+  if (mission.mode === 'autonomous') {
+    return RobotMode.AUTONOMOUS;
+  }
   return robot.status;
 };
 
@@ -103,9 +145,11 @@ type PendingMissionStart = {
   mission: MissionWithContext;
 };
 
-type MissionClock = {
-  missionId?: string;
-  startedAt: number;
+type EmergencyAlert = {
+  id: string;
+  robotId: string;
+  robotName: string;
+  kind: 'software' | 'hardware';
 };
 
 const resolveMissionSortRank = (status: OngoingMissionView['status']) => {
@@ -114,39 +158,53 @@ const resolveMissionSortRank = (status: OngoingMissionView['status']) => {
   return 2;
 };
 
-const normalizeMissionResult = (status?: MissionStatus): MissionLogView['result'] | null => {
-  if (!status) return null;
-  if (status.lastEvent !== 'MISSION_COMPLETED') return null;
-  if (status.lastEventStatus === 'cancelled' || status.status === 'cancelled') return null;
-  if (status.lastEventStatus === 'success' || status.status === 'completed') return 'completed';
-  return 'failed';
+const formatRobotNames = (names: string[]) => {
+  if (names.length === 0) return '';
+  if (names.length <= 3) return names.join(', ');
+  return `${names.slice(0, 3).join(', ')} +${names.length - 3} more`;
 };
 
 export function Dashboard() {
-  const { data: robotsData } = useRobots();
+  const { data: robotsData, refetch: refetchRobots } = useRobots();
+  const { data: missionRunData } = useMissionRuns({ limit: 100 });
   const robotsFromApi = useMemo(() => robotsData ?? [], [robotsData]);
-  const [pendingMissionStart, setPendingMissionStart] = useState<PendingMissionStart | null>(null);
+  const [pendingMissionStarts, setPendingMissionStarts] = useState<
+    Record<string, PendingMissionStart>
+  >({});
   const [focusedMission, setFocusedMission] = useState<FocusedMission | null>(null);
   const [startRobotId, setStartRobotId] = useState<string | null>(null);
   const [startMissionId, setStartMissionId] = useState<string | null>(null);
-  const [missionClocks, setMissionClocks] = useState<Record<string, MissionClock>>({});
-  const [missionLogs, setMissionLogs] = useState<MissionLogView[]>([]);
+  const [emergencyAlerts, setEmergencyAlerts] = useState<EmergencyAlert[]>([]);
 
   const missionStatusByRobot = useRobotMissionStore(state => state.statusByRobot);
+  const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
+  const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
+  const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
+  const sendFleetSoftwareEmergency = useRobotEmergencyStore(
+    state => state.sendFleetSoftwareEmergency
+  );
+  const emergencyPendingDispatch = useRobotEmergencyStore(state => state.pendingDispatch);
   const connectMission = useRobotMissionStore(state => state.connect);
   const disconnectMission = useRobotMissionStore(state => state.disconnect);
   const sendMissionEvent = useRobotMissionStore(state => state.sendEvent);
   const hydrateMissionFromRobots = useRobotMissionStore(state => state.hydrateFromRobots);
   const missionConnectionsRef = useRef<Set<string>>(new Set());
-  const loggedResultKeysRef = useRef<Set<string>>(new Set());
   const lastMissionToastRef = useRef<Record<string, number>>({});
+  const missionToastsPrimedRef = useRef(false);
+  const lastEmergencyAckAtRef = useRef<Record<string, number>>({});
+  const hasShownInitialEmergencyPopupRef = useRef<Record<string, boolean>>({});
+  const emergencyStatusSignatureRef = useRef<string>('');
+  const refetchRobotsTimerRef = useRef<number | null>(null);
 
   const robots = useMemo(() => {
     const nowMs = Date.now();
     return robotsFromApi.map(robot =>
-      mergeMissionRuntimeIntoRobot(robot, missionStatusByRobot[robot.id], nowMs)
+      mergeEmergencyRuntimeIntoRobot(
+        mergeMissionRuntimeIntoRobot(robot, missionStatusByRobot[robot.id], nowMs),
+        emergencyByRobot[robot.id]
+      )
     );
-  }, [missionStatusByRobot, robotsFromApi]);
+  }, [emergencyByRobot, missionStatusByRobot, robotsFromApi]);
 
   const {
     selectedRobotId,
@@ -175,6 +233,96 @@ export function Dashboard() {
     return map;
   }, [prioritizedMissions]);
 
+  const robotsById = useMemo(() => {
+    const map = new Map<string, Robot>();
+    robots.forEach(robot => {
+      map.set(robot.id, robot);
+    });
+    return map;
+  }, [robots]);
+
+  const missionLogs = useMemo<MissionLogView[]>(() => {
+    return (missionRunData ?? [])
+      .filter(
+        run =>
+          run.status === 'COMPLETED' ||
+          run.status === 'FAILED' ||
+          run.status === 'UNKNOWN_TERMINATION'
+      )
+      .map(run => {
+        const startedAt = run.startedAt ? Date.parse(run.startedAt) : undefined;
+        const endedAt = run.endedAt
+          ? Date.parse(run.endedAt)
+          : run.lastEventAt
+            ? Date.parse(run.lastEventAt)
+            : Date.parse(run.updatedAt);
+        const missionId = run.missionId ?? undefined;
+        return {
+          id: run.id,
+          robotId: run.robotId,
+          robotName: run.robotNameSnapshot,
+          ...(missionId ? { missionId } : {}),
+          missionName: run.missionNameSnapshot ?? `Mission ${missionId ?? ''}`.trim(),
+          result: run.status === 'COMPLETED' ? 'completed' : 'failed',
+          ...(startedAt ? { startedAt } : {}),
+          endedAt,
+          ...(typeof run.durationMs === 'number' ? { durationMs: run.durationMs } : {}),
+          ...(typeof run.waypointIndex === 'number' ? { waypointIndex: run.waypointIndex } : {}),
+          ...(typeof run.totalWaypoints === 'number' ? { totalWaypoints: run.totalWaypoints } : {}),
+          ...(run.lastMessage ? { message: run.lastMessage } : {}),
+        };
+      });
+  }, [missionRunData]);
+
+  const emergencySummary = useMemo(() => {
+    let connectedRobots = 0;
+    let softwareEmergencyCount = 0;
+    let hardwareEmergencyCount = 0;
+    let unknownCount = 0;
+    let anyEmergencyActive = false;
+
+    for (const robot of robots) {
+      const state = robot.emergency;
+      if (state?.effectiveEmergencyActive) {
+        anyEmergencyActive = true;
+      }
+      if (!robot.ipAddress || !state || state.connectionStatus !== 'connected') {
+        unknownCount += 1;
+        continue;
+      }
+
+      connectedRobots += 1;
+      if (state.hardwareEmergencyActive) {
+        hardwareEmergencyCount += 1;
+      } else if (state.softwareEmergencyActive) {
+        softwareEmergencyCount += 1;
+      }
+    }
+
+    return {
+      totalRobots: robots.length,
+      connectedRobots,
+      softwareEmergencyCount,
+      hardwareEmergencyCount,
+      unknownCount,
+      anyEmergencyActive,
+    };
+  }, [robots]);
+
+  const hasReachableEmergencyRobot = emergencySummary.connectedRobots > 0;
+  const canReleaseSoftwareEmergency = robots.some(
+    robot =>
+      robot.emergency?.connectionStatus === 'connected' && robot.emergency.softwareEmergencyActive
+  );
+  const currentEmergencyAlert = emergencyAlerts[0] ?? null;
+
+  const isRobotEmergencyBlocked = useCallback(
+    (robotId: string) => {
+      return Boolean(robotsById.get(robotId)?.emergency?.effectiveEmergencyActive);
+    },
+    [robotsById]
+  );
+
   const resolveMissionContext = useCallback(
     (missionId?: string, mapId?: string) => {
       if (!missionId) return null;
@@ -195,11 +343,99 @@ export function Dashboard() {
   const highlightTagIds = focusedMissionContext?.steps ?? [];
   const dimNonMissionTags = Boolean(focusedMissionContext);
 
-  const { telemetry, sendTeleop, sendInitialPose } = useRobotTelemetry(activeRobotId);
+  const sendTeleop = useRobotTelemetryStore(state => state.sendTeleop);
+  const sendInitialPose = useRobotTelemetryStore(state => state.sendInitialPose);
 
   useEffect(() => {
     hydrateMissionFromRobots(robotsFromApi);
   }, [hydrateMissionFromRobots, robotsFromApi]);
+
+  useEffect(() => {
+    syncEmergencyRobots(robotsFromApi);
+  }, [robotsFromApi, syncEmergencyRobots]);
+
+  useEffect(() => {
+    const signature = robots
+      .map(robot => `${robot.id}:${robot.emergency?.connectionStatus ?? 'none'}`)
+      .sort()
+      .join('|');
+    if (!signature) return;
+    if (!emergencyStatusSignatureRef.current) {
+      emergencyStatusSignatureRef.current = signature;
+      return;
+    }
+    if (emergencyStatusSignatureRef.current !== signature) {
+      emergencyStatusSignatureRef.current = signature;
+      if (refetchRobotsTimerRef.current !== null) {
+        window.clearTimeout(refetchRobotsTimerRef.current);
+      }
+      refetchRobotsTimerRef.current = window.setTimeout(() => {
+        refetchRobotsTimerRef.current = null;
+        void refetchRobots();
+      }, 400);
+    }
+  }, [refetchRobots, robots]);
+
+  useEffect(
+    () => () => {
+      if (refetchRobotsTimerRef.current !== null) {
+        window.clearTimeout(refetchRobotsTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    for (const robot of robots) {
+      const eventType = robot.emergency?.lastEventType;
+      const eventAt = robot.emergency?.lastEventAt;
+      const active = Boolean(robot.emergency?.effectiveEmergencyActive);
+      const canShowInitialSnapshot =
+        active &&
+        eventType === 'EMERGENCY_STATE' &&
+        !hasShownInitialEmergencyPopupRef.current[robot.id];
+      const canShowAckPopup =
+        active &&
+        !!eventAt &&
+        (eventType === 'SOFTWARE_EMERGENCY_ACK' || eventType === 'HARDWARE_EMERGENCY_ACK') &&
+        (lastEmergencyAckAtRef.current[robot.id] ?? 0) < eventAt;
+
+      if (!active) {
+        delete hasShownInitialEmergencyPopupRef.current[robot.id];
+        continue;
+      }
+
+      if (!canShowInitialSnapshot && !canShowAckPopup) {
+        continue;
+      }
+
+      if (canShowInitialSnapshot) {
+        hasShownInitialEmergencyPopupRef.current[robot.id] = true;
+      }
+      if (canShowAckPopup && eventAt) {
+        lastEmergencyAckAtRef.current[robot.id] = eventAt;
+      }
+
+      setEmergencyAlerts(current => {
+        const kind = robot.emergency?.hardwareEmergencyActive ? 'hardware' : 'software';
+        const alertId = canShowAckPopup
+          ? `ack:${robot.id}:${eventType}:${eventAt}`
+          : `snapshot:${robot.id}:${kind}`;
+        if (current.some(alert => alert.id === alertId)) return current;
+        if (current.some(alert => alert.robotId === robot.id && alert.kind === kind))
+          return current;
+        return [
+          ...current,
+          {
+            id: alertId,
+            robotId: robot.id,
+            robotName: robot.name,
+            kind,
+          },
+        ];
+      });
+    }
+  }, [robots]);
 
   useEffect(() => {
     const nextIds = new Set(robots.map(robot => robot.id));
@@ -223,8 +459,9 @@ export function Dashboard() {
         disconnectMission(id);
       }
       missionConnectionsRef.current.clear();
+      disconnectEmergencyRobots();
     },
-    [disconnectMission]
+    [disconnectEmergencyRobots, disconnectMission]
   );
 
   useEffect(() => {
@@ -283,155 +520,248 @@ export function Dashboard() {
     }
   }, [activeMapId, prioritizedMissions, robots, setActiveMapId, startMissionId, startRobotId]);
 
+  const pendingMissionStart = useMemo(() => {
+    const preferredRobotIds = [
+      ...(startRobotId ? [startRobotId] : []),
+      ...(selectedRobotId && selectedRobotId !== startRobotId ? [selectedRobotId] : []),
+      ...Object.keys(pendingMissionStarts),
+    ];
+
+    for (const robotId of preferredRobotIds) {
+      const pending = pendingMissionStarts[robotId];
+      if (pending) return pending;
+    }
+
+    return null;
+  }, [pendingMissionStarts, selectedRobotId, startRobotId]);
+
+  const pendingMissionPhase =
+    pendingMissionStart && missionStatusByRobot[pendingMissionStart.robotId]
+      ? (() => {
+          const phase = missionStatusByRobot[pendingMissionStart.robotId]?.phase;
+          return phase === 'preview_pending' ||
+            phase === 'showing' ||
+            phase === 'start_pending' ||
+            phase === 'running' ||
+            phase === 'paused'
+            ? (phase as PendingMissionPhase)
+            : undefined;
+        })()
+      : undefined;
+  const pendingMissionMessage =
+    pendingMissionStart && missionStatusByRobot[pendingMissionStart.robotId]
+      ? missionStatusByRobot[pendingMissionStart.robotId]?.message
+      : undefined;
+
   useEffect(() => {
-    setMissionClocks(prev => {
-      let changed = false;
-      const next = { ...prev };
+    const entries = Object.entries(pendingMissionStarts);
+    if (entries.length === 0) return;
 
-      for (const robot of robots) {
-        const robotId = robot.id;
-        const status = missionStatusByRobot[robotId];
-        if (!status) continue;
+    let changed = false;
+    const next = { ...pendingMissionStarts };
 
-        const missionId = status.currentMissionId ?? status.lastEventMissionId;
-        const active = isMissionActiveStatus(status.status);
-        const existing = next[robotId];
+    for (const [robotId, pending] of entries) {
+      const status = missionStatusByRobot[robotId];
+      if (!status) continue;
+      const activeMissionId = status.currentMissionId ?? status.lastEventMissionId;
+      if (activeMissionId && activeMissionId !== pending.mission.id) continue;
 
-        if (active) {
-          if (!missionId) continue;
-          if (!existing || existing.missionId !== missionId) {
-            next[robotId] = {
-              missionId,
-              startedAt: status.lastEventAt ?? status.updatedAt ?? Date.now(),
-            };
-            changed = true;
-          }
-          continue;
-        }
-
-        if (existing && (!missionId || existing.missionId === missionId)) {
-          delete next[robotId];
-          changed = true;
-        }
+      if (
+        status.phase === 'running' ||
+        status.phase === 'completed' ||
+        status.phase === 'cancelled'
+      ) {
+        delete next[robotId];
+        changed = true;
+        continue;
       }
 
-      return changed ? next : prev;
-    });
-  }, [missionStatusByRobot, robots]);
+      if (
+        (status.phase === 'idle' || status.phase === 'failed') &&
+        status.lastRequestType === 'SHOW_UP'
+      ) {
+        delete next[robotId];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      setPendingMissionStarts(next);
+      if (pendingMissionStart && !next[pendingMissionStart.robotId]) {
+        setFocusedMission(current =>
+          current?.robotId === pendingMissionStart.robotId &&
+          current.missionId === pendingMissionStart.mission.id
+            ? null
+            : current
+        );
+      }
+    }
+  }, [missionStatusByRobot, pendingMissionStart, pendingMissionStarts]);
 
   useEffect(() => {
-    const nextLogs: MissionLogView[] = [];
+    const nextEntries: Record<string, PendingMissionStart> = {};
 
     for (const robot of robots) {
       const status = missionStatusByRobot[robot.id];
-      if (!status?.lastEventAt) continue;
+      const hasLocalPendingPreview = Boolean(pendingMissionStarts[robot.id]);
+      const shouldKeepLocalShowingPreview = status?.phase === 'showing' && hasLocalPendingPreview;
+      const shouldKeepLocalPendingPreview =
+        hasLocalPendingPreview &&
+        (status?.phase === 'preview_pending' ||
+          status?.phase === 'showing' ||
+          status?.phase === 'start_pending');
+      if (!shouldKeepLocalPendingPreview && !missionIsFresh(status)) continue;
+      if (
+        !status ||
+        (status.phase !== 'preview_pending' &&
+          status.phase !== 'start_pending' &&
+          !shouldKeepLocalShowingPreview)
+      ) {
+        continue;
+      }
 
-      const result = normalizeMissionResult(status);
-      if (!result) continue;
-
+      if (!robot.mapId) continue;
       const missionId = status.currentMissionId ?? status.lastEventMissionId;
-      const logKey = `${robot.id}:${missionId ?? 'unknown'}:${status.lastEventAt}:${result}`;
-      if (loggedResultKeysRef.current.has(logKey)) continue;
-      loggedResultKeysRef.current.add(logKey);
-
-      const missionContext = resolveMissionContext(missionId, robot.mapId);
-      const startedAt =
-        missionId && missionClocks[robot.id]?.missionId === missionId
-          ? missionClocks[robot.id]?.startedAt
-          : undefined;
-
-      nextLogs.push({
-        id: logKey,
-        robotId: robot.id,
-        robotName: robot.name,
-        ...(missionId ? { missionId } : {}),
-        missionName: missionContext?.name ?? `Mission ${missionId ?? ''}`.trim(),
-        result,
-        ...(startedAt ? { startedAt } : {}),
-        endedAt: status.lastEventAt,
-        ...(startedAt && status.lastEventAt >= startedAt
-          ? { durationMs: status.lastEventAt - startedAt }
-          : {}),
-        ...(status.waypointIndex !== undefined ? { waypointIndex: status.waypointIndex } : {}),
-        ...(status.totalWaypoints !== undefined ? { totalWaypoints: status.totalWaypoints } : {}),
-        ...(status.message ? { message: status.message } : {}),
-      });
+      const mission = missionId ? resolveMissionContext(missionId, robot.mapId) : null;
+      if (!mission) continue;
+      nextEntries[robot.id] = { robotId: robot.id, mission };
     }
 
-    if (!nextLogs.length) return;
-    setMissionLogs(current => [...nextLogs.reverse(), ...current].slice(0, 100));
-  }, [missionClocks, missionStatusByRobot, resolveMissionContext, robots]);
+    const currentKeys = Object.keys(pendingMissionStarts);
+    const nextKeys = Object.keys(nextEntries);
+    const isSame =
+      currentKeys.length === nextKeys.length &&
+      currentKeys.every(
+        robotId => nextEntries[robotId]?.mission.id === pendingMissionStarts[robotId]?.mission.id
+      );
+
+    if (!isSame) {
+      setPendingMissionStarts(nextEntries);
+    }
+
+    if ((startRobotId ?? selectedRobotId) || nextKeys.length === 0) return;
+
+    const firstPending = nextEntries[nextKeys[0]];
+    if (!firstPending) return;
+    setStartRobotId(firstPending.robotId);
+    setStartMissionId(firstPending.mission.id);
+    setFocusedMission(current =>
+      current?.robotId === firstPending.robotId &&
+      current.missionId === firstPending.mission.id &&
+      current.mapId === firstPending.mission.mapId
+        ? current
+        : {
+            robotId: firstPending.robotId,
+            missionId: firstPending.mission.id,
+            mapId: firstPending.mission.mapId,
+          }
+    );
+    if (activeMapId !== firstPending.mission.mapId) {
+      setActiveMapId(firstPending.mission.mapId);
+    }
+  }, [
+    activeMapId,
+    missionStatusByRobot,
+    pendingMissionStarts,
+    resolveMissionContext,
+    robots,
+    selectedRobotId,
+    setActiveMapId,
+    startRobotId,
+  ]);
 
   useEffect(() => {
-    if (!activeRobotId) return;
-    const status = missionStatusByRobot[activeRobotId];
-    if (!status?.lastEvent || !status.lastEventAt) return;
-
-    const lastSeen = lastMissionToastRef.current[activeRobotId] ?? 0;
-    if (status.lastEventAt <= lastSeen) return;
-    lastMissionToastRef.current[activeRobotId] = status.lastEventAt;
-
-    const missionId = status.lastEventMissionId ?? status.currentMissionId;
-    const missionName = missionId
-      ? (resolveMissionContext(missionId, selectedRobot?.mapId)?.name ?? `Mission ${missionId}`)
-      : 'Mission';
-
-    if (status.lastEvent === 'MISSION_START_ACK') {
-      if (status.lastEventStatus === 'success') {
-        toast.success(`${missionName} started`);
-      } else {
-        toast.error(status.message ?? `${missionName} failed to start`);
+    if (!missionToastsPrimedRef.current) {
+      if (robots.length === 0) return;
+      for (const robot of robots) {
+        const status = missionStatusByRobot[robot.id];
+        if (status?.lastEventAt) {
+          lastMissionToastRef.current[robot.id] = status.lastEventAt;
+        }
       }
+      missionToastsPrimedRef.current = true;
       return;
     }
 
-    if (status.lastEvent === 'MISSION_CONTROL_ACK') {
-      const requestType = status.lastRequestType ?? 'UNKNOWN';
-      if (status.lastEventStatus === 'success') {
-        if (requestType === 'SHOW_UP') toast.success(`${missionName} ready to start`);
-        if (requestType === 'PAUSE') toast.message(`${missionName} paused`);
-        if (requestType === 'RESUME') toast.success(`${missionName} resumed`);
-        if (requestType === 'CANCEL') toast.message(`${missionName} cancelled`);
-      } else {
-        toast.error(status.message ?? `${missionName} control failed`);
-      }
-      return;
-    }
+    for (const robot of robots) {
+      const status = missionStatusByRobot[robot.id];
+      if (!status?.lastEvent || !status.lastEventAt) continue;
 
-    if (status.lastEvent === 'MISSION_COMPLETED') {
-      if (status.lastEventStatus === 'success') {
-        toast.success(`${missionName} completed`);
-      } else if (status.lastEventStatus === 'cancelled') {
-        toast.message(`${missionName} cancelled`);
-      } else {
-        toast.error(`${missionName} failed`);
-      }
-      return;
-    }
+      const lastSeen = lastMissionToastRef.current[robot.id] ?? 0;
+      if (status.lastEventAt <= lastSeen) continue;
+      lastMissionToastRef.current[robot.id] = status.lastEventAt;
 
-    if (status.lastEvent === 'MODE_CHANGE_ACK') {
-      if (status.lastEventStatus === 'success') {
-        toast.message(
-          status.mode ? `Robot mode changed to ${status.mode}` : 'Robot mode changed successfully'
+      const missionId = status.lastEventMissionId ?? status.currentMissionId;
+      const missionName =
+        (missionId ? resolveMissionContext(missionId, robot.mapId)?.name : null) ??
+        (missionId ? `Mission ${missionId}` : 'Mission');
+      const prefix = `${robot.name}: `;
+
+      if (status.lastEvent === 'MISSION_START_ACK') {
+        if (status.lastEventStatus === 'success') {
+          toast.success(`${prefix}${missionName} started`);
+        } else {
+          toast.error(status.message ?? `${prefix}${missionName} failed to start`);
+        }
+        continue;
+      }
+
+      if (status.lastEvent === 'MISSION_CONTROL_ACK') {
+        const requestType = status.lastRequestType ?? 'UNKNOWN';
+        if (status.lastEventStatus === 'success') {
+          if (requestType === 'SHOW_UP') toast.success(`${prefix}${missionName} ready to start`);
+          if (requestType === 'PAUSE') toast.message(`${prefix}${missionName} paused`);
+          if (requestType === 'RESUME') toast.success(`${prefix}${missionName} resumed`);
+          if (requestType === 'CANCEL') toast.message(`${prefix}${missionName} cancelled`);
+        } else {
+          toast.error(status.message ?? `${prefix}${missionName} control failed`);
+        }
+        continue;
+      }
+
+      if (status.lastEvent === 'MISSION_COMPLETED') {
+        if (status.lastEventStatus === 'success') {
+          toast.success(`${prefix}${missionName} completed`);
+        } else if (status.lastEventStatus === 'cancelled') {
+          toast.message(`${prefix}${missionName} cancelled`);
+        } else {
+          toast.error(`${prefix}${missionName} failed`);
+        }
+        continue;
+      }
+
+      if (status.lastEvent === 'MODE_CHANGE_ACK') {
+        if (status.lastEventStatus === 'success') {
+          toast.message(
+            status.mode
+              ? `${prefix}mode changed to ${status.mode}`
+              : `${prefix}mode changed successfully`
+          );
+        } else {
+          toast.error(status.message ?? `${prefix}mode change failed`);
+        }
+        continue;
+      }
+
+      if (status.lastEvent === 'WAYPOINT_ACK') {
+        const displayWaypointIndex = toDisplayWaypointIndex(
+          status.waypointIndex,
+          status.totalWaypoints
         );
-      } else {
-        toast.error(status.message ?? 'Mode change failed');
-      }
-      return;
-    }
-
-    if (status.lastEvent === 'WAYPOINT_ACK') {
-      if (status.waypointIndex && status.totalWaypoints) {
-        toast.message(`${missionName}: waypoint ${status.waypointIndex}/${status.totalWaypoints}`);
-      } else {
-        toast.message(status.message ?? `${missionName}: waypoint reached`);
+        if (displayWaypointIndex && status.totalWaypoints) {
+          toast.message(
+            `${prefix}${missionName}: waypoint ${displayWaypointIndex}/${status.totalWaypoints}`
+          );
+        } else {
+          toast.message(status.message ?? `${prefix}${missionName}: waypoint reached`);
+        }
       }
     }
-  }, [activeRobotId, missionStatusByRobot, resolveMissionContext, selectedRobot?.mapId]);
+  }, [missionStatusByRobot, resolveMissionContext, robots]);
 
   const handleStartSetPose = () => {
-    if (!activeMapId) {
-      toast.error('Select a robot/map before setting pose');
+    if (!selectedRobotId || !selectedRobot?.mapId) {
+      toast.error('Select a robot before setting pose');
       return;
     }
     setIsSettingPose(true);
@@ -439,7 +769,7 @@ export function Dashboard() {
   };
 
   const handlePoseConfirm = (payload: PoseConfirmPayload) => {
-    if (!activeRobotId) {
+    if (!selectedRobotId) {
       toast.error('Select a robot before setting pose');
       setIsSettingPose(false);
       return;
@@ -462,7 +792,7 @@ export function Dashboard() {
       },
     };
 
-    sendInitialPose(activeRobotId, message);
+    sendInitialPose(selectedRobotId, message);
     setIsSettingPose(false);
     toast.success('Pose command sent');
   };
@@ -502,41 +832,159 @@ export function Dashboard() {
     [sendMissionEvent]
   );
 
-  const handleShowUpForRobot = useCallback(
-    (robotId: string, missionId: string) => {
-      const mission = resolveMissionForRobot(robotId, missionId);
-      if (!mission) {
-        toast.error('Mission does not belong to selected robot map');
-        return;
-      }
+  const dispatchShowUpPreview = useCallback(
+    (robotId: string, mission: MissionWithContext) => {
       const dispatched = dispatchMissionEvent(
         robotId,
         'SHOW_UP',
-        { missionId: mission.id },
+        { missionId: mission.id, requestId: crypto.randomUUID() },
         {
           queuedMessage: `SHOW_UP queued for ${mission.name}`,
           errorMessage: 'Unable to send SHOW_UP command',
         }
       );
-      if (!dispatched) return;
-      setPendingMissionStart({ robotId, mission });
+      if (!dispatched) return false;
+
+      setPendingMissionStarts(current => ({
+        ...current,
+        [robotId]: { robotId, mission },
+      }));
       setFocusedMission({ robotId, missionId: mission.id, mapId: mission.mapId });
       setStartRobotId(robotId);
       setStartMissionId(mission.id);
       setActiveMapId(mission.mapId);
       const robot = robots.find(item => item.id === robotId) ?? null;
       if (robot) handleSelectRobot(robot);
+      return true;
     },
-    [dispatchMissionEvent, handleSelectRobot, resolveMissionForRobot, robots, setActiveMapId]
+    [dispatchMissionEvent, handleSelectRobot, robots, setActiveMapId]
+  );
+
+  const handleFleetEmergencyDispatch = useCallback(
+    async (desiredStatus: boolean) => {
+      const result = await sendFleetSoftwareEmergency(desiredStatus);
+      const successfulNames = result.results
+        .filter(entry => entry.applied)
+        .map(entry => entry.robotName ?? entry.robotId);
+      const successCount = result.results.filter(entry => entry.applied).length;
+      const failureCount = result.results.length - successCount;
+      const failureSummary = result.results
+        .filter(entry => !entry.applied)
+        .map(entry => `${entry.robotName ?? entry.robotId}: ${entry.error ?? 'unknown error'}`)
+        .join('; ');
+      const hardwareLockedCount = result.results.filter(
+        entry => entry.applied && entry.hardwareEmergencyActive
+      ).length;
+      const successSummary = formatRobotNames(successfulNames);
+
+      if (desiredStatus) {
+        if (result.status === 'success') {
+          toast.success(
+            successSummary
+              ? `Emergency sent to ${successSummary}`
+              : `Emergency sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
+          );
+        } else if (result.status === 'partial_failure') {
+          toast.error(
+            successSummary
+              ? `Emergency sent to ${successSummary}; ${failureCount} failed`
+              : `Emergency sent to ${successCount} robots, ${failureCount} failed`,
+            {
+              description: failureSummary || undefined,
+            }
+          );
+        } else {
+          toast.error('Emergency command failed for all robots', {
+            description: failureSummary || undefined,
+          });
+        }
+        return;
+      }
+
+      if (result.status === 'failure') {
+        toast.error('Release command failed for all robots', {
+          description: failureSummary || undefined,
+        });
+        return;
+      }
+
+      if (hardwareLockedCount > 0) {
+        toast.message(
+          `Software emergency released; ${hardwareLockedCount} robot${
+            hardwareLockedCount === 1 ? '' : 's'
+          } remain stopped due to hardware emergency`
+        );
+        return;
+      }
+
+      if (result.status === 'partial_failure') {
+        toast.error(
+          successSummary
+            ? `Release sent to ${successSummary}; ${failureCount} failed`
+            : `Release sent to ${successCount} robots, ${failureCount} failed`,
+          {
+            description: failureSummary || undefined,
+          }
+        );
+        return;
+      }
+
+      toast.success(
+        successSummary
+          ? `Release sent to ${successSummary}`
+          : `Release sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
+      );
+    },
+    [sendFleetSoftwareEmergency]
+  );
+
+  const handleShowUpForRobot = useCallback(
+    (robotId: string, missionId: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
+      const mission = resolveMissionForRobot(robotId, missionId);
+      if (!mission) {
+        toast.error('Mission does not belong to selected robot map');
+        return;
+      }
+      const robotPendingPhase = missionStatusByRobot[robotId]?.phase;
+      if (
+        pendingMissionStarts[robotId] &&
+        pendingMissionStarts[robotId]?.mission.id !== mission.id &&
+        (robotPendingPhase === 'preview_pending' ||
+          robotPendingPhase === 'showing' ||
+          robotPendingPhase === 'start_pending')
+      ) {
+        void dispatchShowUpPreview(robotId, mission);
+        return;
+      }
+      void dispatchShowUpPreview(robotId, mission);
+    },
+    [
+      dispatchMissionEvent,
+      dispatchShowUpPreview,
+      isRobotEmergencyBlocked,
+      missionStatusByRobot,
+      pendingMissionStarts,
+      resolveMissionForRobot,
+      setActiveMapId,
+    ]
   );
 
   const handleConfirmMissionStart = useCallback(() => {
     if (!pendingMissionStart) return;
+    if (isRobotEmergencyBlocked(pendingMissionStart.robotId)) {
+      toast.error('Controls unavailable while emergency stop is active');
+      return;
+    }
     const dispatched = dispatchMissionEvent(
       pendingMissionStart.robotId,
       'START_MISSION',
       {
         missionId: pendingMissionStart.mission.id,
+        requestId: crypto.randomUUID(),
       },
       {
         queuedMessage: `START_MISSION queued for ${pendingMissionStart.mission.name}`,
@@ -544,13 +992,25 @@ export function Dashboard() {
       }
     );
     if (!dispatched) return;
-    setPendingMissionStart(null);
-  }, [dispatchMissionEvent, pendingMissionStart]);
+  }, [dispatchMissionEvent, isRobotEmergencyBlocked, pendingMissionStart]);
 
   const handleCancelMissionStart = useCallback(() => {
-    setPendingMissionStart(null);
-    setFocusedMission(null);
-  }, []);
+    if (pendingMissionStart) {
+      setPendingMissionStarts(current => {
+        const next = { ...current };
+        delete next[pendingMissionStart.robotId];
+        return next;
+      });
+      setFocusedMission(current =>
+        current?.robotId === pendingMissionStart.robotId &&
+        current.missionId === pendingMissionStart.mission.id
+          ? null
+          : current
+      );
+    } else {
+      setFocusedMission(null);
+    }
+  }, [pendingMissionStart]);
 
   const resolveMissionIdForRobot = useCallback(
     (robotId: string, missionId?: string) => {
@@ -563,6 +1023,10 @@ export function Dashboard() {
 
   const handlePauseMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No active mission to pause');
@@ -571,15 +1035,19 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'PAUSE_MISSION',
-        { missionId: resolvedId },
+        { missionId: resolvedId, requestId: crypto.randomUUID() },
         { queuedMessage: 'Pause command queued', errorMessage: 'Unable to send pause command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const handleResumeMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No paused mission to resume');
@@ -588,15 +1056,19 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'RESUME_MISSION',
-        { missionId: resolvedId },
+        { missionId: resolvedId, requestId: crypto.randomUUID() },
         { queuedMessage: 'Resume command queued', errorMessage: 'Unable to send resume command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const handleCancelMission = useCallback(
     (robotId: string, missionId?: string) => {
+      if (isRobotEmergencyBlocked(robotId)) {
+        toast.error('Controls unavailable while emergency stop is active');
+        return;
+      }
       const resolvedId = resolveMissionIdForRobot(robotId, missionId);
       if (!resolvedId) {
         toast.error('No mission to cancel');
@@ -605,11 +1077,11 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'CANCEL_MISSION',
-        { missionId: resolvedId },
+        { missionId: resolvedId, requestId: crypto.randomUUID() },
         { queuedMessage: 'Cancel command queued', errorMessage: 'Unable to send cancel command' }
       );
     },
-    [dispatchMissionEvent, resolveMissionIdForRobot]
+    [dispatchMissionEvent, isRobotEmergencyBlocked, resolveMissionIdForRobot]
   );
 
   const sendModeChange = useCallback(
@@ -617,7 +1089,7 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'CHANGE_MODE',
-        { targetMode },
+        { targetMode, requestId: crypto.randomUUID() },
         { queuedMessage: 'Mode change command queued', errorMessage: 'Unable to change mode' }
       );
     },
@@ -626,7 +1098,10 @@ export function Dashboard() {
 
   const enableManualControl = useCallback(
     (robotId: string) => {
-      if (!robotId) return;
+      if (!robotId || selectedRobotId !== robotId) {
+        toast.error('Select a robot before entering manual control');
+        return;
+      }
       if (teleopRobotId && teleopRobotId !== robotId) {
         sendModeChange(teleopRobotId, 'autonomousActive');
       }
@@ -636,7 +1111,7 @@ export function Dashboard() {
       setTeleopRobotId(robotId);
       setIsSidebarOpen(true);
     },
-    [sendModeChange, setIsSidebarOpen, teleopRobotId]
+    [selectedRobotId, sendModeChange, setIsSidebarOpen, teleopRobotId]
   );
 
   const disableManualControl = useCallback(
@@ -659,9 +1134,19 @@ export function Dashboard() {
 
   useEffect(() => {
     if (!selectedRobotId && teleopRobotId) {
-      disableManualControl(teleopRobotId);
+      setTeleopRobotId(null);
     }
-  }, [disableManualControl, selectedRobotId, teleopRobotId]);
+  }, [selectedRobotId, teleopRobotId]);
+
+  useEffect(() => {
+    if (!teleopRobotId) return;
+    const teleopStatus = missionStatusByRobot[teleopRobotId];
+    const liveMode =
+      teleopStatus?.mode ?? robots.find(robot => robot.id === teleopRobotId)?.runtimeMode;
+    if (liveMode && liveMode !== 'teleop') {
+      setTeleopRobotId(null);
+    }
+  }, [missionStatusByRobot, robots, teleopRobotId]);
 
   const handleFocusMission = useCallback(
     (robotId: string, missionId?: string) => {
@@ -699,17 +1184,20 @@ export function Dashboard() {
 
     for (const robot of robots) {
       const status = missionStatusByRobot[robot.id];
-      if (!status || !isMissionActiveStatus(status.status)) continue;
+      if (!status || !isMissionActiveStatus(status.phase)) continue;
       if (!missionIsFresh(status, nowMs)) continue;
+      const isPreviewLike = status.phase === 'showing' || status.phase === 'start_pending';
+      if (isPreviewLike && !pendingMissionStarts[robot.id]) continue;
       const missionId = status.currentMissionId ?? status.lastEventMissionId;
       const mission = resolveMissionContext(missionId, robot.mapId);
-      const started = missionClocks[robot.id];
-      const startedAt =
-        started && (!missionId || !started.missionId || started.missionId === missionId)
-          ? started.startedAt
-          : undefined;
+      const parsedStartedAt = status.startedAt ? Date.parse(status.startedAt) : undefined;
+      const startedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : undefined;
       const rowMapId = mission?.mapId ?? robot.mapId;
       const rowMapName = mission?.mapName ?? (robot.mapId ? mapNameById[robot.mapId] : undefined);
+      const displayWaypointIndex = toDisplayWaypointIndex(
+        status.waypointIndex,
+        status.totalWaypoints
+      );
 
       rows.push({
         robotId: robot.id,
@@ -718,8 +1206,10 @@ export function Dashboard() {
         ...(rowMapName !== undefined ? { mapName: rowMapName } : {}),
         ...(missionId ? { missionId } : {}),
         missionName: mission?.name ?? `Mission ${missionId ?? ''}`.trim(),
-        status: status.status as OngoingMissionView['status'],
-        ...(status.waypointIndex !== undefined ? { waypointIndex: status.waypointIndex } : {}),
+        status: (status.phase === 'start_pending'
+          ? 'showing'
+          : status.phase) as OngoingMissionView['status'],
+        ...(displayWaypointIndex !== undefined ? { waypointIndex: displayWaypointIndex } : {}),
         ...(status.totalWaypoints !== undefined ? { totalWaypoints: status.totalWaypoints } : {}),
         ...(startedAt ? { startedAt } : {}),
         ...(status.updatedAt !== undefined ? { updatedAt: status.updatedAt } : {}),
@@ -740,8 +1230,8 @@ export function Dashboard() {
     return rows;
   }, [
     mapNameById,
-    missionClocks,
     missionStatusByRobot,
+    pendingMissionStarts,
     resolveMissionContext,
     robots,
     selectedRobotId,
@@ -749,7 +1239,6 @@ export function Dashboard() {
 
   const handleSidebarRobotSelect = useCallback(
     (robot: Robot | null) => {
-      setPendingMissionStart(null);
       setFocusedMission(null);
       setStartMissionId(null);
       handleSelectRobot(robot);
@@ -758,134 +1247,154 @@ export function Dashboard() {
     [handleSelectRobot]
   );
 
+  const acknowledgeEmergencyAlert = useCallback(() => {
+    setEmergencyAlerts(current => current.slice(1));
+  }, []);
+
   return (
-    <DashboardLayout
-      map={
-        activeMapId ? (
-          <OccupancyMap
-            mapId={activeMapId}
-            onMapChange={mapId => {
-              if (focusedMission) return;
-              setActiveMapId(mapId);
-            }}
-            width="100%"
-            height="100%"
-            enablePanning={true}
-            enableZooming={true}
-            robots={robotsOnActiveMap.map(robot => {
-              if (
-                robot.id === activeRobotId &&
-                telemetry?.pose &&
-                Number.isFinite(telemetry.pose.x) &&
-                Number.isFinite(telemetry.pose.y) &&
-                Number.isFinite(telemetry.pose.theta)
-              ) {
-                return {
-                  ...robot,
-                  x: telemetry.pose.x,
-                  y: telemetry.pose.y,
-                  theta: telemetry.pose.theta,
-                };
-              }
-              return robot;
-            })}
-            telemetryRobotId={activeRobotId}
-            telemetry={telemetry}
+    <>
+      <DashboardLayout
+        emergencyHeader={{
+          summary: emergencySummary,
+          pendingDispatch: emergencyPendingDispatch !== null,
+          canSendEmergency: hasReachableEmergencyRobot,
+          canReleaseSoftware: canReleaseSoftwareEmergency,
+          onEmergencyAll: () => {
+            void handleFleetEmergencyDispatch(true);
+          },
+          onReleaseSoftware: () => {
+            void handleFleetEmergencyDispatch(false);
+          },
+        }}
+        map={
+          activeMapId ? (
+            <LiveOccupancyMap
+              mapId={activeMapId}
+              onMapChange={mapId => {
+                if (focusedMission) return;
+                setActiveMapId(mapId);
+              }}
+              robots={robotsOnActiveMap}
+              telemetryRobotId={activeRobotId}
+              selectedRobotId={selectedRobotId}
+              onRobotSelect={id => {
+                const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
+                handleSidebarRobotSelect(robot);
+              }}
+              onMapFeaturesChange={setMapFeatures}
+              setPoseMode={isSettingPose}
+              onPoseConfirm={handlePoseConfirm}
+              onPoseCancel={handlePoseCancel}
+              highlightTagIds={highlightTagIds}
+              dimNonMissionTags={dimNonMissionTags}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-muted-foreground">
+              {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
+            </div>
+          )
+        }
+        missionDock={
+          <MissionDock
+            robots={robots}
+            missions={prioritizedMissions}
+            ongoingMissions={ongoingMissions}
+            missionLogs={missionLogs}
+            focusedMission={
+              focusedMission
+                ? {
+                    robotId: focusedMission.robotId,
+                    ...(focusedMission.missionId ? { missionId: focusedMission.missionId } : {}),
+                  }
+                : null
+            }
             selectedRobotId={selectedRobotId}
-            onRobotSelect={id => {
-              const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
-              handleSidebarRobotSelect(robot);
-            }}
-            onMapFeaturesChange={setMapFeatures}
-            setPoseMode={isSettingPose}
-            onPoseConfirm={handlePoseConfirm}
-            onPoseCancel={handlePoseCancel}
-            highlightTagIds={highlightTagIds}
-            dimNonMissionTags={dimNonMissionTags}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
-          </div>
-        )
-      }
-      missionDock={
-        <MissionDock
-          robots={robots}
-          missions={prioritizedMissions}
-          ongoingMissions={ongoingMissions}
-          missionLogs={missionLogs}
-          focusedMission={
-            focusedMission
-              ? {
-                  robotId: focusedMission.robotId,
-                  ...(focusedMission.missionId ? { missionId: focusedMission.missionId } : {}),
-                }
-              : null
-          }
-          selectedRobotId={selectedRobotId}
-          startRobotId={startRobotId}
-          startMissionId={startMissionId}
-          pendingStart={pendingMissionStart}
-          onSetStartRobot={robotId => {
-            if (robotId !== startRobotId) {
-              setPendingMissionStart(null);
-              setFocusedMission(null);
-            }
-            setStartRobotId(robotId);
-            if (robotId) {
-              const robot = robots.find(item => item.id === robotId) ?? null;
-              if (robot) {
-                handleSelectRobot(robot);
+            startRobotId={startRobotId}
+            startMissionId={startMissionId}
+            pendingStart={pendingMissionStart}
+            pendingPhase={pendingMissionPhase}
+            pendingMessage={pendingMissionMessage}
+            onSetStartRobot={robotId => {
+              if (robotId !== startRobotId) {
+                setFocusedMission(null);
               }
-            } else {
-              setStartMissionId(null);
-            }
-          }}
-          onSetStartMission={missionId => setStartMissionId(missionId)}
-          onShowUp={handleShowUpForRobot}
-          onConfirmStart={handleConfirmMissionStart}
-          onCancelStart={handleCancelMissionStart}
-          onFocusMission={handleFocusMission}
-          onClearFocus={handleClearMissionFocus}
-          onPauseMission={handlePauseMission}
-          onResumeMission={handleResumeMission}
-          onCancelMission={handleCancelMission}
-        />
-      }
-      teleopPanel={
-        teleopRobot && teleopRobotId ? (
-          <TeleopPanel
-            robotId={teleopRobotId}
-            robotName={teleopRobot.name}
-            sendTeleop={sendTeleop}
-            onClose={() => disableManualControl(teleopRobotId)}
-            className={isSidebarOpen ? 'right-2 md:right-4 bottom-28' : 'right-2 bottom-28'}
+              setStartRobotId(robotId);
+              if (robotId) {
+                const robot = robots.find(item => item.id === robotId) ?? null;
+                if (robot) {
+                  handleSelectRobot(robot);
+                }
+              } else {
+                setStartMissionId(null);
+              }
+            }}
+            onSetStartMission={missionId => setStartMissionId(missionId)}
+            onShowUp={handleShowUpForRobot}
+            onConfirmStart={handleConfirmMissionStart}
+            onCancelStart={handleCancelMissionStart}
+            onFocusMission={handleFocusMission}
+            onClearFocus={handleClearMissionFocus}
+            onPauseMission={handlePauseMission}
+            onResumeMission={handleResumeMission}
+            onCancelMission={handleCancelMission}
           />
-        ) : null
-      }
-      sidebar={
-        <Sidebar
-          robots={robots}
-          selectedRobotId={selectedRobotId}
-          onSelectRobot={handleSidebarRobotSelect}
-          isOpen={isSidebarOpen}
-          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
-          mapNameById={mapNameById}
-          className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
-          onManualControl={() => {
-            if (!selectedRobotId) {
-              toast.error('Select a robot to start teleop');
-              return;
-            }
-            enableManualControl(selectedRobotId);
-          }}
-          onSetPose={() => {
-            setIsSidebarOpen(true);
-            handleStartSetPose();
-          }}
-        />
-      }
-    />
+        }
+        teleopPanel={
+          teleopRobot && teleopRobotId ? (
+            <TeleopPanel
+              robotId={teleopRobotId}
+              robotName={teleopRobot.name}
+              sendTeleop={sendTeleop}
+              onClose={() => disableManualControl(teleopRobotId)}
+              className={isSidebarOpen ? 'right-2 md:right-4 bottom-28' : 'right-2 bottom-28'}
+            />
+          ) : null
+        }
+        sidebar={
+          <Sidebar
+            robots={robots}
+            selectedRobotId={selectedRobotId}
+            onSelectRobot={handleSidebarRobotSelect}
+            isOpen={isSidebarOpen}
+            onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+            mapNameById={mapNameById}
+            className="flex-shrink-0 border-l border-border bg-card z-10 shadow-xl"
+            onManualControl={() => {
+              if (!selectedRobotId) {
+                toast.error('Select a robot to start teleop');
+                return;
+              }
+              enableManualControl(selectedRobotId);
+            }}
+            onSetPose={() => {
+              setIsSidebarOpen(true);
+              handleStartSetPose();
+            }}
+          />
+        }
+      />
+
+      <Dialog open={currentEmergencyAlert !== null}>
+        <DialogContent
+          className="bg-card border-safety-estop/30"
+          onPointerDownOutside={event => event.preventDefault()}
+          onEscapeKeyDown={event => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-safety-estop">Emergency Active</DialogTitle>
+            <DialogDescription className="text-foreground/80">
+              {currentEmergencyAlert
+                ? `${currentEmergencyAlert.kind === 'hardware' ? 'Hardware' : 'Software'} emergency set on ${currentEmergencyAlert.robotName}.`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="destructive" onClick={acknowledgeEmergencyAlert}>
+              Acknowledge
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

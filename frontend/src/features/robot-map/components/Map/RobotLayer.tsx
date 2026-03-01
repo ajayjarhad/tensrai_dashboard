@@ -1,6 +1,7 @@
 import { Group } from 'react-konva';
 import type { MapTransforms } from '@/lib/map/mapTransforms';
 import { worldToMapPixel } from '@/lib/map/mapTransforms';
+import { getRobotDisplayMode } from '@/lib/robotStatus';
 import type { Robot } from '@/types/robot';
 import { RobotMarker } from '../RobotMarker';
 
@@ -45,7 +46,7 @@ export function RobotLayer({
               x={pixelPoint.x}
               y={pixelPoint.y}
               rotation={rotationDegrees}
-              status={robot.status}
+              status={getRobotDisplayMode(robot)}
               widthMeters={ROBOT_WIDTH_METERS}
               lengthMeters={ROBOT_LENGTH_METERS}
               resolution={resolution}

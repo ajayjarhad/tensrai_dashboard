@@ -4,16 +4,9 @@ import { trace } from '@opentelemetry/api';
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import WebSocket from 'ws';
-import { mapMetrics, websocketMetrics } from '../metrics/index.js';
-import {
-  buildMissionFailureAck,
-  isMissionControlEvent,
-  isMissionStatusEvent,
-  updateMissionFromEvent,
-} from '../services/missionStatus.js';
-import { syncRobotStatusUpdate } from '../services/robotStatusSync.js';
+import { websocketMetrics } from '../metrics/index.js';
+import { buildMissionFailureAck, isMissionControlEvent } from '../services/missionStatus.js';
 import { RosRegistry } from '../services/rosRegistry.js';
-import { upsertMapFromResponse } from '../services/saveMapFromMapping.js';
 
 type IncomingMessage =
   | {
@@ -46,6 +39,12 @@ const makeEvent = (channel: string, data: unknown) =>
     data,
   });
 
+type ForwardableChannelEvent = {
+  channel: string;
+  data: unknown;
+  __serializedMessage?: string;
+};
+
 const parseGatewayEvent = (payload: string): { event: string; payload?: unknown } | null => {
   try {
     const parsed = JSON.parse(payload);
@@ -70,7 +69,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   // Track active WebSocket connections
   let _activeConnections = 0;
 
-  fastify.get('/ws/robots/:robotId', { websocket: true }, (connection, request) => {
+  const robotBridgeHandler = (connection, request) => {
     const { robotId } = request.params as { robotId: string };
     const tracer = trace.getTracer('ros-gateway');
     const span = tracer.startSpan('websocket.robot.connection', {
@@ -128,15 +127,27 @@ const rosGateway = async (fastify: FastifyInstance) => {
       return;
     }
 
-    const forward = (event: { channel: string; data: unknown }) => {
+    const forward = (event: ForwardableChannelEvent) => {
       try {
-        socket.send(makeEvent(event.channel, event.data));
+        let message = event.__serializedMessage;
+        if (!message) {
+          message = makeEvent(event.channel, event.data);
+          event.__serializedMessage = message;
+        }
+        socket.send(message);
       } catch (err) {
         fastify.log.error({ err }, 'Failed to forward ROS event');
       }
     };
 
     manager.on('channel-data', forward);
+
+    for (const event of manager.getLatestChannelEvents()) {
+      forward({
+        channel: event.channel,
+        data: event.data,
+      });
+    }
 
     socket.on('message', async buffer => {
       let parsed: IncomingMessage;
@@ -208,7 +219,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
       });
       span.recordException(error);
     });
-  });
+  };
+
+  fastify.get('/ws/robots/:robotId', { websocket: true }, robotBridgeHandler);
+  fastify.get('/ws/robots/:robotId/telemetry/:label', { websocket: true }, robotBridgeHandler);
 
   fastify.get('/health/ros', async () => {
     return {
@@ -216,9 +230,9 @@ const rosGateway = async (fastify: FastifyInstance) => {
     };
   });
 
-  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, async (connection, request) => {
+  const unifiedMappingHandler = async (connection, request) => {
     const { robotId } = request.params as { robotId: string };
-    const robot = await (fastify.prisma as any).robot.findUnique({ where: { id: robotId } });
+    const missionRegistry = (fastify as any).missionRegistry;
 
     const clientSocket =
       (connection as any).socket ??
@@ -232,34 +246,16 @@ const rosGateway = async (fastify: FastifyInstance) => {
       return;
     }
 
-    if (!robot?.ipAddress) {
-      clientSocket.send(makeError(undefined, undefined, 'Robot IP not configured'));
+    if (!missionRegistry) {
+      clientSocket.send(makeError(undefined, undefined, 'Mission registry unavailable'));
       clientSocket.close();
       return;
     }
 
-    const mappingUrl = robot.mappingBridgePort
-      ? `ws://${robot.ipAddress}:${robot.mappingBridgePort}`
-      : null;
-    const missionUrl = robot.missionBridgePort
-      ? `ws://${robot.ipAddress}:${robot.missionBridgePort}`
-      : null;
-
-    if (!mappingUrl && !missionUrl) {
-      clientSocket.send(makeError(undefined, undefined, 'No mapping or mission bridge configured'));
-      clientSocket.close();
-      return;
-    }
-
-    const mappingSocket = mappingUrl ? new WebSocket(mappingUrl) : null;
-    const missionSocket = missionUrl ? new WebSocket(missionUrl) : null;
-
-    let mappingAlive = Boolean(mappingSocket);
-    let missionAlive = Boolean(missionSocket);
     let closed = false;
 
-    const stringifyMessage = (data: unknown, isBinary?: boolean) => {
-      if (!isBinary && typeof data === 'string') return data;
+    const stringifyMessage = (data: unknown) => {
+      if (typeof data === 'string') return data;
       if (Buffer.isBuffer(data)) return data.toString('utf8');
       return String(data);
     };
@@ -273,179 +269,26 @@ const rosGateway = async (fastify: FastifyInstance) => {
       }
     };
 
-    const maybeCloseClient = () => {
+    const unsubscribeMissionEvents = missionRegistry.addRobotEventListener(
+      robotId,
+      (payloadText: string) => {
+        websocketMetrics.messagesReceived.add(1, {
+          'robot.id': robotId,
+          'websocket.type': 'unified-mapping',
+          'message.source': 'mission_registry',
+        });
+        safeClientSend(payloadText);
+      }
+    );
+
+    const closeClient = () => {
       if (closed) return;
-      if (mappingAlive || missionAlive) return;
       closed = true;
+      unsubscribeMissionEvents();
       try {
         clientSocket.close();
       } catch {}
     };
-
-    const closeAll = () => {
-      if (closed) return;
-      closed = true;
-      mappingAlive = false;
-      missionAlive = false;
-      try {
-        mappingSocket?.close();
-      } catch {}
-      try {
-        missionSocket?.close();
-      } catch {}
-      try {
-        clientSocket.close();
-      } catch {}
-    };
-
-    const handleMissionStatusEvent = async (payloadText: string) => {
-      const parsed = parseGatewayEvent(payloadText);
-
-      if (!parsed) {
-        safeClientSend(payloadText);
-        return;
-      }
-
-      if (parsed.event && isMissionStatusEvent(parsed.event)) {
-        updateMissionFromEvent(robotId, parsed.event, parsed.payload);
-      }
-
-      if (parsed.event === 'ROBOT_STATUS_UPDATE') {
-        const syncResult = await syncRobotStatusUpdate(
-          { prisma: fastify.prisma as any, log: fastify.log },
-          robotId,
-          parsed.payload
-        );
-        if (!syncResult.ok) {
-          fastify.log.warn(
-            { robotId, reason: syncResult.reason, event: parsed.event },
-            'Dropped ROBOT_STATUS_UPDATE during sync'
-          );
-        }
-      }
-
-      if (parsed.event && isMissionStatusEvent(parsed.event)) {
-        safeClientSend(payloadText);
-      }
-    };
-
-    if (mappingSocket) {
-      mappingSocket.on('open', () => {
-        fastify.log.info({ robotId, mappingUrl }, 'Connected to mapping bridge');
-        try {
-          mappingSocket.send(
-            JSON.stringify({
-              event: 'GET_MAP_DATA',
-              payload: {},
-            })
-          );
-        } catch (err) {
-          fastify.log.error({ robotId, mappingUrl, err }, 'Failed to send GET_MAP_DATA');
-        }
-      });
-
-      mappingSocket.on('message', async (data, isBinary) => {
-        const payloadText = stringifyMessage(data, isBinary);
-        websocketMetrics.messagesReceived.add(1, {
-          'robot.id': robotId,
-          'websocket.type': 'unified-mapping',
-          'message.source': 'mapping_bridge',
-        });
-
-        try {
-          const parsed = parseGatewayEvent(payloadText);
-
-          if (parsed?.event === 'MAP_DATA_RESPONSE' && (parsed as any)?.payload?.files) {
-            const tracer = trace.getTracer('ros-gateway');
-            const span = tracer.startSpan('map.upload', {
-              attributes: {
-                'robot.id': robotId,
-                'websocket.type': 'mapping-bridge',
-              },
-            });
-
-            try {
-              await upsertMapFromResponse(fastify, robotId, (parsed as any).payload.files);
-              mapMetrics.uploadCount.add(1, { 'robot.id': robotId });
-              span.setAttributes({ 'map.upload.success': true });
-            } catch (error) {
-              span.setAttributes({
-                'map.upload.success': false,
-                'map.upload.error': (error as Error).message,
-              });
-              span.recordException(error as Error);
-            } finally {
-              span.end();
-            }
-          }
-
-          if (parsed?.event && isMissionStatusEvent(parsed.event)) {
-            const missionBridgeConnected =
-              Boolean(missionSocket) && missionSocket?.readyState === WebSocket.OPEN;
-            if (missionBridgeConnected) {
-              fastify.log.debug(
-                { robotId, event: parsed.event },
-                'Skipping mission status event from mapping bridge while mission bridge is connected'
-              );
-            } else {
-              await handleMissionStatusEvent(payloadText);
-            }
-          }
-        } catch (err) {
-          fastify.log.warn({ robotId, err }, 'Failed to process mapping bridge payload');
-        }
-      });
-
-      mappingSocket.on('close', () => {
-        mappingAlive = false;
-        maybeCloseClient();
-      });
-
-      mappingSocket.on('error', err => {
-        mappingAlive = false;
-        websocketMetrics.connectionErrors.add(1, {
-          'robot.id': robotId,
-          'websocket.type': 'unified-mapping',
-          'error.reason': 'mapping_bridge_error',
-        });
-        fastify.log.error({ robotId, mappingUrl, err }, 'Mapping bridge error');
-        safeClientSend(makeError(undefined, undefined, 'Mapping bridge error'));
-        maybeCloseClient();
-      });
-    }
-
-    if (missionSocket) {
-      missionSocket.on('open', () => {
-        fastify.log.info({ robotId, missionUrl }, 'Connected to mission bridge');
-      });
-
-      missionSocket.on('message', async (data, isBinary) => {
-        const payloadText = stringifyMessage(data, isBinary);
-        websocketMetrics.messagesReceived.add(1, {
-          'robot.id': robotId,
-          'websocket.type': 'unified-mapping',
-          'message.source': 'mission_bridge',
-        });
-        await handleMissionStatusEvent(payloadText);
-      });
-
-      missionSocket.on('close', () => {
-        missionAlive = false;
-        maybeCloseClient();
-      });
-
-      missionSocket.on('error', err => {
-        missionAlive = false;
-        websocketMetrics.connectionErrors.add(1, {
-          'robot.id': robotId,
-          'websocket.type': 'unified-mapping',
-          'error.reason': 'mission_bridge_error',
-        });
-        fastify.log.error({ robotId, missionUrl, err }, 'Mission bridge error');
-        safeClientSend(makeError(undefined, undefined, 'Mission bridge error'));
-        maybeCloseClient();
-      });
-    }
 
     clientSocket.on('message', (msg: Buffer | string) => {
       const payloadText = stringifyMessage(msg);
@@ -458,53 +301,36 @@ const rosGateway = async (fastify: FastifyInstance) => {
       const parsed = parseGatewayEvent(payloadText);
 
       if (parsed?.event && isMissionControlEvent(parsed.event)) {
-        if (!missionSocket || missionSocket.readyState !== WebSocket.OPEN) {
+        const sendResult = missionRegistry.sendCommand(robotId, payloadText);
+        if (!sendResult.ok) {
           const failureAck = buildMissionFailureAck(
             parsed.event,
             parsed.payload,
-            'Mission bridge not connected'
+            sendResult.error ?? 'Mission bridge not connected'
           );
           safeClientSend(JSON.stringify(failureAck));
-          if (failureAck?.event && isMissionStatusEvent(failureAck.event)) {
-            updateMissionFromEvent(robotId, failureAck.event, failureAck.payload);
-          }
           return;
         }
 
         try {
-          missionSocket.send(payloadText);
+          if (missionRegistry?.recordCommandIntent) {
+            void missionRegistry
+              .recordCommandIntent(robotId, parsed.event, parsed.payload)
+              .catch((error: unknown) => {
+                fastify.log.warn({ robotId, error }, 'Failed to persist mission command intent');
+              });
+          }
         } catch (err) {
-          fastify.log.error({ robotId, missionUrl, err }, 'Failed to forward mission command');
+          fastify.log.error({ robotId, err }, 'Failed to persist mission command intent');
         }
         return;
       }
 
-      if (mappingSocket && mappingSocket.readyState === WebSocket.OPEN) {
-        try {
-          mappingSocket.send(msg);
-        } catch (err) {
-          fastify.log.error({ robotId, mappingUrl, err }, 'Failed to forward mapping message');
-        }
-        return;
-      }
-
-      if (missionSocket && missionSocket.readyState === WebSocket.OPEN) {
-        try {
-          missionSocket.send(msg);
-        } catch (err) {
-          fastify.log.error(
-            { robotId, missionUrl, err },
-            'Failed to forward fallback mission message'
-          );
-        }
-        return;
-      }
-
-      safeClientSend(makeError(undefined, undefined, 'No upstream bridge is currently connected'));
+      safeClientSend(makeError(undefined, undefined, 'Unsupported mapping websocket message'));
     });
 
     clientSocket.on('close', () => {
-      closeAll();
+      closeClient();
     });
 
     clientSocket.on('error', err => {
@@ -514,9 +340,12 @@ const rosGateway = async (fastify: FastifyInstance) => {
         'error.reason': 'client_socket_error',
       });
       fastify.log.error({ robotId, err }, 'Dashboard WebSocket error');
-      closeAll();
+      closeClient();
     });
-  });
+  };
+
+  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping/:label', { websocket: true }, unifiedMappingHandler);
 
   fastify.addHook('onClose', async () => {
     registry.stop();

@@ -6,6 +6,9 @@ interface MissionActionsProps {
   showMissionControls?: boolean;
   isMissionPaused?: boolean;
   isMissionActive?: boolean;
+  disableMissionControls?: boolean;
+  disableManualControl?: boolean;
+  disabledReason?: string | undefined;
   onPause?: (() => void) | undefined;
   onResume?: (() => void) | undefined;
   onCancel?: (() => void) | undefined;
@@ -18,6 +21,9 @@ export function MissionActions({
   showMissionControls = true,
   isMissionPaused,
   isMissionActive,
+  disableMissionControls = false,
+  disableManualControl = false,
+  disabledReason,
   onPause,
   onResume,
   onCancel,
@@ -45,7 +51,7 @@ export function MissionActions({
               variant="outline"
               className="flex-1"
               onClick={handlePauseResume}
-              disabled={!active}
+              disabled={!active || disableMissionControls}
             >
               {paused ? (
                 <>
@@ -64,7 +70,7 @@ export function MissionActions({
               variant="destructive"
               className="flex-1"
               onClick={() => onCancel?.()}
-              disabled={!active}
+              disabled={!active || disableMissionControls}
             >
               <XCircle className="h-4 w-4" />
               Cancel
@@ -79,6 +85,7 @@ export function MissionActions({
           variant="secondary"
           className="flex-1"
           onClick={() => onManualControl?.()}
+          disabled={disableManualControl}
         >
           <Gamepad2 className="h-4 w-4" />
           Manual Control
@@ -88,6 +95,9 @@ export function MissionActions({
           Set Pose
         </Button>
       </div>
+      {disabledReason && (disableMissionControls || disableManualControl) && (
+        <div className="text-xs text-muted-foreground">{disabledReason}</div>
+      )}
     </div>
   );
 }
