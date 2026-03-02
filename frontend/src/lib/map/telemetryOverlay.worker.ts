@@ -1,7 +1,6 @@
 import { worldToMapPixel } from './mapTransforms';
 import type { TelemetryOverlayRequest, TelemetryOverlayResponse } from './telemetryOverlay.types';
 
-const EMPTY_POINTS = new Float32Array(0);
 const DEFAULT_MAX_LASER_POINTS = 450;
 // Keep the worker-based coordinate transform, but disable the raster overlay path for now.
 // Rendering a pre-rasterized bitmap inside the transformed Konva scene introduced
@@ -11,7 +10,7 @@ let overlayCanvas: OffscreenCanvas | null = null;
 let overlayContext: OffscreenCanvasRenderingContext2D | null = null;
 
 const toFloat32Array = (values: number[], usedLength: number) => {
-  if (usedLength <= 0) return EMPTY_POINTS;
+  if (usedLength <= 0) return new Float32Array(0);
   const points = new Float32Array(usedLength);
   points.set(values.slice(0, usedLength));
   return points;
@@ -19,7 +18,7 @@ const toFloat32Array = (values: number[], usedLength: number) => {
 
 const buildPathPoints = (request: TelemetryOverlayRequest) => {
   const { path, transforms } = request;
-  if (!path?.poses?.length || !transforms) return EMPTY_POINTS;
+  if (!path?.poses?.length || !transforms) return new Float32Array(0);
 
   const values = new Array<number>(path.poses.length * 2);
   let writeIndex = 0;
@@ -39,7 +38,7 @@ const buildPathPoints = (request: TelemetryOverlayRequest) => {
 
 const buildLaserPoints = (request: TelemetryOverlayRequest) => {
   const { laser, robotPose, transforms } = request;
-  if (!laser || !transforms) return EMPTY_POINTS;
+  if (!laser || !transforms) return new Float32Array(0);
 
   const maxLaserPoints = request.maxLaserPoints ?? DEFAULT_MAX_LASER_POINTS;
   const values = new Array<number>(maxLaserPoints * 2);
@@ -69,7 +68,7 @@ const buildLaserPoints = (request: TelemetryOverlayRequest) => {
   }
 
   if (!robotPose || !Array.isArray(laser.ranges) || laser.ranges.length === 0) {
-    return EMPTY_POINTS;
+    return new Float32Array(0);
   }
 
   const step = Math.max(1, request.laserStep ?? 2);
@@ -163,7 +162,9 @@ ctx.onmessage = (event: MessageEvent<TelemetryOverlayRequest>) => {
     pathPoints,
     ...(overlayBitmap ? { overlayBitmap } : {}),
   };
-  const transferables: Transferable[] = [response.laserPoints.buffer, response.pathPoints.buffer];
+  const transferables: Transferable[] = [];
+  if (response.laserPoints.byteLength > 0) transferables.push(response.laserPoints.buffer);
+  if (response.pathPoints.byteLength > 0) transferables.push(response.pathPoints.buffer);
   if (overlayBitmap) {
     transferables.push(overlayBitmap);
   }
