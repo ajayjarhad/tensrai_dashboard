@@ -6,6 +6,11 @@ RUN apt-get update && apt-get install -y netcat-openbsd wget procps && rm -rf /v
 
 WORKDIR /app
 
+# Build-time DATABASE_URL is required by prisma generate.
+# Runtime DATABASE_URL still comes from docker-compose environment/env_file.
+ARG DATABASE_URL=mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0
+ENV DATABASE_URL=${DATABASE_URL}
+
 # Copy workspace root files first
 COPY bun.lock package.json tsconfig.json ./
 
