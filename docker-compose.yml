@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:5001}
-        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:5001}
+        VITE_API_URL: /api
+        VITE_WS_URL: /ws
     ports:
       - "8080:80"
     depends_on:
@@ -84,6 +84,10 @@ services:
       NODE_ENV: development
       PORT: 5001
       HOST: 0.0.0.0
+      ROS_MAPPING_BRIDGE_PORT: 8765
+      ROS_MISSION_BRIDGE_PORT: 9487
+      ROS_EMERGENCY_BRIDGE_PORT: 8766
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
       BASE_URL: ${BASE_URL:-http://localhost:5001}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -95,8 +99,6 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
-      otel-collector:
-        condition: service_started
     restart: unless-stopped
     networks:
       - tensrai-network
@@ -115,6 +117,7 @@ services:
 
   # --- SigNoz stack ---
   otel-collector:
+    profiles: ["observability"]
     image: signoz/signoz-otel-collector:0.111.24
     command:
       - "--config=/etc/otel-collector-config.yaml"
@@ -136,6 +139,7 @@ services:
       - signoz-backend
 
   clickhouse:
+    profiles: ["observability"]
     image: clickhouse/clickhouse-server:24.1.2-alpine
     depends_on:
       zookeeper:
@@ -163,6 +167,7 @@ services:
       - signoz-backend
 
   clickhouse-init:
+    profiles: ["observability"]
     image: clickhouse/clickhouse-server:24.1.2-alpine
     depends_on:
       clickhouse:
@@ -181,6 +186,7 @@ services:
       - signoz-backend
 
   zookeeper:
+    profiles: ["observability"]
     image: zookeeper:3.7
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
@@ -190,6 +196,7 @@ services:
       - signoz-backend
 
   schema-migrator-sync:
+    profiles: ["observability"]
     image: signoz/signoz-schema-migrator:v0.111.34
     command:
       - sync
@@ -204,6 +211,7 @@ services:
       - signoz-backend
 
   schema-migrator-async:
+    profiles: ["observability"]
     image: signoz/signoz-schema-migrator:v0.111.34
     command:
       - async
@@ -220,6 +228,7 @@ services:
       - signoz-backend
 
   signoz-frontend:
+    profiles: ["observability"]
     image: signoz/signoz:v0.76.2
     environment:
       - STORAGE=clickhouse
@@ -249,6 +258,7 @@ services:
       - signoz-backend
 
   alertmanager:
+    profiles: ["observability"]
     image: prom/alertmanager:v0.27.0
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
@@ -259,6 +269,7 @@ services:
       - signoz-backend
 
   redis:
+    profiles: ["observability"]
     image: redis:7.2.5-alpine
     command:
       - "redis-server"
