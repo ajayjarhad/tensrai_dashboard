@@ -29,6 +29,25 @@ const MAX_LASER_POINTS = (() => {
   return Math.max(60, Math.floor(raw));
 })();
 
+const rosStampToMs = (stamp: any): number | undefined => {
+  if (!stamp || typeof stamp !== 'object') return undefined;
+  const sec =
+    typeof stamp.sec === 'number'
+      ? stamp.sec
+      : typeof stamp.secs === 'number'
+        ? stamp.secs
+        : undefined;
+  const nanosec =
+    typeof stamp.nanosec === 'number'
+      ? stamp.nanosec
+      : typeof stamp.nsecs === 'number'
+        ? stamp.nsecs
+        : undefined;
+  if (sec === undefined || nanosec === undefined) return undefined;
+  const ms = sec * 1000 + nanosec / 1e6;
+  return Number.isFinite(ms) ? ms : undefined;
+};
+
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
   return {
@@ -67,7 +86,7 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
       range_max: scan.range_max,
       ranges: hasPoints ? [] : scan.ranges,
       points: hasPoints ? scan.points : undefined,
-      frame: scan.frame,
+      frame: scan.frame ?? scan.header?.frame_id,
     };
   }
   if (channelName === 'waypoints') {
@@ -348,11 +367,7 @@ export class RosRobotManager extends EventEmitter {
       z: ori.z ?? 0,
       w: ori.w ?? 1,
     });
-    const stamp = raw?.header?.stamp;
-    const stampMs =
-      stamp && typeof stamp.sec === 'number' && typeof stamp.nanosec === 'number'
-        ? stamp.sec * 1000 + stamp.nanosec / 1e6
-        : undefined;
+    const stampMs = rosStampToMs(raw?.header?.stamp);
     this.odomPose = { x: pos.x ?? 0, y: pos.y ?? 0, yaw, stampMs };
     this.maybeEmitBasePose();
     return raw;
@@ -383,12 +398,7 @@ export class RosRobotManager extends EventEmitter {
   private processLaser(raw: any) {
     if (!raw?.ranges || !Array.isArray(raw.ranges)) return raw;
 
-    const scanStamp = raw?.header?.stamp;
-    const scanStampMs =
-      scanStamp && typeof scanStamp.sec === 'number' && typeof scanStamp.nanosec === 'number'
-        ? scanStamp.sec * 1000 + scanStamp.nanosec / 1e6
-        : null;
-    if (scanStampMs === null) return raw;
+    const scanStampMs = rosStampToMs(raw?.header?.stamp) ?? Date.now();
 
     const pose = this.getLaserPose(scanStampMs);
     if (!pose) return raw;
@@ -507,10 +517,7 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private getStampMs(stamp: any): number | undefined {
-    const stampMsRaw =
-      stamp && typeof stamp.sec === 'number' && typeof stamp.nanosec === 'number'
-        ? stamp.sec * 1000 + stamp.nanosec / 1e6
-        : undefined;
+    const stampMsRaw = rosStampToMs(stamp);
     // Static transforms often carry stamp=0; treat them as timeless so they don't get flagged stale.
     return stampMsRaw === 0 ? undefined : stampMsRaw;
   }

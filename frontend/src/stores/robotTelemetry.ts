@@ -171,10 +171,10 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           }
         } else if (event.channel === 'laser') {
           const laser = event.data as LaserScan;
-          next.laser =
-            Array.isArray(laser?.points) && laser.points.length > 0
-              ? { ...laser, ranges: [] }
-              : laser;
+          const hasPoints = Array.isArray(laser?.points) && laser.points.length > 0;
+          const frame = typeof laser?.frame === 'string' ? laser.frame.toLowerCase() : '';
+          const hasMapPoints = hasPoints && frame === 'map';
+          next.laser = hasMapPoints ? { ...laser, ranges: [] } : laser;
           next.lastLaserAt = now;
         } else if (event.channel === 'waypoints') {
           next.path = event.data as PathMessage;
