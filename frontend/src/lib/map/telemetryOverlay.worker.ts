@@ -54,8 +54,9 @@ const buildLaserPoints = (request: TelemetryOverlayRequest) => {
   };
 
   if (Array.isArray(laser.points) && laser.points.length > 0) {
+    const frame = typeof laser.frame === 'string' ? laser.frame.toLowerCase() : '';
     const step = Math.max(1, Math.ceil(laser.points.length / maxLaserPoints));
-    if (laser.frame === 'map') {
+    if (frame === 'map') {
       for (let index = 0; index < laser.points.length; index += step) {
         const point = laser.points[index];
         if (!point) continue;
@@ -63,8 +64,8 @@ const buildLaserPoints = (request: TelemetryOverlayRequest) => {
         if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)) continue;
         if (!pushPixel(pixel.x, pixel.y)) break;
       }
+      return toFloat32Array(values, writeIndex);
     }
-    return toFloat32Array(values, writeIndex);
   }
 
   if (!robotPose || !Array.isArray(laser.ranges) || laser.ranges.length === 0) {
