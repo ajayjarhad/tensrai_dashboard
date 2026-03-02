@@ -1,21 +1,36 @@
-# Simple Dockerfile that copies pre-built frontend and serves with Nginx
+FROM oven/bun:1 AS builder
+
+WORKDIR /app
+
+# Build-time public frontend config.
+ARG VITE_API_URL=/api
+ARG VITE_WS_URL=/ws
+
+# Install workspace dependencies first for better layer caching.
+COPY bun.lock package.json tsconfig.json ./
+COPY frontend/package.json ./frontend/package.json
+COPY shared/package.json ./shared/package.json
+COPY backend/package.json ./backend/package.json
+
+RUN bun install --frozen-lockfile
+
+# Copy source after dependency layer.
+COPY frontend ./frontend
+COPY shared ./shared
+
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_WS_URL=${VITE_WS_URL}
+
+# Produces /app/frontend/dist
+RUN bun run --cwd frontend build
+
 FROM nginx:1.27-alpine
 
-# Install wget for health check
 RUN apk add --no-cache wget
 
-# Copy the built frontend to nginx serving directory
-COPY frontend/dist /usr/share/nginx/html
-
-# Copy nginx configuration
+COPY --from=builder /app/frontend/dist /usr/share/nginx/html
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
 
-# Expose port
 EXPOSE 80
 
-# Health check disabled for development
-# HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-#   CMD curl -f http://localhost/health || exit 1
-
-# Start nginx
 CMD ["nginx", "-g", "daemon off;"]
