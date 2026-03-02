@@ -34,6 +34,25 @@ export const resolveApiHttpBase = () => {
   const fallbackOrigin = `${fallbackProtocol}://${fallbackHost}:5001`;
   const raw = getEnv('VITE_API_URL', fallbackOrigin).trim();
 
+  // Support reverse-proxy style relative values like "/api".
+  // Without this branch, withProtocol("/api") becomes "http:///api",
+  // which URL-parses as host "api" and causes requests to http://api/...
+  if (raw.startsWith('/')) {
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : fallbackOrigin;
+    try {
+      const parsed = new URL(raw, origin);
+      parsed.pathname = ensureApiPath(parsed.pathname);
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return `${origin}/api`;
+    }
+  }
+
   try {
     const parsed = new URL(withProtocol(raw, fallbackProtocol));
     if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
