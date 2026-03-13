@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./types/robot-ws": {
+      "types": "./dist/types/robot-ws.d.ts",
+      "import": "./dist/types/robot-ws.js"
     }
   },
   "scripts": {

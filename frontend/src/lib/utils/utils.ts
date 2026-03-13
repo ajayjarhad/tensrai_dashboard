@@ -10,6 +10,14 @@ export function generateId(prefix = 'id') {
   return `${prefix}-${nanoid(8)}`;
 }
 
+export function generateRequestId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return nanoid();
+}
+
 export function formatRobotStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
 }

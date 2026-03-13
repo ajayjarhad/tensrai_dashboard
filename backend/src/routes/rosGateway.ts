@@ -1,6 +1,7 @@
 // @ts-nocheck
 import websocket from '@fastify/websocket';
 import { trace } from '@opentelemetry/api';
+import { parseRobotMissionCommand, withMissionCommandId } from '@tensrai/shared/types/robot-ws';
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import WebSocket from 'ws';
@@ -43,17 +44,6 @@ type ForwardableChannelEvent = {
   channel: string;
   data: unknown;
   __serializedMessage?: string;
-};
-
-const parseGatewayEvent = (payload: string): { event: string; payload?: unknown } | null => {
-  try {
-    const parsed = JSON.parse(payload);
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (typeof parsed.event !== 'string' || parsed.event.trim().length === 0) return null;
-    return parsed as { event: string; payload?: unknown };
-  } catch {
-    return null;
-  }
 };
 
 const rosGateway = async (fastify: FastifyInstance) => {
@@ -298,24 +288,46 @@ const rosGateway = async (fastify: FastifyInstance) => {
         'message.source': 'dashboard_client',
       });
 
-      const parsed = parseGatewayEvent(payloadText);
+      let rawMessage: unknown;
+      try {
+        rawMessage = JSON.parse(payloadText);
+      } catch {
+        safeClientSend(makeError(undefined, undefined, 'Invalid JSON message'));
+        return;
+      }
+
+      const parsed = parseRobotMissionCommand(rawMessage);
 
       if (parsed?.event && isMissionControlEvent(parsed.event)) {
-        const sendResult = missionRegistry.sendCommand(robotId, payloadText);
+        const serializedCommand = JSON.stringify({
+          event: parsed.event,
+          payload: withMissionCommandId(parsed.payload, parsed.commandId),
+        });
+        const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
         if (!sendResult.ok) {
           const failureAck = buildMissionFailureAck(
             parsed.event,
-            parsed.payload,
+            withMissionCommandId(parsed.payload, parsed.commandId),
             sendResult.error ?? 'Mission bridge not connected'
           );
-          safeClientSend(JSON.stringify(failureAck));
+          safeClientSend(
+            JSON.stringify({
+              ...failureAck,
+              commandId: parsed.commandId,
+              payload: withMissionCommandId(failureAck.payload, parsed.commandId),
+            })
+          );
           return;
         }
 
         try {
           if (missionRegistry?.recordCommandIntent) {
             void missionRegistry
-              .recordCommandIntent(robotId, parsed.event, parsed.payload)
+              .recordCommandIntent(
+                robotId,
+                parsed.event,
+                withMissionCommandId(parsed.payload, parsed.commandId)
+              )
               .catch((error: unknown) => {
                 fastify.log.warn({ robotId, error }, 'Failed to persist mission command intent');
               });

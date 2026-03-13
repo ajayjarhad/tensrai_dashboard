@@ -837,7 +837,7 @@ export function Dashboard() {
       const dispatched = dispatchMissionEvent(
         robotId,
         'SHOW_UP',
-        { missionId: mission.id, requestId: crypto.randomUUID() },
+        { missionId: mission.id },
         {
           queuedMessage: `SHOW_UP queued for ${mission.name}`,
           errorMessage: 'Unable to send SHOW_UP command',
@@ -984,7 +984,6 @@ export function Dashboard() {
       'START_MISSION',
       {
         missionId: pendingMissionStart.mission.id,
-        requestId: crypto.randomUUID(),
       },
       {
         queuedMessage: `START_MISSION queued for ${pendingMissionStart.mission.name}`,
@@ -1035,7 +1034,7 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'PAUSE_MISSION',
-        { missionId: resolvedId, requestId: crypto.randomUUID() },
+        { missionId: resolvedId },
         { queuedMessage: 'Pause command queued', errorMessage: 'Unable to send pause command' }
       );
     },
@@ -1056,7 +1055,7 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'RESUME_MISSION',
-        { missionId: resolvedId, requestId: crypto.randomUUID() },
+        { missionId: resolvedId },
         { queuedMessage: 'Resume command queued', errorMessage: 'Unable to send resume command' }
       );
     },
@@ -1077,7 +1076,7 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'CANCEL_MISSION',
-        { missionId: resolvedId, requestId: crypto.randomUUID() },
+        { missionId: resolvedId },
         { queuedMessage: 'Cancel command queued', errorMessage: 'Unable to send cancel command' }
       );
     },
@@ -1089,7 +1088,7 @@ export function Dashboard() {
       dispatchMissionEvent(
         robotId,
         'CHANGE_MODE',
-        { targetMode, requestId: crypto.randomUUID() },
+        { targetMode },
         { queuedMessage: 'Mode change command queued', errorMessage: 'Unable to change mode' }
       );
     },

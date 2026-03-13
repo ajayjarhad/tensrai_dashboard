@@ -1,5 +1,6 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
+import { extractMissionCommandId, withMissionCommandId } from '@tensrai/shared/types/robot-ws';
 import WebSocket from 'ws';
 import { MissionRunStore } from './missionRunStore.js';
 import {
@@ -301,9 +302,20 @@ export class MissionRegistry extends EventEmitter {
       return;
     }
 
-    this.emit(`robot-event:${robotId}`, payloadText);
+    const commandId = extractMissionCommandId(parsed);
+    const normalizedPayload =
+      parsed.payload === undefined
+        ? undefined
+        : (withMissionCommandId(parsed.payload, commandId) ?? parsed.payload);
+    const normalizedPayloadText = JSON.stringify({
+      event: parsed.event,
+      ...(commandId ? { commandId } : {}),
+      ...(normalizedPayload !== undefined ? { payload: normalizedPayload } : {}),
+    });
 
-    updateMissionFromEvent(robotId, parsed.event, parsed.payload);
+    this.emit(`robot-event:${robotId}`, normalizedPayloadText);
+
+    updateMissionFromEvent(robotId, parsed.event, normalizedPayload);
 
     if (parsed.event === 'ROBOT_STATUS_UPDATE') {
       const syncDeps: Parameters<typeof syncRobotStatusUpdate>[0] = {
@@ -332,7 +344,7 @@ export class MissionRegistry extends EventEmitter {
         mapId: config.mapId ?? null,
       },
       parsed.event,
-      parsed.payload
+      normalizedPayload
     );
   }
 }

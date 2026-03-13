@@ -8,6 +8,7 @@ export const ROBOT_MISSION_COMMAND_EVENTS = [
 ] as const;
 
 export type RobotMissionCommandEvent = (typeof ROBOT_MISSION_COMMAND_EVENTS)[number];
+export type RobotMissionPayload = Record<string, unknown>;
 
 export const ROBOT_MISSION_STATUS_EVENTS = [
   'MISSION_CONTROL_ACK',
@@ -85,19 +86,39 @@ export type ModeChangeAckPayload = {
   message?: string;
   timestamp?: string;
   time?: string;
+  requestId?: string;
 };
 
+type RobotMissionFrameBase = {
+  commandId?: string;
+};
+
+export type RobotMissionCommand = {
+  type: 'command';
+  event: RobotMissionCommandEvent;
+  payload?: RobotMissionPayload;
+} & RobotMissionFrameBase;
+
 export type RobotMissionEvent =
-  | { event: 'MISSION_CONTROL_ACK'; payload?: MissionControlAckPayload }
-  | { event: 'MISSION_START_ACK'; payload?: MissionStartAckPayload }
-  | { event: 'MISSION_COMPLETED'; payload?: MissionCompletedPayload }
-  | { event: 'WAYPOINT_ACK'; payload?: WaypointAckPayload }
-  | { event: 'MODE_CHANGE_ACK'; payload?: ModeChangeAckPayload }
-  | { event: 'ROBOT_STATUS_UPDATE'; payload?: RobotStatusUpdatePayload }
-  | { event: string; payload?: unknown };
+  | ({ event: 'MISSION_CONTROL_ACK'; payload?: MissionControlAckPayload } & RobotMissionFrameBase)
+  | ({ event: 'MISSION_START_ACK'; payload?: MissionStartAckPayload } & RobotMissionFrameBase)
+  | ({ event: 'MISSION_COMPLETED'; payload?: MissionCompletedPayload } & RobotMissionFrameBase)
+  | ({ event: 'WAYPOINT_ACK'; payload?: WaypointAckPayload } & RobotMissionFrameBase)
+  | ({ event: 'MODE_CHANGE_ACK'; payload?: ModeChangeAckPayload } & RobotMissionFrameBase)
+  | ({ event: 'ROBOT_STATUS_UPDATE'; payload?: RobotStatusUpdatePayload } & RobotMissionFrameBase)
+  | ({ event: string; payload?: unknown } & RobotMissionFrameBase);
 
 const includes = (items: readonly string[], value: unknown): value is string =>
   typeof value === 'string' && items.includes(value);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const normalizeOpaqueId = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const next = value.trim();
+  return next.length > 0 ? next : undefined;
+};
 
 export const isRobotMissionCommandEvent = (value: unknown): value is RobotMissionCommandEvent =>
   includes(ROBOT_MISSION_COMMAND_EVENTS, value);
@@ -108,10 +129,74 @@ export const isRobotMissionStatusEvent = (value: unknown): value is RobotMission
 export const isRobotRuntimeMode = (value: unknown): value is RobotRuntimeMode =>
   value === 'teleop' || value === 'autonomous';
 
+export const extractMissionCommandId = (raw: unknown): string | undefined => {
+  if (!isRecord(raw)) return undefined;
+  const payload = isRecord(raw['payload']) ? raw['payload'] : undefined;
+  return (
+    normalizeOpaqueId(raw['commandId']) ??
+    normalizeOpaqueId(raw['requestId']) ??
+    normalizeOpaqueId(payload?.['requestId'])
+  );
+};
+
+export const withMissionCommandId = (
+  payload: unknown,
+  commandId: string | undefined
+): RobotMissionPayload | undefined => {
+  if (!isRecord(payload)) {
+    return commandId ? { requestId: commandId } : undefined;
+  }
+
+  const requestId = normalizeOpaqueId(payload['requestId']) ?? commandId;
+  if (!requestId || requestId === payload['requestId']) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    requestId,
+  };
+};
+
+export const parseRobotMissionCommand = (raw: unknown): RobotMissionCommand | null => {
+  if (!isRecord(raw)) return null;
+  if (raw['type'] !== undefined && raw['type'] !== 'command') return null;
+
+  const event = raw['event'];
+  if (!isRobotMissionCommandEvent(event)) return null;
+
+  const commandId = extractMissionCommandId(raw);
+  const payload =
+    raw['payload'] === undefined
+      ? withMissionCommandId(undefined, commandId)
+      : withMissionCommandId(raw['payload'], commandId);
+
+  const parsed: RobotMissionCommand = {
+    type: 'command',
+    event,
+  };
+  if (payload !== undefined) {
+    parsed.payload = payload;
+  }
+  if (commandId !== undefined) {
+    parsed.commandId = commandId;
+  }
+
+  return parsed;
+};
+
 export const parseRobotMissionEvent = (raw: unknown): RobotMissionEvent | null => {
-  if (!raw || typeof raw !== 'object') return null;
-  const event = (raw as { event?: unknown }).event;
+  if (!isRecord(raw)) return null;
+  const event = raw['event'];
   if (typeof event !== 'string' || event.trim().length === 0) return null;
-  const payload = (raw as { payload?: unknown }).payload;
-  return { event, payload };
+  const commandId = extractMissionCommandId(raw);
+  const payload =
+    raw['payload'] === undefined
+      ? undefined
+      : (withMissionCommandId(raw['payload'], commandId) ?? raw['payload']);
+  return {
+    event,
+    ...(payload !== undefined ? { payload } : {}),
+    ...(commandId !== undefined ? { commandId } : {}),
+  } as RobotMissionEvent;
 };
