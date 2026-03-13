@@ -473,6 +473,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
     const modeTimestamp =
       timestampMs(payload?.timestamp) ?? timestampMs(payload?.time) ?? current.modeUpdatedAt;
     const mode = isRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode;
+    const requestId = normalizeRequestId(payload?.requestId);
     const ackStatus =
       typeof payload?.status === 'string' ? payload.status : current.lastEventStatus;
     const message =
@@ -490,6 +491,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
         lastEventStatus: ackStatus,
         lastEventAt: appliedAtMs,
         message,
+        requestIdLast: requestId ?? current.requestIdLast,
       },
       appliedAtMs
     );
@@ -613,6 +615,7 @@ export const buildMissionFailureAck = (event: string, payload: any, message: str
         previousMode: 'unknown',
         error: message,
         timestamp,
+        requestId,
       },
     };
   }

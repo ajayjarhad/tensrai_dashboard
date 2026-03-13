@@ -1,5 +1,11 @@
-import { parseRobotMissionEvent, type RobotMissionEvent } from '@tensrai/shared';
+import {
+  extractMissionCommandId,
+  parseRobotMissionEvent,
+  type RobotMissionEvent,
+  withMissionCommandId,
+} from '@tensrai/shared';
 import { resolveWsBaseUrl } from '@/lib/api';
+import { generateRequestId } from '@/lib/utils/utils';
 
 type EventHandler = (event: RobotMissionEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
@@ -9,6 +15,7 @@ export type SendEventResult = {
   accepted: boolean;
   queued: boolean;
   reason?: string;
+  commandId?: string;
 };
 
 const MAX_OUTBOUND_QUEUE = 100;
@@ -76,13 +83,17 @@ export const createRobotMappingWsClient = (robotId: string) => {
     }, delay);
   };
 
-  const enqueueOutbound = (message: string): SendEventResult => {
+  const enqueueOutbound = (message: string, commandId?: string): SendEventResult => {
     if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
       // Drop oldest command to keep memory bounded during prolonged disconnects.
       outboundQueue.shift();
     }
     outboundQueue.push(message);
-    return { accepted: true, queued: true };
+    return {
+      accepted: true,
+      queued: true,
+      ...(commandId ? { commandId } : {}),
+    };
   };
 
   const flushOutbound = () => {
@@ -174,32 +185,48 @@ export const createRobotMappingWsClient = (robotId: string) => {
   };
 
   const sendEvent = (event: string, payload: unknown = {}): SendEventResult => {
-    const message = JSON.stringify({ event, payload });
+    const commandId = extractMissionCommandId({ payload }) ?? generateRequestId();
+    const normalizedPayload = withMissionCommandId(payload, commandId);
+    const message = JSON.stringify({
+      type: 'command',
+      event,
+      commandId,
+      payload: normalizedPayload,
+    });
 
     if (!shouldReconnect) {
-      return { accepted: false, queued: false, reason: 'client_disconnected' };
+      return {
+        accepted: false,
+        queued: false,
+        reason: 'client_disconnected',
+        ...(commandId ? { commandId } : {}),
+      };
     }
 
     if (!socket) {
       connect();
-      return enqueueOutbound(message);
+      return enqueueOutbound(message, commandId);
     }
 
     if (socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(message);
-        return { accepted: true, queued: false };
+        return {
+          accepted: true,
+          queued: false,
+          ...(commandId ? { commandId } : {}),
+        };
       } catch {
-        return enqueueOutbound(message);
+        return enqueueOutbound(message, commandId);
       }
     }
 
     if (socket.readyState === WebSocket.CONNECTING) {
-      return enqueueOutbound(message);
+      return enqueueOutbound(message, commandId);
     }
 
     connect();
-    return enqueueOutbound(message);
+    return enqueueOutbound(message, commandId);
   };
 
   const addEventListener = (handler: EventHandler) => {

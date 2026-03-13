@@ -1,4 +1,5 @@
 import {
+  extractMissionCommandId,
   isRobotMissionStatusEvent,
   isRobotRuntimeMode,
   type MissionCompletedPayload,
@@ -152,10 +153,11 @@ const setPhase = (base: MissionStatus, phase: MissionLifecycleStatus): MissionSt
 const updateFromMissionStartAck = (
   current: MissionStatus,
   payload: MissionStartAckPayload | undefined,
-  base: MissionStatus
+  base: MissionStatus,
+  commandId?: string
 ): MissionStatus => {
   const missionId = normalizeMissionId(payload?.missionId);
-  const requestId = normalizeRequestId(payload?.requestId);
+  const requestId = normalizeRequestId(payload?.requestId ?? commandId);
   if (!shouldAcceptRequest(current, requestId, base.lastEventAt ?? 0)) return current;
   const ackStatus = payload?.status;
   const message = payload?.message ?? current.message;
@@ -194,10 +196,11 @@ const updateFromMissionStartAck = (
 const updateFromMissionControlAck = (
   current: MissionStatus,
   payload: MissionControlAckPayload | undefined,
-  base: MissionStatus
+  base: MissionStatus,
+  commandId?: string
 ): MissionStatus => {
   const requestType = normalizeRequestType(payload?.requestType);
-  const requestId = normalizeRequestId(payload?.requestId);
+  const requestId = normalizeRequestId(payload?.requestId ?? commandId);
   if (!shouldAcceptRequest(current, requestId, base.lastEventAt ?? 0)) return current;
   const missionId = normalizeMissionId(payload?.missionId);
   const ackStatus = payload?.status;
@@ -280,18 +283,21 @@ const updateFromWaypointAck = (
 const updateFromModeChangeAck = (
   current: MissionStatus,
   payload: ModeChangeAckPayload | undefined,
-  base: MissionStatus
+  base: MissionStatus,
+  commandId?: string
 ): MissionStatus => {
   const modeTimestamp =
     parseTimestampMs(payload?.timestamp) ??
     parseTimestampMs(payload?.time) ??
     current.modeUpdatedAt;
+  const requestId = normalizeRequestId(payload?.requestId ?? commandId);
   return {
     ...base,
     mode: isRobotRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode,
     modeUpdatedAt: modeTimestamp,
     message: payload?.message ?? payload?.error ?? current.message,
     lastEventStatus: payload?.status ?? current.lastEventStatus,
+    requestIdLast: requestId ?? current.requestIdLast,
   };
 };
 
@@ -370,6 +376,7 @@ const updateFromRobotStatusUpdate = (
 
 const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): MissionStatus => {
   const eventAt = resolveEventTimestamp(event.event, event.payload);
+  const commandId = extractMissionCommandId(event);
   if (event.event === 'ROBOT_STATUS_UPDATE') {
     return updateFromRobotStatusUpdate(current, event.payload as RobotStatusUpdatePayload, eventAt);
   }
@@ -386,10 +393,20 @@ const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): Miss
   };
 
   if (event.event === 'MISSION_START_ACK') {
-    return updateFromMissionStartAck(current, event.payload as MissionStartAckPayload, base);
+    return updateFromMissionStartAck(
+      current,
+      event.payload as MissionStartAckPayload,
+      base,
+      commandId
+    );
   }
   if (event.event === 'MISSION_CONTROL_ACK') {
-    return updateFromMissionControlAck(current, event.payload as MissionControlAckPayload, base);
+    return updateFromMissionControlAck(
+      current,
+      event.payload as MissionControlAckPayload,
+      base,
+      commandId
+    );
   }
   if (event.event === 'MISSION_COMPLETED') {
     return updateFromMissionCompleted(current, event.payload as MissionCompletedPayload, base);
@@ -398,7 +415,7 @@ const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): Miss
     return updateFromWaypointAck(current, event.payload as WaypointAckPayload, base);
   }
   if (event.event === 'MODE_CHANGE_ACK') {
-    return updateFromModeChangeAck(current, event.payload as ModeChangeAckPayload, base);
+    return updateFromModeChangeAck(current, event.payload as ModeChangeAckPayload, base, commandId);
   }
   return base;
 };
@@ -406,11 +423,12 @@ const updateFromEvent = (current: MissionStatus, event: RobotMissionEvent): Miss
 const recordIntent = (
   current: MissionStatus,
   event: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  commandId?: string
 ): MissionStatus => {
   const now = Date.now();
   const missionId = normalizeMissionId(payload['missionId']);
-  const requestId = normalizeRequestId(payload['requestId']);
+  const requestId = normalizeRequestId(commandId ?? payload['requestId']);
   const requestType = normalizeRequestType(event);
   const base: MissionStatus = {
     ...current,
@@ -512,7 +530,7 @@ export const useRobotMissionStore = create<MissionState>(set => ({
         return {
           statusByRobot: {
             ...state.statusByRobot,
-            [robotId]: recordIntent(current, event, payload),
+            [robotId]: recordIntent(current, event, payload, result.commandId),
           },
         };
       });
