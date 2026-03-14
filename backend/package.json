@@ -5,8 +5,10 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
+    "predev": "bun run --cwd ../shared build",
     "dev": "./scripts/mongoReplica.sh && bun --watch src/index.ts",
     "build": "tsc",
+    "prestart": "bun run --cwd ../shared build",
     "start": "./scripts/mongoReplica.sh && node dist/index.js",
     "generate": "prisma generate",
     "seed": "./scripts/mongoReplica.sh && tsx scripts/seed.ts",
