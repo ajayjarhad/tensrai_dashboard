@@ -22,6 +22,9 @@ COPY frontend ./frontend/
 # Install dependencies from workspace root
 RUN bun install
 
+# Build shared workspace package so backend package exports resolve inside the container.
+RUN bun run --cwd shared build
+
 # Generate Prisma client
 RUN cd backend && bunx prisma generate
 

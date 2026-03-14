@@ -1,6 +1,5 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
-import { extractMissionCommandId, withMissionCommandId } from '@tensrai/shared/types/robot-ws';
 import WebSocket from 'ws';
 import { MissionRunStore } from './missionRunStore.js';
 import {
@@ -54,6 +53,44 @@ const parseGatewayEvent = (payload: string): { event: string; payload?: unknown 
   } catch {
     return null;
   }
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const normalizeOpaqueId = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const next = value.trim();
+  return next.length > 0 ? next : undefined;
+};
+
+const extractMissionCommandId = (raw: unknown): string | undefined => {
+  if (!isRecord(raw)) return undefined;
+  const payload = isRecord(raw['payload']) ? raw['payload'] : undefined;
+  return (
+    normalizeOpaqueId(raw['commandId']) ??
+    normalizeOpaqueId(raw['requestId']) ??
+    normalizeOpaqueId(payload?.['requestId'])
+  );
+};
+
+const withMissionCommandId = (
+  payload: unknown,
+  commandId: string | undefined
+): Record<string, unknown> | undefined => {
+  if (!isRecord(payload)) {
+    return commandId ? { requestId: commandId } : undefined;
+  }
+
+  const requestId = normalizeOpaqueId(payload['requestId']) ?? commandId;
+  if (!requestId || requestId === payload['requestId']) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    requestId,
+  };
 };
 
 export class MissionRegistry extends EventEmitter {

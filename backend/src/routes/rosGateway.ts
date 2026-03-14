@@ -1,7 +1,7 @@
 // @ts-nocheck
 import websocket from '@fastify/websocket';
 import { trace } from '@opentelemetry/api';
-import { parseRobotMissionCommand, withMissionCommandId } from '@tensrai/shared/types/robot-ws';
+import { parseRobotMissionCommand, withMissionCommandId } from '@tensrai/shared';
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import WebSocket from 'ws';
