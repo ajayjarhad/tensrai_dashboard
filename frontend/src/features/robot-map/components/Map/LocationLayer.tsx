@@ -44,6 +44,7 @@ export function LocationLayer({
             color={isDimmed ? '#6b7280' : '#01FF01'}
             opacity={isDimmed ? 0.35 : 1}
             listening={!isDimmed}
+            {...(setPoseMode ? { hitRadius: 0 } : {})}
             onClick={handleLocationSelect}
             onTap={handleLocationSelect}
           />
