@@ -10,6 +10,7 @@ interface LocationPinProps {
   color?: string;
   opacity?: number;
   listening?: boolean;
+  hitRadius?: number;
   name?: string;
   onClick?: (evt: Konva.KonvaEventObject<MouseEvent>) => void;
   onTap?: (evt: Konva.KonvaEventObject<TouchEvent | MouseEvent>) => void;
@@ -25,6 +26,7 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
       color = '#01FF01',
       opacity = 1,
       listening = true,
+      hitRadius,
       name,
       onClick,
       onTap,
@@ -32,6 +34,7 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
     ref
   ) => {
     const pathScale = 2.2;
+    const resolvedHitRadius = hitRadius ?? 16 * pathScale;
     const pathData =
       'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z';
 
@@ -49,8 +52,9 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
         {...(onClick ? { onClick } : {})}
         {...(onTap ? { onTap } : {})}
       >
-        {/* Invisible hit area to make the pin easy to click, including the hollow center */}
-        <Circle x={0} y={0} radius={16 * pathScale} fill="#000" opacity={0.01} listening />
+        {resolvedHitRadius > 0 ? (
+          <Circle x={0} y={0} radius={resolvedHitRadius} fill="#000" opacity={0.01} listening />
+        ) : null}
         <Path
           data={pathData}
           fill={color}
