@@ -25,6 +25,15 @@ const resolveEmergencyWsUrl = (
   return `${protocol}://${ipAddress}:${port}/dashboard/${label}`;
 };
 
+const isValidWsUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+  } catch {
+    return false;
+  }
+};
+
 export const createRobotEmergencyWsClient = (
   ipAddress: string,
   port: number,
@@ -84,8 +93,18 @@ export const createRobotEmergencyWsClient = (
       return;
     }
 
+    if (!isValidWsUrl(wsUrl)) {
+      notifyStatus('error');
+      return;
+    }
+
     notifyStatus('connecting');
-    socket = new WebSocket(wsUrl);
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch {
+      notifyStatus('error');
+      return;
+    }
     scheduleConnectTimeout();
 
     socket.onopen = () => {
