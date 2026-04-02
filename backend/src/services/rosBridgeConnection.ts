@@ -42,6 +42,7 @@ export type RosBridgeConnectionOptions = {
   url: string;
   reconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
+  connectTimeoutMs?: number;
 };
 
 type SubscribeOptions = {
@@ -54,6 +55,7 @@ export class RosBridgeConnection extends EventEmitter {
   private closed = false;
   private reconnectDelayMs: number;
   private maxReconnectDelayMs: number;
+  private connectTimeoutMs: number;
   private publishers = new Map<TopicKey, ROSLIB.Topic>();
   private reconnectTimer?: NodeJS.Timeout;
   private connecting = false;
@@ -62,6 +64,7 @@ export class RosBridgeConnection extends EventEmitter {
     super();
     this.reconnectDelayMs = options.reconnectDelayMs ?? 1000;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 10000;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 8000;
   }
 
   async connect(): Promise<void> {
@@ -70,33 +73,77 @@ export class RosBridgeConnection extends EventEmitter {
 
     await new Promise<void>((resolve, reject) => {
       const ros = new ROSLIB.Ros({ url: this.options.url });
-      let resolved = false;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        const err = new Error(
+          `ROS bridge ${this.options.url} connect timeout after ${this.connectTimeoutMs}ms`
+        );
+        this.emit('error', err);
+        this.connecting = false;
+        settled = true;
+        reject(err);
+        this.scheduleReconnect();
+        try {
+          ros.close();
+        } catch {}
+      }, this.connectTimeoutMs);
 
-      ros.on('connection', () => {
+      const settleConnected = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
         this.ros = ros;
         this.connecting = false;
         this.reconnectDelayMs = this.options.reconnectDelayMs ?? 1000;
         this.clearReconnectTimer();
         this.emit('connected');
-        resolved = true;
         resolve();
+      };
+
+      const settleFailed = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        this.connecting = false;
+        reject(err);
+      };
+
+      ros.on('connection', () => {
+        settleConnected();
       });
 
       ros.on('error', (error: unknown) => {
         const err = toReadableError(error, this.options.url);
         this.emit('error', err);
-        if (!resolved) {
-          this.connecting = false;
-          reject(err);
+        if (!settled) {
+          settleFailed(err);
           this.scheduleReconnect();
         }
       });
 
       ros.on('close', () => {
-        this.ros = null;
+        clearTimeout(timeout);
+        const wasConnected = this.ros === ros;
+        if (this.ros === ros) {
+          this.ros = null;
+        }
         this.publishers.clear();
         this.emit('disconnected');
-        this.scheduleReconnect();
+
+        if (!settled) {
+          const err = new Error(
+            `ROS bridge ${this.options.url} closed before connection was established`
+          );
+          this.emit('error', err);
+          settleFailed(err);
+          this.scheduleReconnect();
+          return;
+        }
+
+        if (wasConnected) {
+          this.scheduleReconnect();
+        }
       });
     });
   }
