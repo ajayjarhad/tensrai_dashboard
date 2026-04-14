@@ -6,6 +6,7 @@ services:
       args:
         VITE_API_URL: /api
         VITE_WS_URL: /ws
+        VITE_CLOUD_DASHBOARD: ${CLOUD_DASHBOARD:-true}
     ports:
       - "8080:80"
     depends_on:

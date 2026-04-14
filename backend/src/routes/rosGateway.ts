@@ -359,6 +359,142 @@ const rosGateway = async (fastify: FastifyInstance) => {
   fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, unifiedMappingHandler);
   fastify.get('/ws/robots/:robotId/mapping/:label', { websocket: true }, unifiedMappingHandler);
 
+  const emergencyProxyHandler = async (connection, request) => {
+    const { robotId } = request.params as { robotId: string };
+    const emergencyRegistry = (fastify as any).emergencyRegistry;
+
+    const clientSocket =
+      (connection as any).socket ??
+      (connection as any).conn ??
+      (connection as any).ws ??
+      (connection as any).webSocket ??
+      (typeof connection.send === 'function' ? (connection as any) : undefined);
+
+    if (!clientSocket) {
+      fastify.log.error({ robotId }, 'Emergency proxy WebSocket upgrade failed: no client socket');
+      return;
+    }
+
+    if (!emergencyRegistry) {
+      clientSocket.send(makeError(undefined, undefined, 'Emergency registry unavailable'));
+      clientSocket.close();
+      return;
+    }
+
+    let closed = false;
+
+    const safeClientSend = (message: string) => {
+      if (clientSocket.readyState !== WebSocket.OPEN) return;
+      try {
+        clientSocket.send(message);
+      } catch (err) {
+        fastify.log.error({ robotId, err }, 'Failed to send emergency proxy message to dashboard');
+      }
+    };
+
+    const stringifyMessage = (data: unknown) => {
+      if (typeof data === 'string') return data;
+      if (Buffer.isBuffer(data)) return data.toString('utf8');
+      return String(data ?? '');
+    };
+
+    const unsubscribeEmergencyEvents = emergencyRegistry.addRobotEventListener(
+      robotId,
+      (payloadText: string) => {
+        websocketMetrics.messagesReceived.add(1, {
+          'robot.id': robotId,
+          'websocket.type': 'emergency-proxy',
+          'message.source': 'emergency_registry',
+        });
+        safeClientSend(payloadText);
+      }
+    );
+
+    try {
+      safeClientSend(emergencyRegistry.getRobotSnapshotEvent(robotId));
+    } catch (err) {
+      fastify.log.warn({ robotId, err }, 'Failed to send initial emergency snapshot');
+    }
+
+    const closeClient = () => {
+      if (closed) return;
+      closed = true;
+      unsubscribeEmergencyEvents();
+      try {
+        clientSocket.close();
+      } catch {}
+    };
+
+    clientSocket.on('message', (raw: Buffer | string) => {
+      const payloadText = stringifyMessage(raw);
+      websocketMetrics.messagesReceived.add(1, {
+        'robot.id': robotId,
+        'websocket.type': 'emergency-proxy',
+        'message.source': 'dashboard_client',
+      });
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(payloadText);
+      } catch {
+        safeClientSend(makeError(undefined, undefined, 'Invalid JSON message'));
+        return;
+      }
+
+      const eventName = parsed?.event ?? parsed?.type;
+      if (eventName !== 'SOFTWARE_EMERGENCY') {
+        safeClientSend(
+          makeError(
+            undefined,
+            typeof parsed?.requestId === 'string' ? parsed.requestId : undefined,
+            'Unsupported emergency websocket message'
+          )
+        );
+        return;
+      }
+
+      const desiredStatus = parsed?.payload?.status;
+      if (typeof desiredStatus !== 'boolean') {
+        safeClientSend(
+          makeError(
+            undefined,
+            typeof parsed?.requestId === 'string' ? parsed.requestId : undefined,
+            'SOFTWARE_EMERGENCY payload.status must be boolean'
+          )
+        );
+        return;
+      }
+
+      const sendResult = emergencyRegistry.sendSoftwareEmergency(robotId, desiredStatus);
+      if (!sendResult.ok) {
+        safeClientSend(
+          makeError(
+            undefined,
+            typeof parsed?.requestId === 'string' ? parsed.requestId : undefined,
+            sendResult.error ?? 'Emergency bridge not connected'
+          )
+        );
+      }
+    });
+
+    clientSocket.on('close', () => {
+      closeClient();
+    });
+
+    clientSocket.on('error', err => {
+      websocketMetrics.connectionErrors.add(1, {
+        'robot.id': robotId,
+        'websocket.type': 'emergency-proxy',
+        'error.reason': 'client_socket_error',
+      });
+      fastify.log.error({ robotId, err }, 'Emergency proxy dashboard WebSocket error');
+      closeClient();
+    });
+  };
+
+  fastify.get('/ws/robots/:robotId/emergency', { websocket: true }, emergencyProxyHandler);
+  fastify.get('/ws/robots/:robotId/emergency/:label', { websocket: true }, emergencyProxyHandler);
+
   fastify.addHook('onClose', async () => {
     registry.stop();
   });

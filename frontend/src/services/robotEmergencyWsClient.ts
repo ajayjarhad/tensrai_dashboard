@@ -1,10 +1,13 @@
 import { parseRobotEmergencyEvent, type RobotEmergencyBridgeEvent } from '@tensrai/shared';
+import { resolveWsBaseUrl } from '@/lib/api';
 
 type EventHandler = (event: RobotEmergencyBridgeEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type EmergencyWsClientOptions = {
   robotId: string;
   robotName?: string | undefined;
+  ipAddress?: string | undefined;
+  emergencyBridgePort?: number | undefined;
 };
 
 export type ConnectionStatus =
@@ -14,15 +17,37 @@ export type ConnectionStatus =
   | 'disconnected'
   | 'error';
 
-const resolveEmergencyWsUrl = (
-  ipAddress: string,
-  port: number,
-  options: EmergencyWsClientOptions
-) => {
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const DEFAULT_EMERGENCY_PORT = 8766;
+
+const parseBooleanFlag = (raw: string | undefined, fallback: boolean) => {
+  if (raw === undefined || raw === null) return fallback;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+
+const resolveCloudDashboardFlag = () =>
+  parseBooleanFlag(import.meta.env['VITE_CLOUD_DASHBOARD'], true);
+
+const CLOUD_DASHBOARD = resolveCloudDashboardFlag();
+
+export const isEmergencyViaBackend = () => CLOUD_DASHBOARD;
+
+const resolveEmergencyWsUrl = (options: EmergencyWsClientOptions): string | null => {
   const labelSource = options.robotName?.trim() || options.robotId;
   const label = encodeURIComponent(`emergency-${labelSource}`);
-  return `${protocol}://${ipAddress}:${port}/dashboard/${label}`;
+
+  if (CLOUD_DASHBOARD) {
+    const base = resolveWsBaseUrl();
+    return `${base}/ws/robots/${encodeURIComponent(options.robotId)}/emergency/${label}`;
+  }
+
+  if (!options.ipAddress) return null;
+  const base = resolveWsBaseUrl();
+  const protocol = base.startsWith('wss://') ? 'wss' : 'ws';
+  const port = options.emergencyBridgePort ?? DEFAULT_EMERGENCY_PORT;
+  return `${protocol}://${options.ipAddress}:${port}/dashboard/${label}`;
 };
 
 const isValidWsUrl = (value: string) => {
@@ -34,11 +59,7 @@ const isValidWsUrl = (value: string) => {
   }
 };
 
-export const createRobotEmergencyWsClient = (
-  ipAddress: string,
-  port: number,
-  options: EmergencyWsClientOptions
-) => {
+export const createRobotEmergencyWsClient = (options: EmergencyWsClientOptions) => {
   let socket: WebSocket | null = null;
   let status: ConnectionStatus = 'disconnected';
   let reconnectAttempts = 0;
@@ -48,7 +69,7 @@ export const createRobotEmergencyWsClient = (
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
 
-  const wsUrl = resolveEmergencyWsUrl(ipAddress, port, options);
+  const wsUrl = resolveEmergencyWsUrl(options);
 
   const notifyStatus = (next: ConnectionStatus) => {
     status = next;
@@ -90,6 +111,11 @@ export const createRobotEmergencyWsClient = (
       socket &&
       (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
     ) {
+      return;
+    }
+
+    if (!wsUrl) {
+      notifyStatus('unconfigured');
       return;
     }
 
@@ -165,7 +191,7 @@ export const createRobotEmergencyWsClient = (
     try {
       socket.send(
         JSON.stringify({
-          event: 'SOFTWARE_EMERGENCY',
+          ...(CLOUD_DASHBOARD ? { type: 'SOFTWARE_EMERGENCY' } : { event: 'SOFTWARE_EMERGENCY' }),
           payload: { status: desiredStatus },
         })
       );
@@ -194,6 +220,6 @@ export const createRobotEmergencyWsClient = (
     addStatusListener,
     getStatus: () => status,
     isOpen: () => socket?.readyState === WebSocket.OPEN,
-    getUrl: () => wsUrl,
+    getUrl: () => wsUrl ?? '',
   };
 };

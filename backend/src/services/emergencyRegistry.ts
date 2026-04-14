@@ -61,6 +61,7 @@ type ActiveConnection = {
   socket: WebSocket;
   manualClose: boolean;
 };
+type RobotEventListener = (payloadText: string) => void;
 
 const isEmergencyRobotMode = (status: unknown): status is RobotMode =>
   status === 'SW_EMERGENCY' || status === 'HW_EMERGENCY';
@@ -165,6 +166,7 @@ export class EmergencyRegistry {
   private reconnectAttempts = new Map<string, number>();
   private states = new Map<string, RobotEmergencyState>();
   private lastNonEmergencyStatusByRobot = new Map<string, RobotMode>();
+  private robotEventListeners = new Map<string, Set<RobotEventListener>>();
 
   constructor(prisma: PrismaClient, log: LoggerLike) {
     this.prisma = prisma;
@@ -249,6 +251,92 @@ export class EmergencyRegistry {
     }
     for (const robotId of Array.from(this.connections.keys())) {
       this.disconnectRobot(robotId);
+    }
+  }
+
+  addRobotEventListener(robotId: string, listener: RobotEventListener) {
+    const listeners = this.robotEventListeners.get(robotId) ?? new Set<RobotEventListener>();
+    listeners.add(listener);
+    this.robotEventListeners.set(robotId, listeners);
+    return () => {
+      const next = this.robotEventListeners.get(robotId);
+      if (!next) return;
+      next.delete(listener);
+      if (next.size === 0) {
+        this.robotEventListeners.delete(robotId);
+      }
+    };
+  }
+
+  getRobotSnapshotEvent(robotId: string): string {
+    const current = this.states.get(robotId);
+    const hasConfig = this.robotConfigs.has(robotId);
+    const configuredUrl = this.robotConfigs.get(robotId)?.url;
+    const connectionStatus: RobotEmergencyConnectionStatus =
+      current?.connectionStatus ?? (!hasConfig || !configuredUrl ? 'unconfigured' : 'disconnected');
+
+    return JSON.stringify({
+      event: 'EMERGENCY_STATE',
+      payload: {
+        softwareEmergencyActive: current?.softwareEmergencyActive ?? false,
+        hardwareEmergencyActive: current?.hardwareEmergencyActive ?? false,
+        effectiveEmergencyActive: current?.effectiveEmergencyActive ?? false,
+        connectionStatus,
+        timestamp: new Date(current?.updatedAt ?? Date.now()).toISOString(),
+      },
+    });
+  }
+
+  sendSoftwareEmergency(robotId: string, desiredStatus: boolean): { ok: boolean; error?: string } {
+    const connection = this.connections.get(robotId);
+    const currentStatus = this.states.get(robotId)?.connectionStatus;
+    const configuredUrl = this.robotConfigs.get(robotId)?.url;
+    const inferredStatus: RobotEmergencyConnectionStatus =
+      currentStatus ?? (configuredUrl ? 'disconnected' : 'unconfigured');
+
+    if (!connection || connection.socket.readyState !== WebSocket.OPEN) {
+      return {
+        ok: false,
+        error:
+          inferredStatus === 'unconfigured'
+            ? 'Emergency bridge not configured'
+            : inferredStatus === 'connecting'
+              ? 'Emergency bridge is still connecting'
+              : 'Emergency bridge not connected',
+      };
+    }
+
+    try {
+      connection.socket.send(
+        JSON.stringify({
+          event: 'SOFTWARE_EMERGENCY',
+          payload: { status: desiredStatus },
+        })
+      );
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to send emergency command',
+      };
+    }
+  }
+
+  private emitRobotEvent(robotId: string, payloadText: string) {
+    const listeners = this.robotEventListeners.get(robotId);
+    if (!listeners || listeners.size === 0) return;
+    for (const listener of Array.from(listeners)) {
+      try {
+        listener(payloadText);
+      } catch (error) {
+        this.log.warn(
+          {
+            robotId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Emergency registry listener callback failed'
+        );
+      }
     }
   }
 
@@ -391,6 +479,7 @@ export class EmergencyRegistry {
 
     if (sameEmergencyState(current, next)) return;
     this.states.set(robotId, next);
+    this.emitRobotEvent(robotId, this.getRobotSnapshotEvent(robotId));
   }
 
   private normalizeState(
@@ -419,6 +508,7 @@ export class EmergencyRegistry {
       this.log.warn({ robotId, payloadText }, 'Dropped invalid emergency bridge payload');
       return;
     }
+    this.emitRobotEvent(robotId, payloadText);
 
     let normalized: RobotEmergencyState | null = null;
     const currentState = this.states.get(robotId);
