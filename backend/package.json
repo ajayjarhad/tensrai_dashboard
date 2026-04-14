@@ -10,7 +10,7 @@
     "build": "tsc",
     "prestart": "bun run --cwd ../shared build",
     "start": "./scripts/mongoReplica.sh && node dist/index.js",
-    "generate": "prisma generate",
+    "generate": "DATABASE_URL=\"${DATABASE_URL:-mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0}\" prisma generate",
     "seed": "./scripts/mongoReplica.sh && tsx scripts/seed.ts",
     "seed:robots": "./scripts/mongoReplica.sh && tsx scripts/robotSeed.ts",
     "seed:maps": "./scripts/mongoReplica.sh && tsx scripts/seedMaps.ts",

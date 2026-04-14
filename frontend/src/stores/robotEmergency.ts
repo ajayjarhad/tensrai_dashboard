@@ -4,7 +4,10 @@ import type {
   RobotEmergencyConnectionStatus,
 } from '@tensrai/shared';
 import { create } from 'zustand';
-import { createRobotEmergencyWsClient } from '@/services/robotEmergencyWsClient';
+import {
+  createRobotEmergencyWsClient,
+  isEmergencyViaBackend,
+} from '@/services/robotEmergencyWsClient';
 import type { Robot } from '@/types/robot';
 
 type EmergencyRobotConfig = Pick<Robot, 'id' | 'name' | 'ipAddress' | 'emergencyBridgePort'>;
@@ -44,9 +47,10 @@ type EmergencyStoreState = {
   sendFleetSoftwareEmergency: (desiredStatus: boolean) => Promise<FleetEmergencyDispatchResult>;
 };
 
-const DEFAULT_EMERGENCY_PORT = 8766;
 const DISPATCH_TIMEOUT_MS = Number(import.meta.env['VITE_EMERGENCY_ACK_TIMEOUT_MS'] ?? 5000);
 const POLL_MS = 50;
+const DEFAULT_EMERGENCY_PORT = 8766;
+const USE_BACKEND_EMERGENCY_PROXY = isEmergencyViaBackend();
 
 const clients = new Map<
   string,
@@ -57,7 +61,10 @@ const clients = new Map<
 >();
 
 const buildConfigKey = (robot: EmergencyRobotConfig) => {
-  return [robot.ipAddress ?? '', robot.emergencyBridgePort ?? DEFAULT_EMERGENCY_PORT].join(':');
+  if (USE_BACKEND_EMERGENCY_PROXY) {
+    return `backend:${robot.id}`;
+  }
+  return `direct:${robot.ipAddress ?? ''}:${robot.emergencyBridgePort ?? DEFAULT_EMERGENCY_PORT}`;
 };
 
 const toEventTimestamp = (value: unknown) => {
@@ -124,8 +131,18 @@ const applyEventToState = (
     softwareEmergencyActive?: unknown;
     hardwareEmergencyActive?: unknown;
     effectiveEmergencyActive?: unknown;
+    connectionStatus?: unknown;
     timestamp?: unknown;
   };
+
+  const connectionStatus =
+    payload.connectionStatus === 'unconfigured' ||
+    payload.connectionStatus === 'connecting' ||
+    payload.connectionStatus === 'connected' ||
+    payload.connectionStatus === 'disconnected' ||
+    payload.connectionStatus === 'error'
+      ? payload.connectionStatus
+      : 'connected';
 
   const resolvedState =
     typeof payload.softwareEmergencyActive === 'boolean' &&
@@ -153,7 +170,7 @@ const applyEventToState = (
     softwareEmergencyActive: resolvedState.softwareEmergencyActive,
     hardwareEmergencyActive: resolvedState.hardwareEmergencyActive,
     effectiveEmergencyActive: resolvedState.effectiveEmergencyActive,
-    connectionStatus: 'connected',
+    connectionStatus,
     source: 'live',
     updatedAt: eventAt,
     lastObservedAt,
@@ -292,7 +309,7 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
 
     for (const robot of robots) {
       const current = nextByRobot[robot.id];
-      const hasSocketConfig = Boolean(robot.ipAddress);
+      const hasSocketConfig = USE_BACKEND_EMERGENCY_PROXY || Boolean(robot.ipAddress);
 
       if (!hasSocketConfig) {
         clients.get(robot.id)?.client.disconnect();
@@ -313,14 +330,12 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
       const existing = clients.get(robot.id);
       if (!existing || existing.configKey !== configKey) {
         existing?.client.disconnect();
-        const client = createRobotEmergencyWsClient(
-          robot.ipAddress as string,
-          robot.emergencyBridgePort ?? DEFAULT_EMERGENCY_PORT,
-          {
-            robotId: robot.id,
-            robotName: robot.name,
-          }
-        );
+        const client = createRobotEmergencyWsClient({
+          robotId: robot.id,
+          robotName: robot.name,
+          ...(robot.ipAddress ? { ipAddress: robot.ipAddress } : {}),
+          ...(robot.emergencyBridgePort ? { emergencyBridgePort: robot.emergencyBridgePort } : {}),
+        });
 
         client.addStatusListener(status => {
           set(store => {
