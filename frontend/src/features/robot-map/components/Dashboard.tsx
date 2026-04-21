@@ -60,6 +60,9 @@ const missionIsLive = (status?: MissionStatus, nowMs = Date.now()) =>
 const isMissionActiveStatus = (status?: MissionStatus['phase']) =>
   status === 'running' || status === 'paused' || status === 'showing' || status === 'start_pending';
 
+const isMissionTerminalOrIdleStatus = (status?: MissionStatus['phase']) =>
+  status === 'idle' || status === 'completed' || status === 'failed' || status === 'cancelled';
+
 const toDisplayWaypointIndex = (
   rawWaypointIndex?: number,
   totalWaypoints?: number
@@ -195,6 +198,9 @@ export function Dashboard() {
   const hasShownInitialEmergencyPopupRef = useRef<Record<string, boolean>>({});
   const emergencyStatusSignatureRef = useRef<string>('');
   const refetchRobotsTimerRef = useRef<number | null>(null);
+  const previousMissionPhaseByRobotRef = useRef<Record<string, MissionStatus['phase'] | undefined>>(
+    {}
+  );
 
   const robots = useMemo(() => {
     const nowMs = Date.now();
@@ -345,10 +351,27 @@ export function Dashboard() {
 
   const sendTeleop = useRobotTelemetryStore(state => state.sendTeleop);
   const sendInitialPose = useRobotTelemetryStore(state => state.sendInitialPose);
+  const clearPath = useRobotTelemetryStore(state => state.clearPath);
 
   useEffect(() => {
     hydrateMissionFromRobots(robotsFromApi);
   }, [hydrateMissionFromRobots, robotsFromApi]);
+
+  useEffect(() => {
+    const previous = previousMissionPhaseByRobotRef.current;
+    const next: Record<string, MissionStatus['phase'] | undefined> = {};
+
+    for (const [robotId, status] of Object.entries(missionStatusByRobot)) {
+      const currentPhase = status?.phase;
+      const previousPhase = previous[robotId];
+      next[robotId] = currentPhase;
+      if (!isMissionTerminalOrIdleStatus(currentPhase)) continue;
+      if (previousPhase === currentPhase) continue;
+      clearPath(robotId);
+    }
+
+    previousMissionPhaseByRobotRef.current = next;
+  }, [clearPath, missionStatusByRobot]);
 
   useEffect(() => {
     syncEmergencyRobots(robotsFromApi);
@@ -792,9 +815,17 @@ export function Dashboard() {
       },
     };
 
-    sendInitialPose(selectedRobotId, message);
+    const dispatchResult = sendInitialPose(selectedRobotId, message);
     setIsSettingPose(false);
-    toast.success('Pose command sent');
+    if (dispatchResult.status === 'sent') {
+      toast.success('Pose command sent');
+      return;
+    }
+    if (dispatchResult.status === 'queued') {
+      toast.message('Pose command queued while telemetry reconnects');
+      return;
+    }
+    toast.error('Unable to send pose command: telemetry socket unavailable');
   };
 
   const handlePoseCancel = () => {

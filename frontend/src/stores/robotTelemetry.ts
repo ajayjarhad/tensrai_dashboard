@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { odomToPose } from '../lib/map/telemetryTransforms';
-import { type ConnectionStatus, createRobotWsClient } from '../services/robotWsClient';
+import {
+  type CommandDispatchResult,
+  type ConnectionStatus,
+  createRobotWsClient,
+} from '../services/robotWsClient';
 import type {
   EmergencyCommand,
   LaserScan,
@@ -39,13 +43,18 @@ type TelemetryState = {
   telemetry: Record<string, RobotTelemetry>;
   connect: (robotId: string) => void;
   disconnect: (robotId: string) => void;
-  sendTeleop: (robotId: string, command: TeleopCommand) => void;
-  sendMode: (robotId: string, command: ModeCommand) => void;
-  sendEmergency: (robotId: string, command: EmergencyCommand) => void;
-  sendInitialPose: (robotId: string, message: unknown) => void;
+  clearPath: (robotId: string) => void;
+  sendTeleop: (robotId: string, command: TeleopCommand) => CommandDispatchResult;
+  sendMode: (robotId: string, command: ModeCommand) => CommandDispatchResult;
+  sendEmergency: (robotId: string, command: EmergencyCommand) => CommandDispatchResult;
+  sendInitialPose: (robotId: string, message: unknown) => CommandDispatchResult;
 };
 
 const clients = new Map<string, ReturnType<typeof createRobotWsClient>>();
+const clientUnavailable = (): CommandDispatchResult => ({
+  status: 'dropped',
+  reason: 'client_unavailable',
+});
 
 const normalizeAngle = (theta: number) => {
   const twoPi = Math.PI * 2;
@@ -264,23 +273,40 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
     });
   },
 
+  clearPath: (robotId: string) => {
+    if (!robotId) return;
+    set(state => {
+      const current = state.telemetry[robotId];
+      if (!current || (!current.path && current.lastPathAt === undefined)) return state;
+      const nextRobot: RobotTelemetry = { ...current };
+      delete nextRobot.path;
+      delete nextRobot.lastPathAt;
+      return {
+        telemetry: {
+          ...state.telemetry,
+          [robotId]: nextRobot,
+        },
+      };
+    });
+  },
+
   sendTeleop: (robotId: string, command: TeleopCommand) => {
     const client = clients.get(robotId);
-    client?.sendCommand('teleop', command);
+    return client ? client.sendCommand('teleop', command) : clientUnavailable();
   },
 
   sendMode: (robotId: string, command: ModeCommand) => {
     const client = clients.get(robotId);
-    client?.sendCommand('mode', command);
+    return client ? client.sendCommand('mode', command) : clientUnavailable();
   },
 
   sendEmergency: (robotId: string, command: EmergencyCommand) => {
     const client = clients.get(robotId);
-    client?.sendCommand('emergency', command);
+    return client ? client.sendCommand('emergency', command) : clientUnavailable();
   },
 
   sendInitialPose: (robotId: string, message: unknown) => {
     const client = clients.get(robotId);
-    client?.sendCommand('initialpose', message);
+    return client ? client.sendCommand('initialpose', message) : clientUnavailable();
   },
 }));

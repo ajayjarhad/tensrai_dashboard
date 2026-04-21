@@ -9,6 +9,14 @@ type EventHandler = (event: WsEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type CommandDispatchStatus = 'sent' | 'queued' | 'dropped';
+export type CommandDispatchResult = {
+  status: CommandDispatchStatus;
+  reason?: string;
+};
+
+const MAX_OUTBOUND_QUEUE = 100;
+const BUFFERED_COMMAND_CHANNELS = new Set(['mode', 'initialpose', 'emergency']);
 
 export const createRobotWsClient = (robotId: string) => {
   let socket: WebSocket | null = null;
@@ -17,6 +25,7 @@ export const createRobotWsClient = (robotId: string) => {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let shouldReconnect = true;
+  const outboundQueue: string[] = [];
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
 
@@ -48,6 +57,30 @@ export const createRobotWsClient = (robotId: string) => {
     }, 8000);
   };
 
+  const enqueueOutbound = (payload: string): CommandDispatchResult => {
+    if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
+      // Drop oldest buffered command so the queue remains bounded during long disconnects.
+      outboundQueue.shift();
+    }
+    outboundQueue.push(payload);
+    return { status: 'queued' };
+  };
+
+  const flushOutbound = () => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    while (outboundQueue.length > 0) {
+      const nextPayload = outboundQueue.shift();
+      if (!nextPayload) continue;
+      try {
+        socket.send(nextPayload);
+      } catch {
+        outboundQueue.unshift(nextPayload);
+        notifyStatus('error');
+        break;
+      }
+    }
+  };
+
   const connect = () => {
     shouldReconnect = true;
     if (
@@ -65,6 +98,7 @@ export const createRobotWsClient = (robotId: string) => {
       clearConnectTimer();
       reconnectAttempts = 0;
       notifyStatus('connected');
+      flushOutbound();
     };
 
     const notifyEvent = (event: MessageEvent) => {
@@ -95,6 +129,7 @@ export const createRobotWsClient = (robotId: string) => {
   const disconnect = () => {
     shouldReconnect = false;
     clearConnectTimer();
+    outboundQueue.length = 0;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -119,10 +154,38 @@ export const createRobotWsClient = (robotId: string) => {
     }, delay);
   };
 
-  const sendCommand = (channel: string, data: unknown) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const sendCommand = (channel: string, data: unknown): CommandDispatchResult => {
+    if (!shouldReconnect) {
+      return { status: 'dropped', reason: 'client_disconnected' };
+    }
+
+    const canBuffer = BUFFERED_COMMAND_CHANNELS.has(channel);
     const payload = JSON.stringify({ type: 'command', channel, data });
-    socket.send(payload);
+
+    if (!socket) {
+      connect();
+      return canBuffer
+        ? enqueueOutbound(payload)
+        : { status: 'dropped', reason: 'socket_not_ready' };
+    }
+
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(payload);
+        return { status: 'sent' };
+      } catch {
+        return canBuffer ? enqueueOutbound(payload) : { status: 'dropped', reason: 'send_failed' };
+      }
+    }
+
+    if (socket.readyState === WebSocket.CONNECTING) {
+      return canBuffer
+        ? enqueueOutbound(payload)
+        : { status: 'dropped', reason: 'socket_connecting' };
+    }
+
+    connect();
+    return canBuffer ? enqueueOutbound(payload) : { status: 'dropped', reason: 'socket_not_open' };
   };
 
   const addEventListener = (handler: EventHandler) => {

@@ -29,12 +29,22 @@ export function RobotLayer({
   return (
     <>
       {robots.map(robot => {
-        if (robot.x === undefined || robot.y === undefined || robot.theta === undefined) {
+        const x = robot.x;
+        const y = robot.y;
+        const theta = robot.theta;
+        if (
+          typeof x !== 'number' ||
+          typeof y !== 'number' ||
+          typeof theta !== 'number' ||
+          !Number.isFinite(x) ||
+          !Number.isFinite(y) ||
+          !Number.isFinite(theta)
+        ) {
           return null;
         }
 
-        const pixelPoint = worldToMapPixel({ x: robot.x, y: robot.y }, transforms);
-        const rotationDegrees = 90 - robot.theta * (180 / Math.PI);
+        const pixelPoint = worldToMapPixel({ x, y }, transforms);
+        const rotationDegrees = 90 - theta * (180 / Math.PI);
         const handleSelect = () => {
           setSelectedLocationId(null);
           onRobotSelect?.(robot.id);

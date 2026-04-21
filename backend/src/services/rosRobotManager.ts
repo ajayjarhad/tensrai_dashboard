@@ -153,7 +153,7 @@ export class RosRobotManager extends EventEmitter {
   private lastPublishedPose?: Pose2D & { stampMs?: number; source?: string };
   private laserToBase?: Pose2D;
   private odomPose?: Pose2D & { stampMs?: number };
-  private tfSubscribed = false;
+  private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
   private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
@@ -196,6 +196,7 @@ export class RosRobotManager extends EventEmitter {
 
       const connection = new RosBridgeConnection({ id, url });
       connection.on('connected', () => this.handleConnectionConnected(id));
+      connection.on('disconnected', () => this.handleConnectionDisconnected(id));
       connection.on('error', error => this.emit('error', error));
 
       this.connections.set(id, connection);
@@ -236,8 +237,10 @@ export class RosRobotManager extends EventEmitter {
 
   stop() {
     this.sendZeroTeleopIfNeeded();
+    this.cleanupTfSubscriptions();
     for (const runtime of this.channels.values()) {
       runtime.unsubscribe?.();
+      runtime.unsubscribe = undefined;
     }
     for (const connection of this.connections.values()) {
       connection.disconnect();
@@ -275,9 +278,8 @@ export class RosRobotManager extends EventEmitter {
     const connection = this.connections.get(connectionId);
     if (!connection) return;
 
-    if (!this.tfSubscribed && connectionId === 'default') {
-      this.subscribeTf(connection);
-      this.tfSubscribed = true;
+    if (connectionId === 'default') {
+      this.subscribeTf(connectionId, connection);
     }
     for (const [name, runtime] of this.channels.entries()) {
       if ((runtime.config.connectionId ?? 'default') !== connectionId) continue;
@@ -315,6 +317,10 @@ export class RosRobotManager extends EventEmitter {
         this.emit('error', error as Error);
       }
     }
+  }
+
+  private handleConnectionDisconnected(connectionId: string) {
+    this.cleanupTfSubscriptions(connectionId);
   }
 
   private getConnectionForChannel(config: RosChannelConfig) {
@@ -453,13 +459,45 @@ export class RosRobotManager extends EventEmitter {
     return { points, pointStride: stride };
   }
 
-  private subscribeTf(connection: RosBridgeConnection) {
+  private subscribeTf(connectionId: string, connection: RosBridgeConnection) {
+    this.cleanupTfSubscriptions(connectionId);
     const handle = (msg: any) => this.handleTfMessage(msg);
     try {
-      connection.subscribe('/tf', 'tf2_msgs/msg/TFMessage', handle);
-      connection.subscribe('/tf_static', 'tf2_msgs/msg/TFMessage', handle);
+      const unsubscribeTf = connection.subscribe('/tf', 'tf2_msgs/msg/TFMessage', handle);
+      const unsubscribeTfStatic = connection.subscribe(
+        '/tf_static',
+        'tf2_msgs/msg/TFMessage',
+        handle
+      );
+      this.tfUnsubscribeByConnection.set(connectionId, [unsubscribeTf, unsubscribeTfStatic]);
     } catch (err) {
       this.emit('error', err as Error);
+    }
+  }
+
+  private cleanupTfSubscriptions(connectionId?: string) {
+    if (connectionId) {
+      const unsubscribers = this.tfUnsubscribeByConnection.get(connectionId) ?? [];
+      for (const unsubscribe of unsubscribers) {
+        try {
+          unsubscribe();
+        } catch {
+          // ignore TF unsubscribe cleanup failures
+        }
+      }
+      this.tfUnsubscribeByConnection.delete(connectionId);
+      return;
+    }
+
+    for (const [id, unsubscribers] of this.tfUnsubscribeByConnection.entries()) {
+      for (const unsubscribe of unsubscribers) {
+        try {
+          unsubscribe();
+        } catch {
+          // ignore TF unsubscribe cleanup failures
+        }
+      }
+      this.tfUnsubscribeByConnection.delete(id);
     }
   }
 
