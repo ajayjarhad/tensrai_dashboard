@@ -28,6 +28,7 @@ type RobotTelemetry = {
   latchedPose?: Pose2D;
   latchedUntil?: number;
   laser?: LaserScan;
+  laserPose?: Pose2D;
   path?: PathMessage;
   lastMessageAt?: number;
   lastOdomAt?: number;
@@ -180,11 +181,17 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           }
         } else if (event.channel === 'laser') {
           const laser = event.data as LaserScan;
-          const hasPoints = Array.isArray(laser?.points) && laser.points.length > 0;
-          const frame = typeof laser?.frame === 'string' ? laser.frame.toLowerCase() : '';
-          const hasMapPoints = hasPoints && frame === 'map';
-          next.laser = hasMapPoints ? { ...laser, ranges: [] } : laser;
+          next.laser = laser;
           next.lastLaserAt = now;
+          // Pin the scan at the pose the backend resolved at scan time.
+          // Fall back to the unsmoothed TF/AMCL pose if the backend didn't attach one.
+          if (laser?.scanPose) {
+            next.laserPose = { ...laser.scanPose };
+          } else if (next.tfPose) {
+            next.laserPose = { ...next.tfPose };
+          } else if (next.amclPose) {
+            next.laserPose = { ...next.amclPose };
+          }
         } else if (event.channel === 'waypoints') {
           next.path = event.data as PathMessage;
           next.lastPathAt = now;

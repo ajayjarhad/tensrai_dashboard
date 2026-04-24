@@ -15,6 +15,9 @@ export interface LaserScan {
   ranges: number[];
   points?: Array<{ x: number; y: number }>;
   frame?: string;
+  laserOffset?: { x: number; y: number; yaw: number };
+  scanPose?: Pose2D;
+  stampMs?: number;
 }
 
 export interface PathMessage {

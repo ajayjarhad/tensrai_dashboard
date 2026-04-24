@@ -77,16 +77,17 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   }
   if (channelName === 'laser') {
     const scan = data as any;
-    const hasPoints = Array.isArray(scan.points) && scan.points.length > 0;
     return {
       angle_min: scan.angle_min,
       angle_max: scan.angle_max,
       angle_increment: scan.angle_increment,
       range_min: scan.range_min,
       range_max: scan.range_max,
-      ranges: hasPoints ? [] : scan.ranges,
-      points: hasPoints ? scan.points : undefined,
+      ranges: scan.ranges,
+      laserOffset: scan.laserOffset,
+      scanPose: scan.scanPose,
       frame: scan.frame ?? scan.header?.frame_id,
+      stampMs: scan.stampMs,
     };
   }
   if (channelName === 'waypoints') {
@@ -153,6 +154,8 @@ export class RosRobotManager extends EventEmitter {
   private lastPublishedPose?: Pose2D & { stampMs?: number; source?: string };
   private laserToBase?: Pose2D;
   private odomPose?: Pose2D & { stampMs?: number };
+  private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
+  private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -404,59 +407,28 @@ export class RosRobotManager extends EventEmitter {
   private processLaser(raw: any) {
     if (!raw?.ranges || !Array.isArray(raw.ranges)) return raw;
 
-    const scanStampMs = rosStampToMs(raw?.header?.stamp) ?? Date.now();
-
-    const pose = this.getLaserPose(scanStampMs);
-    if (!pose) return raw;
-
-    const laserOffset = this.laserToBase ?? this.laserOffset;
-    const { points, pointStride } = this.computeLaserPoints(raw, pose, laserOffset);
-
-    return { ...raw, points, pointStride, frame: 'map' };
-  }
-
-  private getLaserPose(scanStampMs: number): Pose2D | undefined {
-    const tfStamp = (this.mapToOdom as any)?.stampMs;
-    const odomStamp = this.odomPose?.stampMs;
-    const tfStale = tfStamp !== undefined && Math.abs(scanStampMs - tfStamp) > TF_STALE_MS;
-    const odomStale = odomStamp !== undefined && Math.abs(scanStampMs - odomStamp) > TF_STALE_MS;
-
-    if (this.mapToOdom && this.odomPose && !tfStale && !odomStale) {
-      return combineTransforms(this.mapToOdom, this.odomPose);
-    }
-    if (this.mapPose) {
-      return { ...this.mapPose };
-    }
-    return undefined;
-  }
-
-  private computeLaserPoints(
-    raw: any,
-    pose: Pose2D,
-    laserOffset: Pose2D
-  ): { points: Array<{ x: number; y: number }>; pointStride: number } {
-    const { angle_min, angle_increment, ranges, range_min, range_max } = raw;
-    const cosOff = Math.cos(laserOffset.yaw);
-    const sinOff = Math.sin(laserOffset.yaw);
-    const cosPose = Math.cos(pose.yaw);
-    const sinPose = Math.sin(pose.yaw);
+    const { ranges, angle_increment } = raw;
     const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
-
-    const points: Array<{ x: number; y: number }> = [];
+    const downsampledRanges: number[] = [];
     for (let i = 0; i < ranges.length; i += stride) {
-      const r = ranges[i];
-      if (!Number.isFinite(r) || r < range_min || r > range_max) continue;
-      const angle = angle_min + i * angle_increment;
-      const sx = r * Math.cos(angle);
-      const sy = r * Math.sin(angle);
-      const bx = laserOffset.x + cosOff * sx - sinOff * sy;
-      const by = laserOffset.y + sinOff * sx + cosOff * sy;
-      const wx = pose.x + cosPose * bx - sinPose * by;
-      const wy = pose.y + sinPose * bx + cosPose * by;
-      points.push({ x: wx, y: wy });
-      if (points.length >= MAX_LASER_POINTS) break;
+      downsampledRanges.push(ranges[i]);
     }
-    return { points, pointStride: stride };
+
+    const offset = this.laserToBase ?? this.laserOffset;
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    const pose =
+      stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
+    const scanPose = pose ? { x: pose.x, y: pose.y, theta: pose.yaw } : undefined;
+
+    return {
+      ...raw,
+      ranges: downsampledRanges,
+      angle_increment: angle_increment * stride,
+      laserOffset: { x: offset.x, y: offset.y, yaw: offset.yaw },
+      scanPose,
+      frame: 'base_link',
+      stampMs,
+    };
   }
 
   private subscribeTf(connectionId: string, connection: RosBridgeConnection) {
@@ -569,12 +541,28 @@ export class RosRobotManager extends EventEmitter {
   ) {
     if (parent === 'map' && child === 'odom') {
       this.mapToOdom = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
+      if (stampMs !== undefined) {
+        this.pushTfHistory(this.mapToOdomHistory, {
+          x: trans.x ?? 0,
+          y: trans.y ?? 0,
+          yaw,
+          stampMs,
+        });
+      }
     }
     if (parent === 'map' && this.baseFrames.includes(child)) {
       this.mapToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
     }
     if (parent === 'odom' && this.baseFrames.includes(child)) {
       this.odomToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
+      if (stampMs !== undefined) {
+        this.pushTfHistory(this.odomToBaseHistory, {
+          x: trans.x ?? 0,
+          y: trans.y ?? 0,
+          yaw,
+          stampMs,
+        });
+      }
     }
     if (
       (child === 'laser' || child === 'base_scan') &&
@@ -582,6 +570,68 @@ export class RosRobotManager extends EventEmitter {
     ) {
       this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
     }
+  }
+
+  private pushTfHistory(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    sample: Pose2D & { stampMs: number }
+  ) {
+    buffer.push(sample);
+    const cutoff = sample.stampMs - 2000;
+    while (buffer.length > 0 && (buffer[0]?.stampMs ?? 0) < cutoff) buffer.shift();
+    while (buffer.length > 120) buffer.shift();
+  }
+
+  private interpolateTfAt(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    stampMs: number
+  ): Pose2D | undefined {
+    if (buffer.length === 0) return undefined;
+    if (buffer.length === 1) {
+      const only = buffer[0]!;
+      return { x: only.x, y: only.y, yaw: only.yaw };
+    }
+    let before: (Pose2D & { stampMs: number }) | undefined;
+    let after: (Pose2D & { stampMs: number }) | undefined;
+    for (let i = 0; i < buffer.length; i++) {
+      const s = buffer[i]!;
+      if (s.stampMs <= stampMs) before = s;
+      if (s.stampMs >= stampMs) {
+        after = s;
+        break;
+      }
+    }
+    if (before && after && before !== after) {
+      const span = after.stampMs - before.stampMs;
+      if (span <= 0) return { x: before.x, y: before.y, yaw: before.yaw };
+      const t = (stampMs - before.stampMs) / span;
+      let dYaw = after.yaw - before.yaw;
+      if (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+      if (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+      return {
+        x: before.x + (after.x - before.x) * t,
+        y: before.y + (after.y - before.y) * t,
+        yaw: before.yaw + dYaw * t,
+      };
+    }
+    const sample = before ?? after!;
+    return { x: sample.x, y: sample.y, yaw: sample.yaw };
+  }
+
+  private resolveScanPose(scanStampMs: number): Pose2D | undefined {
+    const mapToOdom = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
+    const odomToBase = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
+    if (mapToOdom && odomToBase) {
+      return combineTransforms(mapToOdom, odomToBase);
+    }
+    if (odomToBase && this.mapToOdom) {
+      return combineTransforms(this.mapToOdom, odomToBase);
+    }
+    if (mapToOdom && this.odomPose) {
+      return combineTransforms(mapToOdom, this.odomPose);
+    }
+    const fallback = this.computeMapBasePose();
+    return fallback?.pose;
   }
 
   private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {

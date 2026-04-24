@@ -7,6 +7,7 @@ export type TelemetryOverlayRequest = {
   laser?: LaserScan | null;
   path?: PathMessage | null;
   robotPose?: Pose2D | null;
+  laserPose?: Pose2D | null;
   stageScale?: number;
   laserStep?: number;
   maxLaserPoints?: number;

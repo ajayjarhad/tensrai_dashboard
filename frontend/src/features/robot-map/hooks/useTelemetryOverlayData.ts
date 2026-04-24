@@ -17,6 +17,7 @@ interface UseTelemetryOverlayDataOptions {
   laser?: LaserScan | null | undefined;
   path?: PathMessage | null | undefined;
   robotPose?: Pose2D | null | undefined;
+  laserPose?: Pose2D | null | undefined;
   stageScale?: number | undefined;
 }
 
@@ -25,6 +26,7 @@ export function useTelemetryOverlayData({
   laser,
   path,
   robotPose,
+  laserPose,
   stageScale,
 }: UseTelemetryOverlayDataOptions): OverlayState {
   const workerRef = useRef<Worker | null>(null);
@@ -90,11 +92,12 @@ export function useTelemetryOverlayData({
       laser: laser ?? null,
       path: path ?? null,
       robotPose: robotPose ?? null,
+      laserPose: laserPose ?? null,
       stageScale,
       laserStep: 2,
       maxLaserPoints: 450,
     });
-  }, [laser, path, robotPose, stageScale, transforms]);
+  }, [laser, path, robotPose, laserPose, stageScale, transforms]);
 
   return state;
 }
