@@ -11,6 +11,7 @@ interface RobotLayerProps {
   resolution: number;
   onRobotSelect?: (robotId: string | null) => void;
   setSelectedLocationId: (id: string | null) => void;
+  setPoseMode?: boolean;
 }
 
 export function RobotLayer({
@@ -19,6 +20,7 @@ export function RobotLayer({
   resolution,
   onRobotSelect,
   setSelectedLocationId,
+  setPoseMode = false,
 }: RobotLayerProps) {
   if (!transforms) return null;
 
@@ -51,7 +53,12 @@ export function RobotLayer({
         };
 
         return (
-          <Group key={robot.id} onClick={handleSelect} onTap={handleSelect}>
+          <Group
+            key={robot.id}
+            listening={!setPoseMode}
+            onClick={handleSelect}
+            onTap={handleSelect}
+          >
             <RobotMarker
               x={pixelPoint.x}
               y={pixelPoint.y}
