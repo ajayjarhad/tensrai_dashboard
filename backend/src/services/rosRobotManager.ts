@@ -156,6 +156,7 @@ export class RosRobotManager extends EventEmitter {
   private odomPose?: Pose2D & { stampMs?: number };
   private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
+  private sensorOffsetsByFrame = new Map<string, Pose2D>();
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -414,7 +415,11 @@ export class RosRobotManager extends EventEmitter {
       downsampledRanges.push(ranges[i]);
     }
 
-    const offset = this.laserToBase ?? this.laserOffset;
+    const scanFrameId = typeof raw?.header?.frame_id === 'string' ? raw.header.frame_id : undefined;
+    const offset =
+      (scanFrameId ? this.sensorOffsetsByFrame.get(scanFrameId) : undefined) ??
+      this.laserToBase ??
+      this.laserOffset;
     const stampMs = rosStampToMs(raw?.header?.stamp);
     const pose =
       stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
@@ -564,11 +569,11 @@ export class RosRobotManager extends EventEmitter {
         });
       }
     }
-    if (
-      (child === 'laser' || child === 'base_scan') &&
-      (parent === 'base_footprint' || parent === 'base_link' || this.baseFrames.includes(parent))
-    ) {
-      this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+    if (this.baseFrames.includes(parent) && !this.baseFrames.includes(child)) {
+      this.sensorOffsetsByFrame.set(child, { x: trans.x ?? 0, y: trans.y ?? 0, yaw });
+      if (child === 'laser' || child === 'base_scan') {
+        this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+      }
     }
   }
 
