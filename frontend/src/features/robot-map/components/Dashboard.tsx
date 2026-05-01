@@ -788,7 +788,9 @@ export function Dashboard() {
       return;
     }
     setIsSettingPose(true);
-    toast.message('Set pose: click anywhere on the map, drag to rotate, then confirm. Esc to cancel.');
+    toast.message(
+      'Set pose: click anywhere on the map, drag to rotate, then confirm. Esc to cancel.'
+    );
   };
 
   const handlePoseConfirm = (payload: PoseConfirmPayload) => {
