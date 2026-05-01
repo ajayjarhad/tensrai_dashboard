@@ -192,7 +192,7 @@ export class RosBridgeConnection extends EventEmitter {
     let topic = this.publishers.get(key);
 
     if (!topic) {
-      const shouldLatch = topicName === '/initialpose';
+      const shouldLatch = topicName === '/initialpose_ui';
       topic = new ROSLIB.Topic({
         ros: this.ros,
         name: topicName,
