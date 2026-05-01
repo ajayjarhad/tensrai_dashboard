@@ -435,9 +435,9 @@ export class RosRobotManager extends EventEmitter {
     this.cleanupTfSubscriptions(connectionId);
     const handle = (msg: any) => this.handleTfMessage(msg);
     try {
-      const unsubscribeTf = connection.subscribe('/tf', 'tf2_msgs/msg/TFMessage', handle);
+      const unsubscribeTf = connection.subscribe('/tf_ui', 'tf2_msgs/msg/TFMessage', handle);
       const unsubscribeTfStatic = connection.subscribe(
-        '/tf_static',
+        '/tf_static_ui',
         'tf2_msgs/msg/TFMessage',
         handle
       );

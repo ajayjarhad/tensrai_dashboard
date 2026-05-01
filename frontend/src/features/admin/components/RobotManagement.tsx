@@ -45,28 +45,28 @@ const DEFAULT_ROBOT: EditableRobot = {
 const defaultChannels = [
   {
     name: 'odom',
-    topic: '/odom',
+    topic: '/odom_ui',
     msgType: 'nav_msgs/msg/Odometry',
     direction: 'subscribe',
     rateLimitHz: 5,
   },
   {
     name: 'laser',
-    topic: '/scan',
+    topic: '/scan_ui',
     msgType: 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
     rateLimitHz: 10,
   },
   {
     name: 'waypoints',
-    topic: '/plan',
+    topic: '/plan_ui',
     msgType: 'nav_msgs/msg/Path',
     direction: 'subscribe',
     rateLimitHz: 2,
   },
   {
     name: 'teleop',
-    topic: '/cmd_vel',
+    topic: '/cmd_vel_ui',
     msgType: 'geometry_msgs/msg/Twist',
     direction: 'publish',
   },
@@ -603,7 +603,7 @@ export function RobotManagement() {
                           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring h-32 font-mono"
                           value={channelsInput}
                           onChange={e => setChannelsInput(e.target.value)}
-                          placeholder='[{"name":"odom","topic":"/odom","msgType":"nav_msgs/Odometry","direction":"subscribe"}]'
+                          placeholder='[{"name":"odom","topic":"/odom_ui","msgType":"nav_msgs/Odometry","direction":"subscribe"}]'
                         />
                         <div className="text-xs text-muted-foreground">
                           Provide an array of channels. Leave blank to start from defaults.
