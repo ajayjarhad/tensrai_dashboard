@@ -199,20 +199,15 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           // optional: map to status; for now, leave as is
         }
 
-        // Keep AMCL "fresh" longer so an initialpose reset doesn't immediately fall back to odom.
-        const amclFresh = next.lastAmclAt ? now - next.lastAmclAt < 5000 : false;
-        const odomFresh = next.lastOdomAt ? now - next.lastOdomAt < 1500 : false;
         const tfFresh = next.lastTfAt ? now - next.lastTfAt < TF_FRESH_MS : false;
 
-        // Latch logic: if we recently saw a big AMCL jump, hold it for the latch window.
         let latchActive = next.latchedPose && next.latchedUntil && now < next.latchedUntil;
-        // Break latch early if odom shows clear motion away from the latched pose.
-        if (latchActive && odomFresh && next.odomPose && next.latchedPose) {
-          const dx = next.odomPose.x - next.latchedPose.x;
-          const dy = next.odomPose.y - next.latchedPose.y;
+        if (latchActive && tfFresh && next.tfPose && next.latchedPose) {
+          const dx = next.tfPose.x - next.latchedPose.x;
+          const dy = next.tfPose.y - next.latchedPose.y;
           const dPos = Math.hypot(dx, dy);
-          const dTheta = Math.abs(normalizeAngle(next.odomPose.theta - next.latchedPose.theta));
-          if (dPos > 0.2 || dTheta > 0.2) {
+          const dTheta = Math.abs(normalizeAngle(next.tfPose.theta - next.latchedPose.theta));
+          if (dPos < 0.1 && dTheta < 0.1) {
             latchActive = false;
             delete next.latchedPose;
             delete next.latchedUntil;
@@ -224,22 +219,6 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
         } else if (tfFresh && next.tfPose) {
           next.pose = next.tfPose;
           next.poseSource = 'tf';
-        } else if (odomFresh && next.odomPose) {
-          // Use odom for smoothness during motion; fall back to AMCL when odom is stale.
-          next.pose = next.odomPose;
-          next.poseSource = 'odom';
-          delete next.latchedPose;
-          delete next.latchedUntil;
-        } else if (amclFresh && next.amclPose) {
-          next.pose = next.amclPose;
-          next.poseSource = 'amcl';
-          delete next.latchedPose;
-          delete next.latchedUntil;
-        } else if (next.odomPose) {
-          next.pose = next.odomPose;
-          next.poseSource = 'odom';
-          delete next.latchedPose;
-          delete next.latchedUntil;
         } else if (next.amclPose) {
           next.pose = next.amclPose;
           next.poseSource = 'amcl';

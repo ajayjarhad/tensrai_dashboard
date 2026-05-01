@@ -2,19 +2,27 @@ import type { MapTransforms, PixelPoint, ROSPose } from '@tensrai/shared';
 import type { LaserScan, OdometryMessage, PathMessage, Pose2D } from '../../types/telemetry';
 import { quaternionToYaw, worldToMapPixel } from './mapTransforms';
 
+const safeQuaternionToYaw = (orientation: any): number =>
+  quaternionToYaw({
+    x: orientation?.x ?? 0,
+    y: orientation?.y ?? 0,
+    z: orientation?.z ?? 0,
+    w: orientation?.w ?? 1,
+  });
+
 export const odomToPose = (odom: OdometryMessage): Pose2D => {
   const { position, orientation } = odom.pose.pose;
   return {
-    x: position.x,
-    y: position.y,
-    theta: quaternionToYaw(orientation),
+    x: position?.x ?? 0,
+    y: position?.y ?? 0,
+    theta: safeQuaternionToYaw(orientation),
   };
 };
 
 export const rosPoseToPose2D = (pose: ROSPose): Pose2D => ({
-  x: pose.position.x,
-  y: pose.position.y,
-  theta: quaternionToYaw(pose.orientation),
+  x: pose.position?.x ?? 0,
+  y: pose.position?.y ?? 0,
+  theta: safeQuaternionToYaw(pose.orientation),
 });
 
 export const pathToPixelPoints = (path: PathMessage, transforms: MapTransforms): PixelPoint[] => {
