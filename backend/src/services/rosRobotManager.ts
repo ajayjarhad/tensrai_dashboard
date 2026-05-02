@@ -157,6 +157,8 @@ export class RosRobotManager extends EventEmitter {
   private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
   private sensorOffsetsByFrame = new Map<string, Pose2D>();
+  private lastLoggedScanFrameId?: string | null;
+  private lastLoggedOffsetSource?: 'frame_id' | 'legacy' | 'default';
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -416,10 +418,29 @@ export class RosRobotManager extends EventEmitter {
     }
 
     const scanFrameId = typeof raw?.header?.frame_id === 'string' ? raw.header.frame_id : undefined;
-    const offset =
-      (scanFrameId ? this.sensorOffsetsByFrame.get(scanFrameId) : undefined) ??
-      this.laserToBase ??
-      this.laserOffset;
+    const frameOffset = scanFrameId ? this.sensorOffsetsByFrame.get(scanFrameId) : undefined;
+    const offset = frameOffset ?? this.laserToBase ?? this.laserOffset;
+    const offsetSource: 'frame_id' | 'legacy' | 'default' = frameOffset
+      ? 'frame_id'
+      : this.laserToBase
+        ? 'legacy'
+        : 'default';
+    if (
+      offsetSource !== this.lastLoggedOffsetSource ||
+      (scanFrameId ?? null) !== (this.lastLoggedScanFrameId ?? null)
+    ) {
+      console.log(
+        JSON.stringify({
+          tag: 'scan-offset',
+          scanFrameId: scanFrameId ?? null,
+          offsetSource,
+          offset,
+          knownFrames: [...this.sensorOffsetsByFrame.keys()],
+        })
+      );
+      this.lastLoggedOffsetSource = offsetSource;
+      this.lastLoggedScanFrameId = scanFrameId ?? null;
+    }
     const stampMs = rosStampToMs(raw?.header?.stamp);
     const pose =
       stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
@@ -570,9 +591,14 @@ export class RosRobotManager extends EventEmitter {
       }
     }
     if (this.baseFrames.includes(parent) && !this.baseFrames.includes(child)) {
-      this.sensorOffsetsByFrame.set(child, { x: trans.x ?? 0, y: trans.y ?? 0, yaw });
+      const offset = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+      const isNew = !this.sensorOffsetsByFrame.has(child);
+      this.sensorOffsetsByFrame.set(child, offset);
+      if (isNew) {
+        console.log(JSON.stringify({ tag: 'tf-static', parent, child, offset }));
+      }
       if (child === 'laser' || child === 'base_scan') {
-        this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+        this.laserToBase = { ...offset };
       }
     }
   }
