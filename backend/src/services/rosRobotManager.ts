@@ -161,6 +161,7 @@ export class RosRobotManager extends EventEmitter {
   private lastLoggedScanFrameId?: string | null;
   private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
   private lastScanDetailLogAt = 0;
+  private lastScanStampMs?: number;
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -495,16 +496,40 @@ export class RosRobotManager extends EventEmitter {
     const scanPose = pose ? { x: pose.x, y: pose.y, theta: pose.yaw } : undefined;
 
     const nowMs = Date.now();
+    const scanInterval =
+      stampMs !== undefined && this.lastScanStampMs !== undefined
+        ? stampMs - this.lastScanStampMs
+        : null;
+    if (stampMs !== undefined) this.lastScanStampMs = stampMs;
     if (nowMs - this.lastScanDetailLogAt >= 2000) {
       this.lastScanDetailLogAt = nowMs;
       const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
       const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
       const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
+      const amclExtrapolated =
+        amclLatest !== undefined && stampMs !== undefined && stampMs > amclLatest;
+      let omegaRadPerSec: number | null = null;
+      if (this.mapPoseHistory.length >= 2) {
+        const a = this.mapPoseHistory[this.mapPoseHistory.length - 2];
+        const b = this.mapPoseHistory[this.mapPoseHistory.length - 1];
+        if (a && b) {
+          const dt = (b.stampMs - a.stampMs) / 1000;
+          if (dt > 0) {
+            let dyaw = b.yaw - a.yaw;
+            if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+            if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+            omegaRadPerSec = dyaw / dt;
+          }
+        }
+      }
       console.log(
         JSON.stringify({
           tag: 'scan-pose',
           stampMs,
           scanPose,
+          scanInterval,
+          amclExtrapolated,
+          omegaRadPerSec,
           amclLatestStamp: amclLatest,
           amclAgeVsScan: amclLatest && stampMs !== undefined ? amclLatest - stampMs : null,
           amclHistLen: this.mapPoseHistory.length,
