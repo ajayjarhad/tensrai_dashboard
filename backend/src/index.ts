@@ -34,25 +34,28 @@ const server = createFastify({
   },
 });
 
-const stderrWrite = process.stderr.write.bind(process.stderr);
-const stdoutWrite = process.stdout.write.bind(process.stdout);
 const NOISE_PATTERNS = [/ROSLib uses utf8 encoding by default/];
 const isNoise = (chunk: any) => {
   const text =
     typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
   return text.length > 0 && NOISE_PATTERNS.some(p => p.test(text));
 };
+const stderrWrite = process.stderr.write.bind(process.stderr);
+const stdoutWrite = process.stdout.write.bind(process.stdout);
 process.stderr.write = ((chunk: any, ...rest: any[]) =>
   isNoise(chunk) ? true : stderrWrite(chunk, ...rest)) as typeof process.stderr.write;
 process.stdout.write = ((chunk: any, ...rest: any[]) =>
   isNoise(chunk) ? true : stdoutWrite(chunk, ...rest)) as typeof process.stdout.write;
-const origConsoleWarn = console.warn.bind(console);
-console.warn = (...args: unknown[]) => {
-  if (args.some(a => typeof a === 'string' && /ROSLib uses utf8 encoding by default/.test(a))) {
-    return;
-  }
-  origConsoleWarn(...args);
-};
+const wrapConsole =
+  (orig: (...args: any[]) => void) =>
+  (...args: any[]) => {
+    if (args.some(a => isNoise(a))) return;
+    orig(...args);
+  };
+console.log = wrapConsole(console.log.bind(console));
+console.warn = wrapConsole(console.warn.bind(console));
+console.error = wrapConsole(console.error.bind(console));
+console.info = wrapConsole(console.info.bind(console));
 
 const registerPlugins = async () => {
   await server.register(databasePlugin);
