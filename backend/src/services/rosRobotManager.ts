@@ -159,6 +159,7 @@ export class RosRobotManager extends EventEmitter {
   private sensorOffsetsByFrame = new Map<string, Pose2D>();
   private lastLoggedScanFrameId?: string | null;
   private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
+  private lastScanDetailLogAt = 0;
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -487,6 +488,30 @@ export class RosRobotManager extends EventEmitter {
     const pose =
       stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
     const scanPose = pose ? { x: pose.x, y: pose.y, theta: pose.yaw } : undefined;
+
+    const nowMs = Date.now();
+    if (nowMs - this.lastScanDetailLogAt >= 2000) {
+      this.lastScanDetailLogAt = nowMs;
+      const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
+      const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose',
+          stampMs,
+          stampSec: raw?.header?.stamp?.sec ?? raw?.header?.stamp?.secs,
+          stampNsec: raw?.header?.stamp?.nanosec ?? raw?.header?.stamp?.nsecs,
+          ageVsNow: stampMs !== undefined ? nowMs - stampMs : null,
+          scanPose,
+          m2oLatestStamp: m2oLatest,
+          m2oAgeVsScan: m2oLatest && stampMs !== undefined ? m2oLatest - stampMs : null,
+          o2bLatestStamp: o2bLatest,
+          o2bAgeVsScan: o2bLatest && stampMs !== undefined ? o2bLatest - stampMs : null,
+          m2oHistLen: this.mapToOdomHistory.length,
+          o2bHistLen: this.odomToBaseHistory.length,
+          mapPose: this.mapPose,
+        })
+      );
+    }
 
     return {
       ...raw,
