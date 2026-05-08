@@ -44,17 +44,26 @@ const parseRateLimit = (envKey: string, fallback: number) => {
   return raw;
 };
 
+const parseMsgTypeOverride = (envKey: string) => {
+  const raw = process.env[envKey]?.trim();
+  return raw ? normalizeMsgType(raw) : undefined;
+};
+
 const rateLimitOverrides: Record<string, number> = {
   odom: parseRateLimit('ROS_ODOM_RATE_HZ', 8),
   laser: parseRateLimit('ROS_LASER_RATE_HZ', 3),
   amcl: parseRateLimit('ROS_AMCL_RATE_HZ', 4),
 };
 
+const msgTypeOverrides: Record<string, string | undefined> = {
+  laser: parseMsgTypeOverride('ROS_LASER_MSG_TYPE'),
+};
+
 const normalizeChannels = (channels: any[] | undefined) => {
   if (!Array.isArray(channels) || channels.length === 0) return undefined;
   return channels.map(ch => ({
     ...ch,
-    msgType: ch.msgType ? normalizeMsgType(ch.msgType) : ch.msgType,
+    msgType: msgTypeOverrides[ch.name] ?? (ch.msgType ? normalizeMsgType(ch.msgType) : ch.msgType),
     rateLimitHz: rateLimitOverrides[ch.name] ?? ch.rateLimitHz,
   }));
 };
@@ -70,7 +79,7 @@ const defaultChannels = [
   {
     name: 'laser',
     topic: '/scan_ui',
-    msgType: 'sensor_msgs/msg/LaserScan',
+    msgType: msgTypeOverrides.laser ?? 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
     rateLimitHz: 10,
   },

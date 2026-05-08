@@ -48,6 +48,9 @@ const rosStampToMs = (stamp: any): number | undefined => {
   return Number.isFinite(ms) ? ms : undefined;
 };
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
   return {
@@ -86,6 +89,7 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
       ranges: scan.ranges,
       laserOffset: scan.laserOffset,
       scanPose: scan.scanPose,
+      scanPoseSource: scan.scanPoseSource,
       frame: scan.frame ?? scan.header?.frame_id,
       stampMs: scan.stampMs,
     };
@@ -492,8 +496,7 @@ export class RosRobotManager extends EventEmitter {
     }
     const stampMs = rosStampToMs(raw?.header?.stamp);
     const fw = raw?.pose;
-    const fwValid =
-      fw && typeof fw.x === 'number' && typeof fw.y === 'number' && typeof fw.theta === 'number';
+    const fwValid = fw && isFiniteNumber(fw.x) && isFiniteNumber(fw.y) && isFiniteNumber(fw.theta);
     let scanPoseSource: 'firmware' | 'computed' | 'none' = 'none';
     let scanPose: { x: number; y: number; theta: number } | undefined;
     if (fwValid) {
@@ -563,6 +566,7 @@ export class RosRobotManager extends EventEmitter {
       angle_increment: angle_increment * stride,
       laserOffset: { x: offset.x, y: offset.y, yaw: offset.yaw },
       scanPose,
+      scanPoseSource,
       frame: 'base_link',
       stampMs,
     };
