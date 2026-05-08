@@ -14,7 +14,6 @@ import type {
   TeleopCommand,
 } from '../types/telemetry';
 
-const SMOOTH_ALPHA = 0.25;
 const TF_FRESH_MS = 4000;
 const ODOM_MIN_INTERVAL_MS = 100;
 const LASER_MIN_INTERVAL_MS = 160;
@@ -64,18 +63,6 @@ const normalizeAngle = (theta: number) => {
   if (t > Math.PI) t -= twoPi;
   if (t < -Math.PI) t += twoPi;
   return t;
-};
-
-const smoothPose = (target: Pose2D, prev: Pose2D, alpha: number): Pose2D => {
-  const clamped = Math.min(1, Math.max(0, alpha));
-  const dx = target.x - prev.x;
-  const dy = target.y - prev.y;
-  const dTheta = normalizeAngle(target.theta - prev.theta);
-  return {
-    x: prev.x + dx * clamped,
-    y: prev.y + dy * clamped,
-    theta: normalizeAngle(prev.theta + dTheta * clamped),
-  };
 };
 
 export const useRobotTelemetryStore = create<TelemetryState>(set => ({
@@ -243,11 +230,6 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
         } else {
           delete next.latchedPose;
           delete next.latchedUntil;
-        }
-
-        // Smooth the displayed pose to reduce visual jitter when updates are frequent.
-        if (next.pose && current.pose && !(latchActive && next.latchedPose)) {
-          next.pose = smoothPose(next.pose, current.pose, SMOOTH_ALPHA);
         }
 
         return {
