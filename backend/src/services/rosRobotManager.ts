@@ -747,8 +747,6 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private resolveScanPose(scanStampMs: number): Pose2D | undefined {
-    // Pick whichever source's latest stamp is closest to the scan stamp.
-    // No fixed thresholds — avoids ping-ponging between sources on every scan.
     const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
     const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
     const amclAge =
@@ -756,10 +754,9 @@ export class RosRobotManager extends EventEmitter {
     const o2bAge =
       o2bLatest !== undefined ? Math.abs(scanStampMs - o2bLatest) : Number.POSITIVE_INFINITY;
 
-    const amclPose =
-      amclLatest !== undefined ? this.interpolateTfAt(this.mapPoseHistory, scanStampMs) : undefined;
+    const amclPose = this.extrapolateAtStamp(this.mapPoseHistory, scanStampMs);
     const m2o = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
-    const o2b = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
+    const o2b = this.extrapolateAtStamp(this.odomToBaseHistory, scanStampMs);
     const tfPose = m2o && o2b ? combineTransforms(m2o, o2b) : undefined;
 
     if (amclPose && tfPose) return amclAge <= o2bAge ? amclPose : tfPose;
@@ -767,6 +764,41 @@ export class RosRobotManager extends EventEmitter {
     if (tfPose) return tfPose;
     if (this.mapPose) return { ...this.mapPose };
     return this.computeMapBasePose()?.pose;
+  }
+
+  // Returns pose at stampMs. Interpolates within the buffer, extrapolates linearly
+  // forward using the last-two-samples velocity when stampMs > newest sample.
+  // Extrapolation is capped at 2s to avoid wild predictions.
+  private extrapolateAtStamp(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    stampMs: number
+  ): Pose2D | undefined {
+    const newest = buffer[buffer.length - 1];
+    if (!newest) return undefined;
+    if (stampMs <= newest.stampMs) return this.interpolateTfAt(buffer, stampMs);
+
+    const prev = buffer[buffer.length - 2];
+    if (!prev) return { x: newest.x, y: newest.y, yaw: newest.yaw };
+
+    const sampleDt = (newest.stampMs - prev.stampMs) / 1000;
+    if (sampleDt <= 0) return { x: newest.x, y: newest.y, yaw: newest.yaw };
+
+    const vx = (newest.x - prev.x) / sampleDt;
+    const vy = (newest.y - prev.y) / sampleDt;
+    let dyaw = newest.yaw - prev.yaw;
+    if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+    if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+    const omega = dyaw / sampleDt;
+
+    const extrapDt = Math.min(2, (stampMs - newest.stampMs) / 1000);
+    let yaw = newest.yaw + omega * extrapDt;
+    if (yaw > Math.PI) yaw -= 2 * Math.PI;
+    if (yaw < -Math.PI) yaw += 2 * Math.PI;
+    return {
+      x: newest.x + vx * extrapDt,
+      y: newest.y + vy * extrapDt,
+      yaw,
+    };
   }
 
   private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
