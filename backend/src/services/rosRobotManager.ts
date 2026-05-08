@@ -491,9 +491,22 @@ export class RosRobotManager extends EventEmitter {
       this.lastLoggedScanFrameId = scanFrameId ?? null;
     }
     const stampMs = rosStampToMs(raw?.header?.stamp);
-    const pose =
-      stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
-    const scanPose = pose ? { x: pose.x, y: pose.y, theta: pose.yaw } : undefined;
+    const fw = raw?.pose;
+    const fwValid =
+      fw && typeof fw.x === 'number' && typeof fw.y === 'number' && typeof fw.theta === 'number';
+    let scanPoseSource: 'firmware' | 'computed' | 'none' = 'none';
+    let scanPose: { x: number; y: number; theta: number } | undefined;
+    if (fwValid) {
+      scanPose = { x: fw.x, y: fw.y, theta: fw.theta };
+      scanPoseSource = 'firmware';
+    } else {
+      const pose =
+        stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
+      if (pose) {
+        scanPose = { x: pose.x, y: pose.y, theta: pose.yaw };
+        scanPoseSource = 'computed';
+      }
+    }
 
     const nowMs = Date.now();
     const scanInterval =
@@ -527,6 +540,7 @@ export class RosRobotManager extends EventEmitter {
           tag: 'scan-pose',
           stampMs,
           scanPose,
+          scanPoseSource,
           scanInterval,
           amclExtrapolated,
           omegaRadPerSec,
