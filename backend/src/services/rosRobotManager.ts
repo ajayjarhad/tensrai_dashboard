@@ -156,6 +156,7 @@ export class RosRobotManager extends EventEmitter {
   private odomPose?: Pose2D & { stampMs?: number };
   private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
+  private mapPoseHistory: Array<Pose2D & { stampMs: number }> = [];
   private sensorOffsetsByFrame = new Map<string, Pose2D>();
   private lastLoggedScanFrameId?: string | null;
   private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
@@ -420,6 +421,10 @@ export class RosRobotManager extends EventEmitter {
       w: ori.w ?? 1,
     });
     const nextPose = { x: pos.x ?? 0, y: pos.y ?? 0, yaw };
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    if (stampMs !== undefined) {
+      this.pushTfHistory(this.mapPoseHistory, { ...nextPose, stampMs });
+    }
     if (this.mapPose) {
       const dx = nextPose.x - this.mapPose.x;
       const dy = nextPose.y - this.mapPose.y;
@@ -494,21 +499,21 @@ export class RosRobotManager extends EventEmitter {
       this.lastScanDetailLogAt = nowMs;
       const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
       const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+      const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
       console.log(
         JSON.stringify({
           tag: 'scan-pose',
           stampMs,
-          stampSec: raw?.header?.stamp?.sec ?? raw?.header?.stamp?.secs,
-          stampNsec: raw?.header?.stamp?.nanosec ?? raw?.header?.stamp?.nsecs,
-          ageVsNow: stampMs !== undefined ? nowMs - stampMs : null,
           scanPose,
+          amclLatestStamp: amclLatest,
+          amclAgeVsScan: amclLatest && stampMs !== undefined ? amclLatest - stampMs : null,
+          amclHistLen: this.mapPoseHistory.length,
           m2oLatestStamp: m2oLatest,
           m2oAgeVsScan: m2oLatest && stampMs !== undefined ? m2oLatest - stampMs : null,
           o2bLatestStamp: o2bLatest,
           o2bAgeVsScan: o2bLatest && stampMs !== undefined ? o2bLatest - stampMs : null,
           m2oHistLen: this.mapToOdomHistory.length,
           o2bHistLen: this.odomToBaseHistory.length,
-          mapPose: this.mapPose,
         })
       );
     }
@@ -717,19 +722,50 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private resolveScanPose(scanStampMs: number): Pose2D | undefined {
+    // AMCL pose (/amcl_pose_ui) is the freshest map-frame source we have.
+    // Prefer interpolating it at scan stamp; fall back to TF composition only
+    // when AMCL history is unusable.
+    const amcl = this.interpolateAtIfFresh(this.mapPoseHistory, scanStampMs, 1500);
+    if (amcl) return amcl;
+
     const mapToOdom = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
     const odomToBase = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
-    if (mapToOdom && odomToBase) {
+    const o2bFresh = this.bracketsStamp(this.odomToBaseHistory, scanStampMs, 1500);
+    if (mapToOdom && odomToBase && o2bFresh) {
       return combineTransforms(mapToOdom, odomToBase);
     }
+    if (this.mapPose) return { ...this.mapPose };
     if (odomToBase && this.mapToOdom) {
       return combineTransforms(this.mapToOdom, odomToBase);
     }
     if (mapToOdom && this.odomPose) {
       return combineTransforms(mapToOdom, this.odomPose);
     }
-    const fallback = this.computeMapBasePose();
-    return fallback?.pose;
+    return this.computeMapBasePose()?.pose;
+  }
+
+  private interpolateAtIfFresh(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    stampMs: number,
+    maxGapMs: number
+  ): Pose2D | undefined {
+    if (!this.bracketsStamp(buffer, stampMs, maxGapMs)) return undefined;
+    return this.interpolateTfAt(buffer, stampMs);
+  }
+
+  private bracketsStamp(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    stampMs: number,
+    maxGapMs: number
+  ): boolean {
+    if (buffer.length === 0) return false;
+    const first = buffer[0];
+    const last = buffer[buffer.length - 1];
+    if (!first || !last) return false;
+    if (stampMs >= first.stampMs && stampMs <= last.stampMs) return true;
+    return (
+      Math.min(Math.abs(stampMs - first.stampMs), Math.abs(stampMs - last.stampMs)) <= maxGapMs
+    );
   }
 
   private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
