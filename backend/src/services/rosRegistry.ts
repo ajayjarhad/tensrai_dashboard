@@ -164,7 +164,17 @@ export class RosRegistry {
       const manager = new RosRobotManager(nextConfig);
       const formatErr = (e: any) =>
         e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
+      const lastErrorLogAt = new Map<string, number>();
+      const shouldLog = (key: string, intervalMs = 60_000) => {
+        const now = Date.now();
+        const last = lastErrorLogAt.get(key) ?? 0;
+        if (now - last < intervalMs) return false;
+        lastErrorLogAt.set(key, now);
+        return true;
+      };
       manager.on('error', error => {
+        const key = error instanceof Error ? error.message : String(error);
+        if (!shouldLog(key)) return;
         this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
       });
       this.managers.set(robotId, manager);
