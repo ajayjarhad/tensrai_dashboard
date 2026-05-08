@@ -93,7 +93,7 @@ services:
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       BASE_URL: ${BASE_URL:-http://localhost:5001}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports:
       - "5001:5001"
