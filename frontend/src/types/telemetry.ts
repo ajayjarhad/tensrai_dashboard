@@ -17,6 +17,7 @@ export interface LaserScan {
   frame?: string;
   laserOffset?: { x: number; y: number; yaw: number };
   scanPose?: Pose2D;
+  scanPoseSource?: 'firmware' | 'computed' | 'none';
   stampMs?: number;
 }
 

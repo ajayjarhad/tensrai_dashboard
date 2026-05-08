@@ -65,6 +65,9 @@ const normalizeAngle = (theta: number) => {
   return t;
 };
 
+const isFinitePose = (pose: Pose2D | undefined): pose is Pose2D =>
+  !!pose && Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.theta);
+
 export const useRobotTelemetryStore = create<TelemetryState>(set => ({
   telemetry: {},
 
@@ -171,12 +174,10 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           const laser = event.data as LaserScan;
           next.laser = laser;
           next.lastLaserAt = now;
-          if (laser?.scanPose) {
+          if (isFinitePose(laser?.scanPose)) {
             next.laserPose = { ...laser.scanPose };
-          } else if (next.tfPose) {
-            next.laserPose = { ...next.tfPose };
-          } else if (next.amclPose) {
-            next.laserPose = { ...next.amclPose };
+          } else {
+            delete next.laserPose;
           }
           const lastLog = lastLaserDetailLogAt.get(robotId) ?? 0;
           if (now - lastLog >= 2000) {
@@ -200,6 +201,7 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
                 stampMs: (laser as any)?.stampMs,
                 frame: laser?.frame,
                 scanPose: laser?.scanPose,
+                scanPoseSource: laser?.scanPoseSource,
                 pickedLaserPose: next.laserPose,
                 markerPose,
                 renderPoseDelta,
