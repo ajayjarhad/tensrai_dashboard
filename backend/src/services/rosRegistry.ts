@@ -162,12 +162,14 @@ export class RosRegistry {
 
       existing?.stop();
       const manager = new RosRobotManager(nextConfig);
+      const formatErr = (e: any) =>
+        e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
       manager.on('error', error => {
-        this.logger?.error({ robotId, error }, 'ROS manager error');
+        this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
       });
       this.managers.set(robotId, manager);
       manager.start().catch(error => {
-        this.logger?.error({ robotId, error }, 'Failed to start ROS manager');
+        this.logger?.error({ robotId, err: formatErr(error) }, 'Failed to start ROS manager');
       });
     }
 
