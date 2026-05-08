@@ -722,50 +722,26 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private resolveScanPose(scanStampMs: number): Pose2D | undefined {
-    // AMCL pose (/amcl_pose_ui) is the freshest map-frame source we have.
-    // Prefer interpolating it at scan stamp; fall back to TF composition only
-    // when AMCL history is unusable.
-    const amcl = this.interpolateAtIfFresh(this.mapPoseHistory, scanStampMs, 1500);
-    if (amcl) return amcl;
+    // Pick whichever source's latest stamp is closest to the scan stamp.
+    // No fixed thresholds — avoids ping-ponging between sources on every scan.
+    const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
+    const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+    const amclAge =
+      amclLatest !== undefined ? Math.abs(scanStampMs - amclLatest) : Number.POSITIVE_INFINITY;
+    const o2bAge =
+      o2bLatest !== undefined ? Math.abs(scanStampMs - o2bLatest) : Number.POSITIVE_INFINITY;
 
-    const mapToOdom = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
-    const odomToBase = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
-    const o2bFresh = this.bracketsStamp(this.odomToBaseHistory, scanStampMs, 1500);
-    if (mapToOdom && odomToBase && o2bFresh) {
-      return combineTransforms(mapToOdom, odomToBase);
-    }
+    const amclPose =
+      amclLatest !== undefined ? this.interpolateTfAt(this.mapPoseHistory, scanStampMs) : undefined;
+    const m2o = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
+    const o2b = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
+    const tfPose = m2o && o2b ? combineTransforms(m2o, o2b) : undefined;
+
+    if (amclPose && tfPose) return amclAge <= o2bAge ? amclPose : tfPose;
+    if (amclPose) return amclPose;
+    if (tfPose) return tfPose;
     if (this.mapPose) return { ...this.mapPose };
-    if (odomToBase && this.mapToOdom) {
-      return combineTransforms(this.mapToOdom, odomToBase);
-    }
-    if (mapToOdom && this.odomPose) {
-      return combineTransforms(mapToOdom, this.odomPose);
-    }
     return this.computeMapBasePose()?.pose;
-  }
-
-  private interpolateAtIfFresh(
-    buffer: Array<Pose2D & { stampMs: number }>,
-    stampMs: number,
-    maxGapMs: number
-  ): Pose2D | undefined {
-    if (!this.bracketsStamp(buffer, stampMs, maxGapMs)) return undefined;
-    return this.interpolateTfAt(buffer, stampMs);
-  }
-
-  private bracketsStamp(
-    buffer: Array<Pose2D & { stampMs: number }>,
-    stampMs: number,
-    maxGapMs: number
-  ): boolean {
-    if (buffer.length === 0) return false;
-    const first = buffer[0];
-    const last = buffer[buffer.length - 1];
-    if (!first || !last) return false;
-    if (stampMs >= first.stampMs && stampMs <= last.stampMs) return true;
-    return (
-      Math.min(Math.abs(stampMs - first.stampMs), Math.abs(stampMs - last.stampMs)) <= maxGapMs
-    );
   }
 
   private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
