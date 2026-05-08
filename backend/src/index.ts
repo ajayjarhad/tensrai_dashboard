@@ -20,8 +20,9 @@ type FastifyFactory = (options?: Record<string, unknown>) => AppFastifyInstance;
 const createFastify = fastify as unknown as FastifyFactory;
 
 const server = createFastify({
+  disableRequestLogging: true,
   logger: {
-    level: process.env['LOG_LEVEL'] ?? 'info',
+    level: process.env['LOG_LEVEL'] ?? 'warn',
     transport: {
       target: 'pino-pretty',
       options: {
@@ -32,6 +33,19 @@ const server = createFastify({
     },
   },
 });
+
+const stderrWrite = process.stderr.write.bind(process.stderr);
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+const filterRoslibNoise = (chunk: any) => {
+  if (typeof chunk === 'string' && chunk.includes('ROSLib uses utf8 encoding by default')) {
+    return true;
+  }
+  return false;
+};
+process.stderr.write = ((chunk: any, ...rest: any[]) =>
+  filterRoslibNoise(chunk) ? true : stderrWrite(chunk, ...rest)) as typeof process.stderr.write;
+process.stdout.write = ((chunk: any, ...rest: any[]) =>
+  filterRoslibNoise(chunk) ? true : stdoutWrite(chunk, ...rest)) as typeof process.stdout.write;
 
 const registerPlugins = async () => {
   await server.register(databasePlugin);
