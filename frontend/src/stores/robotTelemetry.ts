@@ -52,6 +52,7 @@ type TelemetryState = {
 };
 
 const clients = new Map<string, ReturnType<typeof createRobotWsClient>>();
+const lastLaserDetailLogAt = new Map<string, number>();
 const clientUnavailable = (): CommandDispatchResult => ({
   status: 'dropped',
   reason: 'client_unavailable',
@@ -183,14 +184,29 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           const laser = event.data as LaserScan;
           next.laser = laser;
           next.lastLaserAt = now;
-          // Pin the scan at the pose the backend resolved at scan time.
-          // Fall back to the unsmoothed TF/AMCL pose if the backend didn't attach one.
           if (laser?.scanPose) {
             next.laserPose = { ...laser.scanPose };
           } else if (next.tfPose) {
             next.laserPose = { ...next.tfPose };
           } else if (next.amclPose) {
             next.laserPose = { ...next.amclPose };
+          }
+          const lastLog = lastLaserDetailLogAt.get(robotId) ?? 0;
+          if (now - lastLog >= 2000) {
+            lastLaserDetailLogAt.set(robotId, now);
+            console.log(
+              '[laser]',
+              JSON.stringify({
+                stampMs: (laser as any)?.stampMs,
+                ageVsNow: (laser as any)?.stampMs ? now - (laser as any).stampMs : null,
+                frame: laser?.frame,
+                scanPose: laser?.scanPose,
+                tfPose: next.tfPose,
+                amclPose: next.amclPose,
+                latched: next.latchedPose,
+                pickedLaserPose: next.laserPose,
+              })
+            );
           }
         } else if (event.channel === 'waypoints') {
           next.path = event.data as PathMessage;
