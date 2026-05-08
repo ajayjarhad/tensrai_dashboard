@@ -181,17 +181,31 @@ export const useRobotTelemetryStore = create<TelemetryState>(set => ({
           const lastLog = lastLaserDetailLogAt.get(robotId) ?? 0;
           if (now - lastLog >= 2000) {
             lastLaserDetailLogAt.set(robotId, now);
+            const markerPose = next.pose;
+            const renderPoseDelta =
+              markerPose && next.laserPose
+                ? {
+                    dx: markerPose.x - next.laserPose.x,
+                    dy: markerPose.y - next.laserPose.y,
+                    dist: Math.hypot(
+                      markerPose.x - next.laserPose.x,
+                      markerPose.y - next.laserPose.y
+                    ),
+                    dTheta: normalizeAngle(markerPose.theta - next.laserPose.theta),
+                  }
+                : null;
             console.log(
               '[laser]',
               JSON.stringify({
                 stampMs: (laser as any)?.stampMs,
-                ageVsNow: (laser as any)?.stampMs ? now - (laser as any).stampMs : null,
                 frame: laser?.frame,
                 scanPose: laser?.scanPose,
+                pickedLaserPose: next.laserPose,
+                markerPose,
+                renderPoseDelta,
                 tfPose: next.tfPose,
                 amclPose: next.amclPose,
                 latched: next.latchedPose,
-                pickedLaserPose: next.laserPose,
               })
             );
           }
