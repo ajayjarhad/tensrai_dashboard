@@ -158,7 +158,7 @@ export class RosRobotManager extends EventEmitter {
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
   private sensorOffsetsByFrame = new Map<string, Pose2D>();
   private lastLoggedScanFrameId?: string | null;
-  private lastLoggedOffsetSource?: 'frame_id' | 'legacy' | 'default';
+  private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
@@ -291,6 +291,7 @@ export class RosRobotManager extends EventEmitter {
       if ((runtime.config.connectionId ?? 'default') !== connectionId) continue;
       if (runtime.config.direction !== 'subscribe') continue;
       runtime.unsubscribe?.();
+      let firstRawSeen = false;
       const throttled = createLatestThrottle(runtime.config.rateLimitHz, (data: unknown) => {
         runtime.lastMessageAt = Date.now();
         let processed = data;
@@ -307,10 +308,25 @@ export class RosRobotManager extends EventEmitter {
           typeof rateHz === 'number' && rateHz > 0
             ? Math.max(1, Math.floor(1000 / rateHz))
             : undefined;
+        console.log(
+          JSON.stringify({
+            tag: 'sub',
+            channel: name,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId,
+          })
+        );
         const unsubscribe = connection.subscribe(
           runtime.config.topic,
           runtime.config.msgType,
-          d => throttled(d),
+          d => {
+            if (!firstRawSeen) {
+              firstRawSeen = true;
+              console.log(JSON.stringify({ tag: 'msg-first', channel: name }));
+            }
+            throttled(d);
+          },
           {
             throttleRateMs,
             queueLength: 1,
@@ -320,6 +336,13 @@ export class RosRobotManager extends EventEmitter {
         runtime.errorCount = 0;
       } catch (error) {
         runtime.errorCount += 1;
+        console.log(
+          JSON.stringify({
+            tag: 'sub-error',
+            channel: name,
+            error: (error as Error).message,
+          })
+        );
         this.emit('error', error as Error);
       }
     }
@@ -408,7 +431,19 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private processLaser(raw: any) {
-    if (!raw?.ranges || !Array.isArray(raw.ranges)) return raw;
+    if (!raw?.ranges || !Array.isArray(raw.ranges)) {
+      if (!this.lastLoggedOffsetSource) {
+        console.log(
+          JSON.stringify({
+            tag: 'laser-skip',
+            reason: 'no-ranges',
+            keys: raw && typeof raw === 'object' ? Object.keys(raw) : null,
+          })
+        );
+        this.lastLoggedOffsetSource = 'default';
+      }
+      return raw;
+    }
 
     const { ranges, angle_increment } = raw;
     const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
@@ -418,13 +453,20 @@ export class RosRobotManager extends EventEmitter {
     }
 
     const scanFrameId = typeof raw?.header?.frame_id === 'string' ? raw.header.frame_id : undefined;
-    const frameOffset = scanFrameId ? this.sensorOffsetsByFrame.get(scanFrameId) : undefined;
+    const scanInBaseFrame = scanFrameId !== undefined && this.baseFrames.includes(scanFrameId);
+    const frameOffset = scanInBaseFrame
+      ? { x: 0, y: 0, yaw: 0 }
+      : scanFrameId
+        ? this.sensorOffsetsByFrame.get(scanFrameId)
+        : undefined;
     const offset = frameOffset ?? this.laserToBase ?? this.laserOffset;
-    const offsetSource: 'frame_id' | 'legacy' | 'default' = frameOffset
-      ? 'frame_id'
-      : this.laserToBase
-        ? 'legacy'
-        : 'default';
+    const offsetSource: 'identity' | 'frame_id' | 'legacy' | 'default' = scanInBaseFrame
+      ? 'identity'
+      : frameOffset
+        ? 'frame_id'
+        : this.laserToBase
+          ? 'legacy'
+          : 'default';
     if (
       offsetSource !== this.lastLoggedOffsetSource ||
       (scanFrameId ?? null) !== (this.lastLoggedScanFrameId ?? null)
