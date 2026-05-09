@@ -12,10 +12,22 @@ type ChannelRuntime = {
   lastMessageAt?: number;
 };
 
+type ScanPoseSource = 'firmware' | 'sidecar' | 'computed' | 'none';
+type ScanPose2D = { x: number; y: number; theta: number };
+type ScanPoseSidecar = ScanPose2D & { stampMs?: number; receivedAtMs: number };
+type PendingLaserScan = { raw: any; timeout: NodeJS.Timeout };
+
 const DEFAULT_LASER_OFFSET = { x: 0.12, y: 0, yaw: 0 };
 const AMCL_MIN_DELTA_POS = 0.05;
 const AMCL_MIN_DELTA_YAW = 0.05;
 const _SCAN_POSE_MAX_DRIFT_MS = 100;
+const SCAN_POSE_BUFFER_MS = 60_000;
+const SCAN_POSE_MAX_BUFFER = 600;
+const SCAN_POSE_MATCH_TIMEOUT_MS = (() => {
+  const raw = Number(process.env['ROS_SCAN_POSE_MATCH_TIMEOUT_MS'] ?? 500);
+  if (!Number.isFinite(raw) || raw < 0) return 500;
+  return Math.min(5000, Math.floor(raw));
+})();
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
 // Teleop safety defaults
@@ -46,6 +58,24 @@ const rosStampToMs = (stamp: any): number | undefined => {
   if (sec === undefined || nanosec === undefined) return undefined;
   const ms = sec * 1000 + nanosec / 1e6;
   return Number.isFinite(ms) ? ms : undefined;
+};
+
+const rosStampToKey = (stamp: any): string | undefined => {
+  if (!stamp || typeof stamp !== 'object') return undefined;
+  const sec =
+    typeof stamp.sec === 'number'
+      ? stamp.sec
+      : typeof stamp.secs === 'number'
+        ? stamp.secs
+        : undefined;
+  const nanosec =
+    typeof stamp.nanosec === 'number'
+      ? stamp.nanosec
+      : typeof stamp.nsecs === 'number'
+        ? stamp.nsecs
+        : undefined;
+  if (sec === undefined || nanosec === undefined) return undefined;
+  return Number.isFinite(sec) && Number.isFinite(nanosec) ? `${sec}:${nanosec}` : undefined;
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -167,6 +197,8 @@ export class RosRobotManager extends EventEmitter {
   private lastScanDetailLogAt = 0;
   private lastScanStampMs?: number;
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
+  private scanPoseByStamp = new Map<string, ScanPoseSidecar>();
+  private pendingLaserByStamp = new Map<string, PendingLaserScan>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
   private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
@@ -251,6 +283,7 @@ export class RosRobotManager extends EventEmitter {
   stop() {
     this.sendZeroTeleopIfNeeded();
     this.cleanupTfSubscriptions();
+    this.clearPendingLaserScans();
     for (const runtime of this.channels.values()) {
       runtime.unsubscribe?.();
       runtime.unsubscribe = undefined;
@@ -303,11 +336,11 @@ export class RosRobotManager extends EventEmitter {
         runtime.lastMessageAt = Date.now();
         let processed = data;
         if (name === 'laser') processed = this.processLaser(data as any);
+        else if (name === 'scanPose') processed = this.processScanPose(data as any);
         else if (name === 'odom') processed = this.processOdom(data as any);
         else if (name === 'amcl') processed = this.processAmcl(data as any);
-        const sanitized = sanitizeChannelPayload(name, processed);
-        this.latestChannelData.set(name, sanitized);
-        this.emit('channel-data', { channel: name, data: sanitized });
+        if (processed === undefined) return;
+        this.emitChannelData(name, processed);
       });
       try {
         const rateHz = runtime.config.rateLimitHz;
@@ -399,6 +432,12 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
+  private emitChannelData(channelName: string, processed: unknown) {
+    const sanitized = sanitizeChannelPayload(channelName, processed);
+    this.latestChannelData.set(channelName, sanitized);
+    this.emit('channel-data', { channel: channelName, data: sanitized });
+  }
+
   private processOdom(raw: any) {
     if (!raw?.pose?.pose) return raw;
     const pos = raw.pose.pose.position ?? {};
@@ -441,7 +480,87 @@ export class RosRobotManager extends EventEmitter {
     return raw;
   }
 
-  private processLaser(raw: any) {
+  private processScanPose(raw: any) {
+    const stampKey = rosStampToKey(raw?.header?.stamp);
+    if (!stampKey) return undefined;
+    const scanPose = this.extractScanPose(raw);
+    if (!scanPose) return undefined;
+
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    this.scanPoseByStamp.set(stampKey, { ...scanPose, stampMs, receivedAtMs: Date.now() });
+    this.pruneScanPoseBuffer();
+
+    const pending = this.pendingLaserByStamp.get(stampKey);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      this.pendingLaserByStamp.delete(stampKey);
+      const processed = this.processLaser(pending.raw, { allowDefer: false });
+      if (processed !== undefined) this.emitChannelData('laser', processed);
+    }
+
+    return undefined;
+  }
+
+  private extractScanPose(raw: any): ScanPose2D | undefined {
+    return (
+      this.pickScanPose(raw) ??
+      this.pickScanPose(raw?.pose) ??
+      this.pickPoseStamped(raw?.pose) ??
+      this.pickPoseStamped(raw?.pose?.pose) ??
+      this.pickPoseStamped(raw)
+    );
+  }
+
+  private pickScanPose(value: any): ScanPose2D | undefined {
+    const theta = value?.theta ?? value?.yaw;
+    if (isFiniteNumber(value?.x) && isFiniteNumber(value?.y) && isFiniteNumber(theta)) {
+      return { x: value.x, y: value.y, theta };
+    }
+    return undefined;
+  }
+
+  private pickPoseStamped(value: any): ScanPose2D | undefined {
+    const pos = value?.position;
+    const ori = value?.orientation;
+    if (!pos || !ori || !isFiniteNumber(pos.x) || !isFiniteNumber(pos.y)) return undefined;
+    const theta = quaternionToYaw({
+      x: ori.x ?? 0,
+      y: ori.y ?? 0,
+      z: ori.z ?? 0,
+      w: ori.w ?? 1,
+    });
+    return Number.isFinite(theta) ? { x: pos.x, y: pos.y, theta } : undefined;
+  }
+
+  private pruneScanPoseBuffer() {
+    const cutoff = Date.now() - SCAN_POSE_BUFFER_MS;
+    for (const [stampKey, sample] of this.scanPoseByStamp.entries()) {
+      if (sample.receivedAtMs >= cutoff && this.scanPoseByStamp.size <= SCAN_POSE_MAX_BUFFER) break;
+      this.scanPoseByStamp.delete(stampKey);
+    }
+  }
+
+  private deferLaserUntilPose(raw: any, stampKey: string) {
+    if (SCAN_POSE_MATCH_TIMEOUT_MS <= 0) return false;
+    const previous = this.pendingLaserByStamp.get(stampKey);
+    if (previous) clearTimeout(previous.timeout);
+    const timeout = setTimeout(() => {
+      this.pendingLaserByStamp.delete(stampKey);
+      const processed = this.processLaser(raw, { allowDefer: false });
+      if (processed !== undefined) this.emitChannelData('laser', processed);
+    }, SCAN_POSE_MATCH_TIMEOUT_MS);
+    this.pendingLaserByStamp.set(stampKey, { raw, timeout });
+    return true;
+  }
+
+  private clearPendingLaserScans() {
+    for (const pending of this.pendingLaserByStamp.values()) {
+      clearTimeout(pending.timeout);
+    }
+    this.pendingLaserByStamp.clear();
+  }
+
+  private processLaser(raw: any, options: { allowDefer?: boolean } = {}) {
     if (!raw?.ranges || !Array.isArray(raw.ranges)) {
       if (!this.lastLoggedOffsetSource) {
         console.log(
@@ -495,13 +614,21 @@ export class RosRobotManager extends EventEmitter {
       this.lastLoggedScanFrameId = scanFrameId ?? null;
     }
     const stampMs = rosStampToMs(raw?.header?.stamp);
+    const stampKey = rosStampToKey(raw?.header?.stamp);
     const fw = raw?.pose;
     const fwValid = fw && isFiniteNumber(fw.x) && isFiniteNumber(fw.y) && isFiniteNumber(fw.theta);
-    let scanPoseSource: 'firmware' | 'computed' | 'none' = 'none';
-    let scanPose: { x: number; y: number; theta: number } | undefined;
+    const sidecarPose = stampKey ? this.scanPoseByStamp.get(stampKey) : undefined;
+    let scanPoseSource: ScanPoseSource = 'none';
+    let scanPose: ScanPose2D | undefined;
     if (fwValid) {
       scanPose = { x: fw.x, y: fw.y, theta: fw.theta };
       scanPoseSource = 'firmware';
+    } else if (sidecarPose) {
+      scanPose = { x: sidecarPose.x, y: sidecarPose.y, theta: sidecarPose.theta };
+      scanPoseSource = 'sidecar';
+    } else if ((options.allowDefer ?? true) && stampKey && this.channels.has('scanPose')) {
+      this.deferLaserUntilPose(raw, stampKey);
+      return undefined;
     } else {
       const pose =
         stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;

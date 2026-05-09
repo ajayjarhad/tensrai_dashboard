@@ -52,11 +52,13 @@ const parseMsgTypeOverride = (envKey: string) => {
 const rateLimitOverrides: Record<string, number> = {
   odom: parseRateLimit('ROS_ODOM_RATE_HZ', 8),
   laser: parseRateLimit('ROS_LASER_RATE_HZ', 3),
+  scanPose: parseRateLimit('ROS_SCAN_POSE_RATE_HZ', 10),
   amcl: parseRateLimit('ROS_AMCL_RATE_HZ', 4),
 };
 
 const msgTypeOverrides: Record<string, string | undefined> = {
   laser: parseMsgTypeOverride('ROS_LASER_MSG_TYPE'),
+  scanPose: parseMsgTypeOverride('ROS_SCAN_POSE_MSG_TYPE'),
 };
 
 const normalizeChannels = (channels: any[] | undefined) => {
@@ -83,6 +85,17 @@ const defaultChannels = [
     direction: 'subscribe',
     rateLimitHz: 10,
   },
+  ...(msgTypeOverrides.scanPose
+    ? [
+        {
+          name: 'scanPose',
+          topic: '/scan_pose_ui',
+          msgType: msgTypeOverrides.scanPose,
+          direction: 'subscribe',
+          rateLimitHz: rateLimitOverrides.scanPose,
+        },
+      ]
+    : []),
   {
     name: 'waypoints',
     topic: '/plan_ui',
