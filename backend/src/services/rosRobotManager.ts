@@ -195,6 +195,9 @@ export class RosRobotManager extends EventEmitter {
   private lastLoggedScanFrameId?: string | null;
   private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
   private lastScanDetailLogAt = 0;
+  private lastScanPoseSidecarLogAt = 0;
+  private lastScanPoseWaitLogAt = 0;
+  private lastScanPoseTimeoutLogAt = 0;
   private lastScanStampMs?: number;
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
   private scanPoseByStamp = new Map<string, ScanPoseSidecar>();
@@ -487,10 +490,25 @@ export class RosRobotManager extends EventEmitter {
     if (!scanPose) return undefined;
 
     const stampMs = rosStampToMs(raw?.header?.stamp);
-    this.scanPoseByStamp.set(stampKey, { ...scanPose, stampMs, receivedAtMs: Date.now() });
+    const nowMs = Date.now();
+    this.scanPoseByStamp.set(stampKey, { ...scanPose, stampMs, receivedAtMs: nowMs });
     this.pruneScanPoseBuffer();
 
     const pending = this.pendingLaserByStamp.get(stampKey);
+    if (nowMs - this.lastScanPoseSidecarLogAt >= 2000) {
+      this.lastScanPoseSidecarLogAt = nowMs;
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose-sidecar',
+          stampMs,
+          stampKey,
+          scanPose,
+          pendingMatched: !!pending,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+        })
+      );
+    }
     if (pending) {
       clearTimeout(pending.timeout);
       this.pendingLaserByStamp.delete(stampKey);
@@ -522,7 +540,9 @@ export class RosRobotManager extends EventEmitter {
   private pickPoseStamped(value: any): ScanPose2D | undefined {
     const pos = value?.position;
     const ori = value?.orientation;
-    if (!pos || !ori || !isFiniteNumber(pos.x) || !isFiniteNumber(pos.y)) return undefined;
+    if (!pos || !isFiniteNumber(pos.x) || !isFiniteNumber(pos.y)) return undefined;
+    if (isFiniteNumber(pos.z)) return { x: pos.x, y: pos.y, theta: pos.z };
+    if (!ori) return undefined;
     const theta = quaternionToYaw({
       x: ori.x ?? 0,
       y: ori.y ?? 0,
@@ -544,8 +564,39 @@ export class RosRobotManager extends EventEmitter {
     if (SCAN_POSE_MATCH_TIMEOUT_MS <= 0) return false;
     const previous = this.pendingLaserByStamp.get(stampKey);
     if (previous) clearTimeout(previous.timeout);
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    const nowMs = Date.now();
+    if (nowMs - this.lastScanPoseWaitLogAt >= 2000) {
+      this.lastScanPoseWaitLogAt = nowMs;
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose-wait',
+          reason: 'sidecar-not-yet-received',
+          stampMs,
+          stampKey,
+          waitMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+        })
+      );
+    }
     const timeout = setTimeout(() => {
       this.pendingLaserByStamp.delete(stampKey);
+      const timeoutNowMs = Date.now();
+      if (timeoutNowMs - this.lastScanPoseTimeoutLogAt >= 2000) {
+        this.lastScanPoseTimeoutLogAt = timeoutNowMs;
+        console.log(
+          JSON.stringify({
+            tag: 'scan-pose-timeout',
+            reason: 'sidecar-match-timeout',
+            stampMs,
+            stampKey,
+            waitedMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+            sidecarBufferSize: this.scanPoseByStamp.size,
+            pendingLaserCount: this.pendingLaserByStamp.size,
+          })
+        );
+      }
       const processed = this.processLaser(raw, { allowDefer: false });
       if (processed !== undefined) this.emitChannelData('laser', processed);
     }, SCAN_POSE_MATCH_TIMEOUT_MS);
@@ -669,8 +720,16 @@ export class RosRobotManager extends EventEmitter {
         JSON.stringify({
           tag: 'scan-pose',
           stampMs,
+          stampKey,
           scanPose,
           scanPoseSource,
+          scanPoseChannelEnabled: this.channels.has('scanPose'),
+          sidecarAvailable: !!sidecarPose,
+          sidecarStampMs: sidecarPose?.stampMs ?? null,
+          sidecarAgeMs: sidecarPose ? nowMs - sidecarPose.receivedAtMs : null,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+          scanPoseMatchTimeoutMs: SCAN_POSE_MATCH_TIMEOUT_MS,
           scanInterval,
           amclExtrapolated,
           omegaRadPerSec,

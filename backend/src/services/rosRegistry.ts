@@ -33,6 +33,7 @@ const normalizeMsgType = (msgType: string) => {
     'nav_msgs/Path': 'nav_msgs/msg/Path',
     'std_msgs/String': 'std_msgs/msg/String',
     'geometry_msgs/Twist': 'geometry_msgs/msg/Twist',
+    'geometry_msgs/PoseStamped': 'geometry_msgs/msg/PoseStamped',
     'geometry_msgs/PoseWithCovarianceStamped': 'geometry_msgs/msg/PoseWithCovarianceStamped',
   };
   return map[msgType] ?? msgType;
@@ -85,17 +86,13 @@ const defaultChannels = [
     direction: 'subscribe',
     rateLimitHz: 10,
   },
-  ...(msgTypeOverrides.scanPose
-    ? [
-        {
-          name: 'scanPose',
-          topic: '/scan_pose_ui',
-          msgType: msgTypeOverrides.scanPose,
-          direction: 'subscribe',
-          rateLimitHz: rateLimitOverrides.scanPose,
-        },
-      ]
-    : []),
+  {
+    name: 'scanPose',
+    topic: '/scan_pose_ui',
+    msgType: msgTypeOverrides.scanPose ?? 'geometry_msgs/msg/PoseStamped',
+    direction: 'subscribe',
+    rateLimitHz: rateLimitOverrides.scanPose,
+  },
   {
     name: 'waypoints',
     topic: '/plan_ui',
