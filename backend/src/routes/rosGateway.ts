@@ -242,6 +242,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
       return;
     }
 
+    fastify.log.info({ robotId }, 'Dashboard client connected to mission websocket');
+
     let closed = false;
 
     const stringifyMessage = (data: unknown) => {
@@ -299,12 +301,25 @@ const rosGateway = async (fastify: FastifyInstance) => {
       const parsed = parseRobotMissionCommand(rawMessage);
 
       if (parsed?.event && isMissionControlEvent(parsed.event)) {
+        fastify.log.info(
+          { robotId, event: parsed.event, commandId: parsed.commandId ?? null },
+          'Forwarding dashboard mission command to mission bridge'
+        );
         const serializedCommand = JSON.stringify({
           event: parsed.event,
           payload: withMissionCommandId(parsed.payload, parsed.commandId),
         });
         const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
         if (!sendResult.ok) {
+          fastify.log.warn(
+            {
+              robotId,
+              event: parsed.event,
+              commandId: parsed.commandId ?? null,
+              error: sendResult.error ?? 'Mission bridge not connected',
+            },
+            'Mission command could not be forwarded to mission bridge'
+          );
           const failureAck = buildMissionFailureAck(
             parsed.event,
             withMissionCommandId(parsed.payload, parsed.commandId),
@@ -342,6 +357,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
 
     clientSocket.on('close', () => {
+      fastify.log.info({ robotId }, 'Dashboard client disconnected from mission websocket');
       closeClient();
     });
 

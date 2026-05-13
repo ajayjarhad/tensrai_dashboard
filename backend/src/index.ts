@@ -57,6 +57,11 @@ console.warn = wrapConsole(console.warn.bind(console));
 console.error = wrapConsole(console.error.bind(console));
 console.info = wrapConsole(console.info.bind(console));
 
+const formatStartupError = (error: unknown) =>
+  error instanceof Error
+    ? { message: error.message, name: error.name, stack: error.stack }
+    : { message: String(error), raw: error };
+
 const registerPlugins = async () => {
   await server.register(databasePlugin);
   const emergencyRegistry = new EmergencyRegistry(server.prisma, server.log);
@@ -67,10 +72,13 @@ const registerPlugins = async () => {
   });
   server.decorate('missionRegistry', missionRegistry);
   await emergencyRegistry.reloadFromDb().catch(error => {
-    server.log.error({ error }, 'Failed to load emergency registry from DB');
+    server.log.error(
+      { err: formatStartupError(error) },
+      'Failed to load emergency registry from DB'
+    );
   });
   await missionRegistry.reloadFromDb().catch(error => {
-    server.log.error({ error }, 'Failed to load mission registry from DB');
+    server.log.error({ err: formatStartupError(error) }, 'Failed to load mission registry from DB');
   });
   server.addHook('onClose', async () => {
     emergencyRegistry.stop();
