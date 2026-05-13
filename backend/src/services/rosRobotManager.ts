@@ -299,27 +299,70 @@ export class RosRobotManager extends EventEmitter {
 
   handleCommand(channelName: string, payload: unknown): { ok: boolean; error?: string } {
     const runtime = this.channels.get(channelName);
-    if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}` };
+    if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}`, channelName };
     if (runtime.config.direction !== 'publish')
-      return { ok: false, error: `Channel ${channelName} is not publishable` };
+      return {
+        ok: false,
+        error: `Channel ${channelName} is not publishable`,
+        channelName,
+        topic: runtime.config.topic,
+        direction: runtime.config.direction,
+        connectionId: runtime.config.connectionId ?? 'default',
+      };
 
     let outgoing = payload;
     if (channelName === 'teleop') {
       const result = validateAndClampTeleop(payload, this.teleopLimits);
-      if (!result.ok) return { ok: false, error: result.error };
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error,
+          channelName,
+          topic: runtime.config.topic,
+          connectionId: runtime.config.connectionId ?? 'default',
+        };
+      }
       outgoing = result.value;
       this.armTeleopWatchdog(runtime.config);
     }
 
     const connection = this.getConnectionForChannel(runtime.config);
-    if (!connection) return { ok: false, error: `No connection for channel ${channelName}` };
+    if (!connection) {
+      return {
+        ok: false,
+        error: `No connection for channel ${channelName}`,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+      };
+    }
+    const connectionStatusBefore = connection.getDebugStatus?.() ?? {
+      connected: connection.isConnected(),
+      url: connection.url,
+    };
     try {
       connection.publish(runtime.config.topic, runtime.config.msgType, outgoing as object);
-      return { ok: true };
+      return {
+        ok: true,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+      };
     } catch (error) {
       runtime.errorCount += 1;
       this.emit('error', error as Error);
-      return { ok: false, error: (error as Error).message };
+      return {
+        ok: false,
+        error: (error as Error).message,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+      };
     }
   }
 
@@ -1086,5 +1129,27 @@ export class RosRobotManager extends EventEmitter {
       channel,
       data,
     }));
+  }
+
+  getStatus() {
+    return {
+      id: (this.config as any).id,
+      started: this.started,
+      connections: Array.from(this.connections.entries()).map(([id, connection]) => ({
+        id,
+        url: connection.url,
+        connected: connection.isConnected(),
+        ...(connection.getDebugStatus?.() ?? {}),
+      })),
+      channels: Array.from(this.channels.entries()).map(([name, runtime]) => ({
+        name,
+        topic: runtime.config.topic,
+        direction: runtime.config.direction,
+        connectionId: runtime.config.connectionId ?? 'default',
+        errorCount: runtime.errorCount,
+        lastMessageAt: runtime.lastMessageAt,
+      })),
+      latestChannels: Array.from(this.latestChannelData.keys()),
+    };
   }
 }

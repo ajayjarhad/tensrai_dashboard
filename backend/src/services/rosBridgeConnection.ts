@@ -68,7 +68,8 @@ export class RosBridgeConnection extends EventEmitter {
   }
 
   async connect(): Promise<void> {
-    if (this.closed || this.connecting || this.ros) return;
+    if (this.closed || this.connecting || this.isConnected()) return;
+    this.closeStaleRos();
     this.connecting = true;
 
     await new Promise<void>((resolve, reject) => {
@@ -164,7 +165,9 @@ export class RosBridgeConnection extends EventEmitter {
     handler: (message: T) => void,
     options?: SubscribeOptions
   ): () => void {
-    if (!this.ros) {
+    if (!this.isConnected()) {
+      this.closeStaleRos();
+      this.scheduleReconnect();
       throw new Error(`ROS connection ${this.options.id} not ready`);
     }
 
@@ -184,7 +187,9 @@ export class RosBridgeConnection extends EventEmitter {
   }
 
   publish<T>(topicName: string, messageType: string, message: T) {
-    if (!this.ros) {
+    if (!this.isConnected()) {
+      this.closeStaleRos();
+      this.scheduleReconnect();
       throw new Error(`ROS connection ${this.options.id} not ready`);
     }
 
@@ -212,11 +217,24 @@ export class RosBridgeConnection extends EventEmitter {
   }
 
   isConnected() {
-    return this.ros !== null;
+    return Boolean(this.ros && (this.ros as any).isConnected === true);
+  }
+
+  getDebugStatus() {
+    const socket = (this.ros as any)?.socket;
+    return {
+      id: this.options.id,
+      url: this.options.url,
+      connected: this.isConnected(),
+      hasRos: Boolean(this.ros),
+      connecting: this.connecting,
+      socketReadyState: socket?.readyState ?? null,
+      bufferedAmount: socket?.bufferedAmount ?? null,
+    };
   }
 
   private scheduleReconnect() {
-    if (this.closed || this.connecting || this.ros) return;
+    if (this.closed || this.connecting || this.isConnected()) return;
 
     const delay = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
     this.reconnectDelayMs = delay;
@@ -234,5 +252,19 @@ export class RosBridgeConnection extends EventEmitter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
+  }
+
+  private closeStaleRos() {
+    if (!this.ros) return;
+    const staleRos = this.ros;
+    this.ros = null;
+    this.publishers.clear();
+    this.emit(
+      'error',
+      new Error(`ROS connection ${this.options.id} stale; closing before reconnect`)
+    );
+    try {
+      staleRos.close();
+    } catch {}
   }
 }
