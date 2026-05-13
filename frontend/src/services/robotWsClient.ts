@@ -2,7 +2,7 @@ import { resolveWsBaseUrl } from '@/lib/api';
 
 type WsEvent =
   | { type: 'event'; channel: string; data: unknown }
-  | { type: 'error'; channel?: string; message: string }
+  | { type: 'error'; channel?: string; requestId?: string; message: string }
   | { type: 'response'; channel: string; requestId?: string; data: unknown };
 
 type EventHandler = (event: WsEvent) => void;
@@ -13,10 +13,16 @@ export type CommandDispatchStatus = 'sent' | 'queued' | 'dropped';
 export type CommandDispatchResult = {
   status: CommandDispatchStatus;
   reason?: string;
+  commandId?: string;
 };
 
 const MAX_OUTBOUND_QUEUE = 100;
 const BUFFERED_COMMAND_CHANNELS = new Set(['mode', 'initialpose', 'emergency']);
+const COMMAND_LOG_INTERVAL_MS = (() => {
+  const raw = Number(import.meta.env['VITE_ROS_COMMAND_LOG_INTERVAL_MS'] ?? 2000);
+  if (!Number.isFinite(raw) || raw < 0) return 2000;
+  return raw;
+})();
 
 export const createRobotWsClient = (robotId: string) => {
   let socket: WebSocket | null = null;
@@ -28,6 +34,7 @@ export const createRobotWsClient = (robotId: string) => {
   const outboundQueue: string[] = [];
   const eventHandlers = new Set<EventHandler>();
   const statusHandlers = new Set<StatusHandler>();
+  const lastCommandLogAt = new Map<string, number>();
 
   const wsUrl = `${resolveWsBaseUrl()}/ws/robots/${robotId}/telemetry/${encodeURIComponent(
     `telemetry-${robotId}`
@@ -57,13 +64,46 @@ export const createRobotWsClient = (robotId: string) => {
     }, 8000);
   };
 
-  const enqueueOutbound = (payload: string): CommandDispatchResult => {
+  const createCommandId = (channel: string) => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `${robotId}:${channel}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  };
+
+  const logCommandDispatch = (
+    channel: string,
+    commandId: string,
+    dispatchStatus: CommandDispatchStatus,
+    reason?: string
+  ) => {
+    const now = Date.now();
+    const shouldThrottle = channel === 'teleop' && dispatchStatus === 'sent';
+    const last = lastCommandLogAt.get(channel) ?? 0;
+    if (shouldThrottle && now - last < COMMAND_LOG_INTERVAL_MS) return;
+    lastCommandLogAt.set(channel, now);
+    console.info(
+      '[ros-bridge-command]',
+      JSON.stringify({
+        robotId,
+        channel,
+        commandId,
+        status: dispatchStatus,
+        reason,
+        connectionStatus: status,
+        socketReadyState: socket?.readyState ?? null,
+        bufferedAmount: socket?.bufferedAmount ?? null,
+      })
+    );
+  };
+
+  const enqueueOutbound = (payload: string, commandId?: string): CommandDispatchResult => {
     if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
       // Drop oldest buffered command so the queue remains bounded during long disconnects.
       outboundQueue.shift();
     }
     outboundQueue.push(payload);
-    return { status: 'queued' };
+    return { status: 'queued', ...(commandId ? { commandId } : {}) };
   };
 
   const flushOutbound = () => {
@@ -155,37 +195,58 @@ export const createRobotWsClient = (robotId: string) => {
   };
 
   const sendCommand = (channel: string, data: unknown): CommandDispatchResult => {
+    const commandId = createCommandId(channel);
     if (!shouldReconnect) {
-      return { status: 'dropped', reason: 'client_disconnected' };
+      logCommandDispatch(channel, commandId, 'dropped', 'client_disconnected');
+      return { status: 'dropped', reason: 'client_disconnected', commandId };
     }
 
     const canBuffer = BUFFERED_COMMAND_CHANNELS.has(channel);
-    const payload = JSON.stringify({ type: 'command', channel, data });
+    const payload = JSON.stringify({
+      type: 'command',
+      channel,
+      commandId,
+      sentAtMs: Date.now(),
+      data,
+    });
 
     if (!socket) {
       connect();
-      return canBuffer
-        ? enqueueOutbound(payload)
-        : { status: 'dropped', reason: 'socket_not_ready' };
+      const result = canBuffer
+        ? enqueueOutbound(payload, commandId)
+        : ({ status: 'dropped', reason: 'socket_not_ready', commandId } as CommandDispatchResult);
+      logCommandDispatch(channel, commandId, result.status, result.reason);
+      return result;
     }
 
     if (socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(payload);
-        return { status: 'sent' };
+        logCommandDispatch(channel, commandId, 'sent');
+        return { status: 'sent', commandId };
       } catch {
-        return canBuffer ? enqueueOutbound(payload) : { status: 'dropped', reason: 'send_failed' };
+        const result = canBuffer
+          ? enqueueOutbound(payload, commandId)
+          : ({ status: 'dropped', reason: 'send_failed', commandId } as CommandDispatchResult);
+        logCommandDispatch(channel, commandId, result.status, result.reason);
+        return result;
       }
     }
 
     if (socket.readyState === WebSocket.CONNECTING) {
-      return canBuffer
-        ? enqueueOutbound(payload)
-        : { status: 'dropped', reason: 'socket_connecting' };
+      const result = canBuffer
+        ? enqueueOutbound(payload, commandId)
+        : ({ status: 'dropped', reason: 'socket_connecting', commandId } as CommandDispatchResult);
+      logCommandDispatch(channel, commandId, result.status, result.reason);
+      return result;
     }
 
     connect();
-    return canBuffer ? enqueueOutbound(payload) : { status: 'dropped', reason: 'socket_not_open' };
+    const result = canBuffer
+      ? enqueueOutbound(payload, commandId)
+      : ({ status: 'dropped', reason: 'socket_not_open', commandId } as CommandDispatchResult);
+    logCommandDispatch(channel, commandId, result.status, result.reason);
+    return result;
   };
 
   const addEventListener = (handler: EventHandler) => {
