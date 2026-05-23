@@ -31,6 +31,7 @@ interface MapStageProps {
     | {
         pose?: Pose2D;
         laser?: LaserScan;
+        laserPose?: Pose2D;
         path?: PathMessage;
       }
     | null
@@ -129,6 +130,7 @@ export function MapStage({
     laser: telemetry?.laser,
     path: telemetry?.path,
     robotPose: activeRobotPose,
+    laserPose: telemetry?.laserPose,
     stageScale,
   });
 

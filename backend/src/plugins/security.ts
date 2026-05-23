@@ -126,16 +126,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
 
   fastify.addHook('onRequest', async (request: AppFastifyRequest) => {
     const userAgent = request.headers['user-agent'] || '';
-    const suspiciousPatterns = [
-      /sqlmap/i,
-      /nmap/i,
-      /nikto/i,
-      /dirb/i,
-      /gobuster/i,
-      /curl/i,
-      /wget/i,
-    ];
-
+    const suspiciousPatterns = [/sqlmap/i, /nmap/i, /nikto/i, /dirb/i, /gobuster/i];
     const isSuspicious = suspiciousPatterns.some(pattern => pattern.test(userAgent));
 
     if (isSuspicious) {
@@ -144,7 +135,6 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
           ip: request.ip,
           userAgent,
           url: request.url,
-          timestamp: new Date().toISOString(),
         },
         'Suspicious user agent detected'
       );

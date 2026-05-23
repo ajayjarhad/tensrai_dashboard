@@ -1,4 +1,3 @@
-import type Konva from 'konva';
 import type { TempLocation } from '../../hooks/useMapLocations';
 import { LocationPin } from '../LocationPin';
 
@@ -7,10 +6,7 @@ interface LocationLayerProps {
   setPoseMode: boolean;
   highlightTagIds?: Set<string>;
   dimNonMissionTags?: boolean;
-  onLocationSelect: (
-    location: TempLocation,
-    evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>
-  ) => void;
+  onLocationSelect: (location: TempLocation) => void;
 }
 
 export function LocationLayer({
@@ -25,13 +21,11 @@ export function LocationLayer({
       {locations.map(loc => {
         const isHighlighted = highlightTagIds ? highlightTagIds.has(loc.id) : true;
         const isDimmed = dimNonMissionTags && !isHighlighted;
+        const isInteractive = !isDimmed && !setPoseMode;
 
-        const handleLocationSelect = (evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
-          if (isDimmed) return;
-          if (setPoseMode) {
-            if (evt) evt.cancelBubble = true;
-          }
-          onLocationSelect(loc, evt);
+        const handleClick = () => {
+          if (!isInteractive) return;
+          onLocationSelect(loc);
         };
 
         return (
@@ -43,10 +37,10 @@ export function LocationLayer({
             name="location-pin"
             color={isDimmed ? '#6b7280' : '#01FF01'}
             opacity={isDimmed ? 0.35 : 1}
-            listening={!isDimmed}
+            listening={isInteractive}
             {...(setPoseMode ? { hitRadius: 0 } : {})}
-            onClick={handleLocationSelect}
-            onTap={handleLocationSelect}
+            onClick={handleClick}
+            onTap={handleClick}
           />
         );
       })}

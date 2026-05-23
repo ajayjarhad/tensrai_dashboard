@@ -129,14 +129,17 @@ export function MapLayers({
     if (!pixel) return;
     const clamped = clampPixelToBounds(pixel, transforms);
     setPendingPose(prev => ({
-      source: 'manual',
       pixel: clamped,
-      theta: prev?.source === 'manual' ? prev.theta : 0,
+      theta: prev?.theta ?? 0,
       showConfirm: false,
     }));
   }, [pointerToMapPixel, transforms]);
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (setPoseMode) {
+      handleSetPoseModeClick();
+      return;
+    }
     const target = e.target;
     const clickedRobot = target.findAncestor(
       (node: Konva.Node) => typeof node.hasName === 'function' && node.hasName('robot-marker'),
@@ -146,29 +149,16 @@ export function MapLayers({
       (node: Konva.Node) => typeof node.hasName === 'function' && node.hasName('location-pin'),
       true
     );
-
-    if (setPoseMode) {
-      handleSetPoseModeClick(clickedRobot, clickedLocation);
-    } else {
-      handleNormalModeClick(clickedRobot, clickedLocation);
-    }
+    handleNormalModeClick(clickedRobot, clickedLocation);
   };
 
-  const handleSetPoseModeClick = (
-    clickedRobot: Konva.Node | null,
-    clickedLocation: Konva.Node | null
-  ) => {
-    if (clickedRobot || clickedLocation) return;
-
+  const handleSetPoseModeClick = () => {
     if (!pendingPose) {
       placeManualPose();
       return;
     }
-
-    if (pendingPose.source === 'manual' && !pendingPose.showConfirm) {
-      setPendingPose(prev =>
-        prev && prev.source === 'manual' ? { ...prev, showConfirm: true } : prev
-      );
+    if (!pendingPose.showConfirm) {
+      setPendingPose(prev => (prev ? { ...prev, showConfirm: true } : prev));
     }
   };
 
@@ -182,21 +172,7 @@ export function MapLayers({
     }
   };
 
-  const handleLocationSelect = (
-    location: TempLocation,
-    evt?: Konva.KonvaEventObject<MouseEvent | TouchEvent>
-  ) => {
-    if (setPoseMode) {
-      if (evt) evt.cancelBubble = true;
-      setPendingPose({
-        source: 'location',
-        location: location,
-        pixel: { x: location.x, y: location.y },
-        theta: Number.isFinite(location.thetaRad) ? location.thetaRad : 0,
-        showConfirm: true,
-      });
-      return;
-    }
+  const handleLocationSelect = (location: TempLocation) => {
     setSelectedLocationId(prev => (prev === location.id ? null : location.id));
   };
 
@@ -238,6 +214,7 @@ export function MapLayers({
             resolution={resolution}
             onRobotSelect={(onRobotSelect || (() => {})) ?? undefined}
             setSelectedLocationId={setSelectedLocationId}
+            setPoseMode={setPoseMode}
           />
 
           <LabelsLayer

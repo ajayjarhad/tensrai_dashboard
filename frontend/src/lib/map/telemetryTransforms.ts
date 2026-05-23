@@ -2,19 +2,27 @@ import type { MapTransforms, PixelPoint, ROSPose } from '@tensrai/shared';
 import type { LaserScan, OdometryMessage, PathMessage, Pose2D } from '../../types/telemetry';
 import { quaternionToYaw, worldToMapPixel } from './mapTransforms';
 
+const safeQuaternionToYaw = (orientation: any): number =>
+  quaternionToYaw({
+    x: orientation?.x ?? 0,
+    y: orientation?.y ?? 0,
+    z: orientation?.z ?? 0,
+    w: orientation?.w ?? 1,
+  });
+
 export const odomToPose = (odom: OdometryMessage): Pose2D => {
   const { position, orientation } = odom.pose.pose;
   return {
-    x: position.x,
-    y: position.y,
-    theta: quaternionToYaw(orientation),
+    x: position?.x ?? 0,
+    y: position?.y ?? 0,
+    theta: safeQuaternionToYaw(orientation),
   };
 };
 
 export const rosPoseToPose2D = (pose: ROSPose): Pose2D => ({
-  x: pose.position.x,
-  y: pose.position.y,
-  theta: quaternionToYaw(pose.orientation),
+  x: pose.position?.x ?? 0,
+  y: pose.position?.y ?? 0,
+  theta: safeQuaternionToYaw(pose.orientation),
 });
 
 export const pathToPixelPoints = (path: PathMessage, transforms: MapTransforms): PixelPoint[] => {
@@ -28,34 +36,27 @@ export const laserToPixelPoints = (
   scan: LaserScan,
   robotPose: Pose2D,
   transforms: MapTransforms,
-  step: number = 2
+  step: number = 1
 ): PixelPoint[] => {
   const points: PixelPoint[] = [];
-  // Prefer precomputed map-frame points; avoid rotating them with robot pose.
-  if (Array.isArray(scan.points) && scan.points.length > 0) {
-    if (scan.frame === 'map') {
-      for (let i = 0; i < scan.points.length; i += step) {
-        const p = scan.points[i];
-        const pixel = worldToMapPixel({ x: p.x, y: p.y }, transforms);
-        if (Number.isFinite(pixel.x) && Number.isFinite(pixel.y)) {
-          points.push(pixel);
-        }
-      }
-      return points;
-    }
-    // Non-map-frame precomputed points: skip to avoid incorrect rotation.
-    return points;
-  }
-
-  // Fallback: compute from ranges using the current pose.
   const { angle_min, angle_increment, ranges, range_min, range_max } = scan;
+  const offset = scan.laserOffset ?? { x: 0, y: 0, yaw: 0 };
+  const cosOff = Math.cos(offset.yaw);
+  const sinOff = Math.sin(offset.yaw);
+  const cosPose = Math.cos(robotPose.theta);
+  const sinPose = Math.sin(robotPose.theta);
+
   for (let i = 0; i < ranges.length; i += step) {
     const r = ranges[i];
     if (!Number.isFinite(r) || r < range_min || r > range_max) continue;
 
-    const angle = robotPose.theta + angle_min + i * angle_increment;
-    const worldX = robotPose.x + r * Math.cos(angle);
-    const worldY = robotPose.y + r * Math.sin(angle);
+    const angle = angle_min + i * angle_increment;
+    const sx = r * Math.cos(angle);
+    const sy = r * Math.sin(angle);
+    const bx = offset.x + cosOff * sx - sinOff * sy;
+    const by = offset.y + sinOff * sx + cosOff * sy;
+    const worldX = robotPose.x + cosPose * bx - sinPose * by;
+    const worldY = robotPose.y + sinPose * bx + cosPose * by;
 
     const pixel = worldToMapPixel({ x: worldX, y: worldY }, transforms);
     if (Number.isFinite(pixel.x) && Number.isFinite(pixel.y)) {

@@ -13,6 +13,8 @@ type IncomingMessage =
   | {
       type: 'command';
       channel: string;
+      commandId?: string;
+      sentAtMs?: number;
       data: unknown;
     }
   | {
@@ -40,6 +42,12 @@ const makeEvent = (channel: string, data: unknown) =>
     data,
   });
 
+const ROS_COMMAND_LOG_INTERVAL_MS = (() => {
+  const raw = Number(process.env['ROS_COMMAND_LOG_INTERVAL_MS'] ?? 2000);
+  if (!Number.isFinite(raw) || raw < 0) return 2000;
+  return raw;
+})();
+
 type ForwardableChannelEvent = {
   channel: string;
   data: unknown;
@@ -58,6 +66,41 @@ const rosGateway = async (fastify: FastifyInstance) => {
 
   // Track active WebSocket connections
   let _activeConnections = 0;
+  const rosCommandLogState = new Map<string, { lastAt: number; suppressed: number }>();
+
+  const logRosCommand = (
+    level: 'info' | 'warn' | 'error',
+    stage: 'received' | 'published' | 'rejected',
+    fields: Record<string, unknown>
+  ) => {
+    const channel = typeof fields['channel'] === 'string' ? fields['channel'] : 'unknown';
+    const robotId = typeof fields['robotId'] === 'string' ? fields['robotId'] : 'unknown';
+    const shouldThrottle =
+      channel === 'teleop' && stage !== 'rejected' && ROS_COMMAND_LOG_INTERVAL_MS > 0;
+    const key = `${robotId}:${channel}:${stage}`;
+    let suppressed = 0;
+
+    if (shouldThrottle) {
+      const now = Date.now();
+      const state = rosCommandLogState.get(key) ?? { lastAt: 0, suppressed: 0 };
+      if (now - state.lastAt < ROS_COMMAND_LOG_INTERVAL_MS) {
+        state.suppressed += 1;
+        rosCommandLogState.set(key, state);
+        return;
+      }
+      suppressed = state.suppressed;
+      rosCommandLogState.set(key, { lastAt: now, suppressed: 0 });
+    }
+
+    fastify.log[level](
+      {
+        ...fields,
+        stage,
+        ...(suppressed ? { suppressedSinceLastLog: suppressed } : {}),
+      },
+      `ROS bridge command ${stage}`
+    );
+  };
 
   const robotBridgeHandler = (connection, request) => {
     const { robotId } = request.params as { robotId: string };
@@ -74,7 +117,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     _activeConnections++;
     // Note: activeConnections metric removed due to Bun runtime compatibility issues
 
-    const manager = registry.getManager(robotId);
+    let manager = registry.getManager(robotId);
 
     if (!manager) {
       websocketMetrics.connectionErrors.add(1, {
@@ -130,14 +173,22 @@ const rosGateway = async (fastify: FastifyInstance) => {
       }
     };
 
-    manager.on('channel-data', forward);
+    let attachedManager: any;
+    const attachManager = (nextManager: any) => {
+      if (!nextManager || attachedManager === nextManager) return;
+      attachedManager?.off?.('channel-data', forward);
+      attachedManager = nextManager;
+      attachedManager.on('channel-data', forward);
 
-    for (const event of manager.getLatestChannelEvents()) {
-      forward({
-        channel: event.channel,
-        data: event.data,
-      });
-    }
+      for (const event of attachedManager.getLatestChannelEvents()) {
+        forward({
+          channel: event.channel,
+          data: event.data,
+        });
+      }
+    };
+
+    attachManager(manager);
 
     socket.on('message', async buffer => {
       let parsed: IncomingMessage;
@@ -162,10 +213,47 @@ const rosGateway = async (fastify: FastifyInstance) => {
       });
 
       if (parsed.type === 'command') {
+        logRosCommand('info', 'received', {
+          robotId,
+          channel: parsed.channel,
+          commandId: parsed.commandId ?? null,
+          sentAtMs: parsed.sentAtMs ?? null,
+          ageMs: typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null,
+          managerAttached: Boolean(attachedManager),
+        });
+        const currentManager = registry.getManager(robotId);
+        if (!currentManager) {
+          logRosCommand('warn', 'rejected', {
+            robotId,
+            channel: parsed.channel,
+            commandId: parsed.commandId ?? null,
+            reason: 'robot_not_found',
+          });
+          socket.send(makeError(parsed.channel, parsed.commandId, `Unknown robot: ${robotId}`));
+          return;
+        }
+        manager = currentManager;
+        attachManager(manager);
         const result = manager.handleCommand(parsed.channel, parsed.data);
         if (!result.ok) {
-          socket.send(makeError(parsed.channel, undefined, result.error ?? 'Command failed'));
+          logRosCommand('warn', 'rejected', {
+            robotId,
+            channel: parsed.channel,
+            commandId: parsed.commandId ?? null,
+            error: result.error ?? 'Command failed',
+            result,
+          });
+          socket.send(
+            makeError(parsed.channel, parsed.commandId, result.error ?? 'Command failed')
+          );
+          return;
         }
+        logRosCommand('info', 'published', {
+          robotId,
+          channel: parsed.channel,
+          commandId: parsed.commandId ?? null,
+          result,
+        });
         return;
       }
 
@@ -181,7 +269,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
 
     socket.on('close', () => {
-      manager.off('channel-data', forward);
+      attachedManager?.off?.('channel-data', forward);
 
       // Decrement active connections
       _activeConnections--;
@@ -242,6 +330,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
       return;
     }
 
+    fastify.log.info({ robotId }, 'Dashboard client connected to mission websocket');
+
     let closed = false;
 
     const stringifyMessage = (data: unknown) => {
@@ -299,12 +389,25 @@ const rosGateway = async (fastify: FastifyInstance) => {
       const parsed = parseRobotMissionCommand(rawMessage);
 
       if (parsed?.event && isMissionControlEvent(parsed.event)) {
+        fastify.log.info(
+          { robotId, event: parsed.event, commandId: parsed.commandId ?? null },
+          'Forwarding dashboard mission command to mission bridge'
+        );
         const serializedCommand = JSON.stringify({
           event: parsed.event,
           payload: withMissionCommandId(parsed.payload, parsed.commandId),
         });
         const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
         if (!sendResult.ok) {
+          fastify.log.warn(
+            {
+              robotId,
+              event: parsed.event,
+              commandId: parsed.commandId ?? null,
+              error: sendResult.error ?? 'Mission bridge not connected',
+            },
+            'Mission command could not be forwarded to mission bridge'
+          );
           const failureAck = buildMissionFailureAck(
             parsed.event,
             withMissionCommandId(parsed.payload, parsed.commandId),
@@ -342,6 +445,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
 
     clientSocket.on('close', () => {
+      fastify.log.info({ robotId }, 'Dashboard client disconnected from mission websocket');
       closeClient();
     });
 
