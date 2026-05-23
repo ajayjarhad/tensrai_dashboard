@@ -44,6 +44,11 @@ const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
 
+const formatError = (error: unknown) =>
+  error instanceof Error
+    ? { message: error.message, name: error.name, stack: error.stack }
+    : { message: String(error), raw: error };
+
 const parseGatewayEvent = (payload: string): { event: string; payload?: unknown } | null => {
   try {
     const parsed = JSON.parse(payload);
@@ -126,65 +131,90 @@ export class MissionRegistry extends EventEmitter {
   }
 
   async reloadFromDb() {
-    await this.runStore.hydrateActiveRuns();
-    const persistedActiveRuns = await this.runStore.listRuns({ status: 'active', limit: 500 });
-    for (const run of persistedActiveRuns) {
-      hydrateMissionStateFromPersistedRun(run.robotId, run);
-    }
-
-    const robots = await this.prisma.robot.findMany({
-      select: {
-        id: true,
-        name: true,
-        ipAddress: true,
-        mapId: true,
-        missionBridgePort: true,
-        mappingBridgePort: true,
-      },
-    });
-
-    const desiredIds = new Set<string>();
-
-    for (const robot of robots) {
-      desiredIds.add(robot.id);
-      const port =
-        robot.missionBridgePort ?? robot.mappingBridgePort ?? DEFAULT_MISSION_BRIDGE_PORT;
-      const url = robot.ipAddress
-        ? `ws://${robot.ipAddress}:${port ?? DEFAULT_MAPPING_BRIDGE_PORT}`
-        : undefined;
-      const nextConfig: RobotMissionConfig = {
-        id: robot.id,
-        name: robot.name,
-        ipAddress: robot.ipAddress,
-        mapId: robot.mapId,
-        missionBridgePort: robot.missionBridgePort,
-        mappingBridgePort: robot.mappingBridgePort,
-        url,
-      };
-
-      const previous = this.robotConfigs.get(robot.id);
-      this.robotConfigs.set(robot.id, nextConfig);
-
-      if (!url) {
-        this.disconnectRobot(robot.id);
-        this.statuses.set(robot.id, 'unconfigured');
-        continue;
+    try {
+      this.log.info({}, 'Loading mission registry from DB');
+      await this.runStore.hydrateActiveRuns();
+      const persistedActiveRuns = await this.runStore.listRuns({ status: 'active', limit: 500 });
+      for (const run of persistedActiveRuns) {
+        hydrateMissionStateFromPersistedRun(run.robotId, run);
       }
 
-      const connection = this.connections.get(robot.id);
-      if (connection && previous?.url === url) {
-        continue;
+      const robots = await this.prisma.robot.findMany({
+        select: {
+          id: true,
+          name: true,
+          ipAddress: true,
+          mapId: true,
+          missionBridgePort: true,
+          mappingBridgePort: true,
+        },
+      });
+
+      this.log.info({ robotCount: robots.length }, 'Mission registry robot configs loaded');
+      const desiredIds = new Set<string>();
+
+      for (const robot of robots) {
+        desiredIds.add(robot.id);
+        const port =
+          robot.missionBridgePort ?? robot.mappingBridgePort ?? DEFAULT_MISSION_BRIDGE_PORT;
+        const url = robot.ipAddress
+          ? `ws://${robot.ipAddress}:${port ?? DEFAULT_MAPPING_BRIDGE_PORT}`
+          : undefined;
+        const nextConfig: RobotMissionConfig = {
+          id: robot.id,
+          name: robot.name,
+          ipAddress: robot.ipAddress,
+          mapId: robot.mapId,
+          missionBridgePort: robot.missionBridgePort,
+          mappingBridgePort: robot.mappingBridgePort,
+          url,
+        };
+
+        this.log.info(
+          {
+            robotId: robot.id,
+            robotName: robot.name,
+            ipAddress: robot.ipAddress,
+            missionBridgePort: robot.missionBridgePort,
+            mappingBridgePort: robot.mappingBridgePort,
+            resolvedMissionBridgeUrl: url,
+            existingStatus: this.statuses.get(robot.id) ?? null,
+          },
+          'Resolved mission bridge config'
+        );
+
+        const previous = this.robotConfigs.get(robot.id);
+        this.robotConfigs.set(robot.id, nextConfig);
+
+        if (!url) {
+          this.log.warn(
+            { robotId: robot.id, robotName: robot.name, ipAddress: robot.ipAddress },
+            'Mission bridge not configured: robot has no IP address'
+          );
+          this.disconnectRobot(robot.id);
+          this.statuses.set(robot.id, 'unconfigured');
+          continue;
+        }
+
+        const connection = this.connections.get(robot.id);
+        if (connection && previous?.url === url) {
+          continue;
+        }
+
+        this.connectRobot(robot.id);
       }
 
-      this.connectRobot(robot.id);
-    }
-
-    for (const robotId of Array.from(this.robotConfigs.keys())) {
-      if (desiredIds.has(robotId)) continue;
-      this.robotConfigs.delete(robotId);
-      this.statuses.delete(robotId);
-      this.disconnectRobot(robotId);
-      this.clearReconnectTimer(robotId);
+      for (const robotId of Array.from(this.robotConfigs.keys())) {
+        if (desiredIds.has(robotId)) continue;
+        this.log.warn({ robotId }, 'Removing stale mission bridge robot config');
+        this.robotConfigs.delete(robotId);
+        this.statuses.delete(robotId);
+        this.disconnectRobot(robotId);
+        this.clearReconnectTimer(robotId);
+      }
+    } catch (error) {
+      this.log.error({ err: formatError(error) }, 'Mission registry DB reload failed');
+      throw error;
     }
   }
 
@@ -229,6 +259,17 @@ export class MissionRegistry extends EventEmitter {
     const connection = this.connections.get(robotId);
     const status = this.statuses.get(robotId);
     if (!connection || connection.socket.readyState !== WebSocket.OPEN) {
+      const config = this.robotConfigs.get(robotId);
+      this.log.warn(
+        {
+          robotId,
+          status: status ?? null,
+          readyState: connection?.socket.readyState ?? null,
+          url: config?.url ?? null,
+          hasConnection: !!connection,
+        },
+        'Mission command rejected: bridge socket is not open'
+      );
       return {
         ok: false,
         error:
@@ -240,8 +281,10 @@ export class MissionRegistry extends EventEmitter {
 
     try {
       connection.socket.send(message);
+      this.log.info({ robotId, status, bytes: message.length }, 'Mission command sent to bridge');
       return { ok: true };
     } catch (error) {
+      this.log.error({ robotId, status, err: formatError(error) }, 'Mission command send failed');
       return {
         ok: false,
         error: error instanceof Error ? error.message : 'Failed to send mission command',
@@ -261,7 +304,20 @@ export class MissionRegistry extends EventEmitter {
     this.clearReconnectTimer(robotId);
     this.statuses.set(robotId, 'connecting');
 
-    const socket = new WebSocket(config.url);
+    this.log.info({ robotId, url: config.url }, 'Connecting to mission bridge');
+
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(config.url);
+    } catch (error) {
+      this.statuses.set(robotId, 'error');
+      this.log.error(
+        { robotId, url: config.url, err: formatError(error) },
+        'Mission bridge socket construction failed'
+      );
+      this.scheduleReconnect(robotId);
+      return;
+    }
     const connection: ActiveConnection = { socket, manualClose: false };
     this.connections.set(robotId, connection);
 
@@ -286,19 +342,34 @@ export class MissionRegistry extends EventEmitter {
       if (this.connections.get(robotId) !== connection) return;
       this.statuses.set(robotId, 'error');
       this.log.error(
-        { robotId, url: config.url, error: error instanceof Error ? error.message : String(error) },
+        { robotId, url: config.url, err: formatError(error) },
         'Mission bridge socket error'
       );
     });
 
-    socket.on('close', () => {
+    socket.on('close', (code, reason) => {
       if (this.connections.get(robotId) !== connection) return;
       this.connections.delete(robotId);
       if (connection.manualClose || this.stopped || !this.robotConfigs.get(robotId)?.url) {
         this.statuses.set(robotId, 'disconnected');
+        this.log.warn(
+          {
+            robotId,
+            url: config.url,
+            code,
+            reason: reason.toString('utf8'),
+            manualClose: connection.manualClose,
+            stopped: this.stopped,
+          },
+          'Mission bridge socket closed without reconnect'
+        );
         return;
       }
       this.statuses.set(robotId, 'disconnected');
+      this.log.warn(
+        { robotId, url: config.url, code, reason: reason.toString('utf8') },
+        'Mission bridge socket closed; scheduling reconnect'
+      );
       this.scheduleReconnect(robotId);
     });
   }
@@ -319,6 +390,11 @@ export class MissionRegistry extends EventEmitter {
     const attempt = this.reconnectAttempts.get(robotId) ?? 0;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
     this.reconnectAttempts.set(robotId, attempt + 1);
+    const config = this.robotConfigs.get(robotId);
+    this.log.warn(
+      { robotId, url: config?.url ?? null, attempt: attempt + 1, delay },
+      'Scheduled mission bridge reconnect'
+    );
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(robotId);
       this.connectRobot(robotId);

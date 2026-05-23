@@ -37,52 +37,40 @@ const buildPathPoints = (request: TelemetryOverlayRequest) => {
 };
 
 const buildLaserPoints = (request: TelemetryOverlayRequest) => {
-  const { laser, robotPose, transforms } = request;
-  if (!laser || !transforms) return new Float32Array(0);
+  const { laser, transforms } = request;
+  // Use the pose snapshotted at scan arrival; fall back to current pose if unset.
+  const pose = request.laserPose ?? request.robotPose;
+  if (!laser || !transforms || !pose) return new Float32Array(0);
+  if (!Array.isArray(laser.ranges) || laser.ranges.length === 0) return new Float32Array(0);
 
   const maxLaserPoints = request.maxLaserPoints ?? DEFAULT_MAX_LASER_POINTS;
   const values = new Array<number>(maxLaserPoints * 2);
   let writeIndex = 0;
 
-  const pushPixel = (x: number, y: number) => {
-    if (writeIndex >= maxLaserPoints * 2) return false;
-    values[writeIndex] = x;
-    values[writeIndex + 1] = y;
-    writeIndex += 2;
-    return true;
-  };
-
-  if (Array.isArray(laser.points) && laser.points.length > 0) {
-    const frame = typeof laser.frame === 'string' ? laser.frame.toLowerCase() : '';
-    const step = Math.max(1, Math.ceil(laser.points.length / maxLaserPoints));
-    if (frame === 'map') {
-      for (let index = 0; index < laser.points.length; index += step) {
-        const point = laser.points[index];
-        if (!point) continue;
-        const pixel = worldToMapPixel({ x: point.x, y: point.y }, transforms);
-        if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)) continue;
-        if (!pushPixel(pixel.x, pixel.y)) break;
-      }
-      return toFloat32Array(values, writeIndex);
-    }
-  }
-
-  if (!robotPose || !Array.isArray(laser.ranges) || laser.ranges.length === 0) {
-    return new Float32Array(0);
-  }
-
-  const step = Math.max(1, request.laserStep ?? 2);
+  const step = Math.max(1, request.laserStep ?? 1);
+  const offset = laser.laserOffset ?? { x: 0, y: 0, yaw: 0 };
+  const cosOff = Math.cos(offset.yaw);
+  const sinOff = Math.sin(offset.yaw);
+  const cosPose = Math.cos(pose.theta);
+  const sinPose = Math.sin(pose.theta);
 
   for (let index = 0; index < laser.ranges.length; index += step) {
     const range = laser.ranges[index];
     if (!Number.isFinite(range) || range < laser.range_min || range > laser.range_max) continue;
 
-    const angle = robotPose.theta + laser.angle_min + index * laser.angle_increment;
-    const worldX = robotPose.x + range * Math.cos(angle);
-    const worldY = robotPose.y + range * Math.sin(angle);
+    const angle = laser.angle_min + index * laser.angle_increment;
+    const sx = range * Math.cos(angle);
+    const sy = range * Math.sin(angle);
+    const bx = offset.x + cosOff * sx - sinOff * sy;
+    const by = offset.y + sinOff * sx + cosOff * sy;
+    const worldX = pose.x + cosPose * bx - sinPose * by;
+    const worldY = pose.y + sinPose * bx + cosPose * by;
     const pixel = worldToMapPixel({ x: worldX, y: worldY }, transforms);
     if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)) continue;
-    if (!pushPixel(pixel.x, pixel.y)) break;
+    if (writeIndex >= maxLaserPoints * 2) break;
+    values[writeIndex] = pixel.x;
+    values[writeIndex + 1] = pixel.y;
+    writeIndex += 2;
   }
 
   return toFloat32Array(values, writeIndex);

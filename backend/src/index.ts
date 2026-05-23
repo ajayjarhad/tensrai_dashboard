@@ -20,8 +20,9 @@ type FastifyFactory = (options?: Record<string, unknown>) => AppFastifyInstance;
 const createFastify = fastify as unknown as FastifyFactory;
 
 const server = createFastify({
+  disableRequestLogging: true,
   logger: {
-    level: process.env['LOG_LEVEL'] ?? 'info',
+    level: process.env['LOG_LEVEL'] ?? 'warn',
     transport: {
       target: 'pino-pretty',
       options: {
@@ -33,6 +34,34 @@ const server = createFastify({
   },
 });
 
+const NOISE_PATTERNS = [/ROSLib uses utf8 encoding by default/];
+const isNoise = (chunk: any) => {
+  const text =
+    typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
+  return text.length > 0 && NOISE_PATTERNS.some(p => p.test(text));
+};
+const stderrWrite = process.stderr.write.bind(process.stderr);
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+process.stderr.write = ((chunk: any, ...rest: any[]) =>
+  isNoise(chunk) ? true : stderrWrite(chunk, ...rest)) as typeof process.stderr.write;
+process.stdout.write = ((chunk: any, ...rest: any[]) =>
+  isNoise(chunk) ? true : stdoutWrite(chunk, ...rest)) as typeof process.stdout.write;
+const wrapConsole =
+  (orig: (...args: any[]) => void) =>
+  (...args: any[]) => {
+    if (args.some(a => isNoise(a))) return;
+    orig(...args);
+  };
+console.log = wrapConsole(console.log.bind(console));
+console.warn = wrapConsole(console.warn.bind(console));
+console.error = wrapConsole(console.error.bind(console));
+console.info = wrapConsole(console.info.bind(console));
+
+const formatStartupError = (error: unknown) =>
+  error instanceof Error
+    ? { message: error.message, name: error.name, stack: error.stack }
+    : { message: String(error), raw: error };
+
 const registerPlugins = async () => {
   await server.register(databasePlugin);
   const emergencyRegistry = new EmergencyRegistry(server.prisma, server.log);
@@ -43,10 +72,13 @@ const registerPlugins = async () => {
   });
   server.decorate('missionRegistry', missionRegistry);
   await emergencyRegistry.reloadFromDb().catch(error => {
-    server.log.error({ error }, 'Failed to load emergency registry from DB');
+    server.log.error(
+      { err: formatStartupError(error) },
+      'Failed to load emergency registry from DB'
+    );
   });
   await missionRegistry.reloadFromDb().catch(error => {
-    server.log.error({ error }, 'Failed to load mission registry from DB');
+    server.log.error({ err: formatStartupError(error) }, 'Failed to load mission registry from DB');
   });
   server.addHook('onClose', async () => {
     emergencyRegistry.stop();
