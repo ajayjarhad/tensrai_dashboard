@@ -33,6 +33,7 @@ const normalizeMsgType = (msgType: string) => {
     'nav_msgs/Path': 'nav_msgs/msg/Path',
     'std_msgs/String': 'std_msgs/msg/String',
     'geometry_msgs/Twist': 'geometry_msgs/msg/Twist',
+    'geometry_msgs/PoseStamped': 'geometry_msgs/msg/PoseStamped',
     'geometry_msgs/PoseWithCovarianceStamped': 'geometry_msgs/msg/PoseWithCovarianceStamped',
   };
   return map[msgType] ?? msgType;
@@ -44,17 +45,28 @@ const parseRateLimit = (envKey: string, fallback: number) => {
   return raw;
 };
 
+const parseMsgTypeOverride = (envKey: string) => {
+  const raw = process.env[envKey]?.trim();
+  return raw ? normalizeMsgType(raw) : undefined;
+};
+
 const rateLimitOverrides: Record<string, number> = {
   odom: parseRateLimit('ROS_ODOM_RATE_HZ', 8),
   laser: parseRateLimit('ROS_LASER_RATE_HZ', 3),
+  scanPose: parseRateLimit('ROS_SCAN_POSE_RATE_HZ', 10),
   amcl: parseRateLimit('ROS_AMCL_RATE_HZ', 4),
+};
+
+const msgTypeOverrides: Record<string, string | undefined> = {
+  laser: parseMsgTypeOverride('ROS_LASER_MSG_TYPE'),
+  scanPose: parseMsgTypeOverride('ROS_SCAN_POSE_MSG_TYPE'),
 };
 
 const normalizeChannels = (channels: any[] | undefined) => {
   if (!Array.isArray(channels) || channels.length === 0) return undefined;
   return channels.map(ch => ({
     ...ch,
-    msgType: ch.msgType ? normalizeMsgType(ch.msgType) : ch.msgType,
+    msgType: msgTypeOverrides[ch.name] ?? (ch.msgType ? normalizeMsgType(ch.msgType) : ch.msgType),
     rateLimitHz: rateLimitOverrides[ch.name] ?? ch.rateLimitHz,
   }));
 };
@@ -70,9 +82,16 @@ const defaultChannels = [
   {
     name: 'laser',
     topic: '/scan_ui',
-    msgType: 'sensor_msgs/msg/LaserScan',
+    msgType: msgTypeOverrides.laser ?? 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
     rateLimitHz: 10,
+  },
+  {
+    name: 'scanPose',
+    topic: '/scan_pose_ui',
+    msgType: msgTypeOverrides.scanPose ?? 'geometry_msgs/msg/PoseStamped',
+    direction: 'subscribe',
+    rateLimitHz: rateLimitOverrides.scanPose,
   },
   {
     name: 'waypoints',
@@ -162,12 +181,24 @@ export class RosRegistry {
 
       existing?.stop();
       const manager = new RosRobotManager(nextConfig);
+      const formatErr = (e: any) =>
+        e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
+      const lastErrorLogAt = new Map<string, number>();
+      const shouldLog = (key: string, intervalMs = 60_000) => {
+        const now = Date.now();
+        const last = lastErrorLogAt.get(key) ?? 0;
+        if (now - last < intervalMs) return false;
+        lastErrorLogAt.set(key, now);
+        return true;
+      };
       manager.on('error', error => {
-        this.logger?.error({ robotId, error }, 'ROS manager error');
+        const key = error instanceof Error ? error.message : String(error);
+        if (!shouldLog(key)) return;
+        this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
       });
       this.managers.set(robotId, manager);
       manager.start().catch(error => {
-        this.logger?.error({ robotId, error }, 'Failed to start ROS manager');
+        this.logger?.error({ robotId, err: formatErr(error) }, 'Failed to start ROS manager');
       });
     }
 

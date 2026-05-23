@@ -12,10 +12,22 @@ type ChannelRuntime = {
   lastMessageAt?: number;
 };
 
+type ScanPoseSource = 'firmware' | 'sidecar' | 'computed' | 'none';
+type ScanPose2D = { x: number; y: number; theta: number };
+type ScanPoseSidecar = ScanPose2D & { stampMs?: number; receivedAtMs: number };
+type PendingLaserScan = { raw: any; timeout: NodeJS.Timeout };
+
 const DEFAULT_LASER_OFFSET = { x: 0.12, y: 0, yaw: 0 };
 const AMCL_MIN_DELTA_POS = 0.05;
 const AMCL_MIN_DELTA_YAW = 0.05;
 const _SCAN_POSE_MAX_DRIFT_MS = 100;
+const SCAN_POSE_BUFFER_MS = 60_000;
+const SCAN_POSE_MAX_BUFFER = 600;
+const SCAN_POSE_MATCH_TIMEOUT_MS = (() => {
+  const raw = Number(process.env['ROS_SCAN_POSE_MATCH_TIMEOUT_MS'] ?? 500);
+  if (!Number.isFinite(raw) || raw < 0) return 500;
+  return Math.min(5000, Math.floor(raw));
+})();
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
 // Teleop safety defaults
@@ -47,6 +59,27 @@ const rosStampToMs = (stamp: any): number | undefined => {
   const ms = sec * 1000 + nanosec / 1e6;
   return Number.isFinite(ms) ? ms : undefined;
 };
+
+const rosStampToKey = (stamp: any): string | undefined => {
+  if (!stamp || typeof stamp !== 'object') return undefined;
+  const sec =
+    typeof stamp.sec === 'number'
+      ? stamp.sec
+      : typeof stamp.secs === 'number'
+        ? stamp.secs
+        : undefined;
+  const nanosec =
+    typeof stamp.nanosec === 'number'
+      ? stamp.nanosec
+      : typeof stamp.nsecs === 'number'
+        ? stamp.nsecs
+        : undefined;
+  if (sec === undefined || nanosec === undefined) return undefined;
+  return Number.isFinite(sec) && Number.isFinite(nanosec) ? `${sec}:${nanosec}` : undefined;
+};
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
 
 const pickPose = (pose: any) => {
   if (!pose) return undefined;
@@ -86,6 +119,7 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
       ranges: scan.ranges,
       laserOffset: scan.laserOffset,
       scanPose: scan.scanPose,
+      scanPoseSource: scan.scanPoseSource,
       frame: scan.frame ?? scan.header?.frame_id,
       stampMs: scan.stampMs,
     };
@@ -156,7 +190,18 @@ export class RosRobotManager extends EventEmitter {
   private odomPose?: Pose2D & { stampMs?: number };
   private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
+  private mapPoseHistory: Array<Pose2D & { stampMs: number }> = [];
+  private sensorOffsetsByFrame = new Map<string, Pose2D>();
+  private lastLoggedScanFrameId?: string | null;
+  private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
+  private lastScanDetailLogAt = 0;
+  private lastScanPoseSidecarLogAt = 0;
+  private lastScanPoseWaitLogAt = 0;
+  private lastScanPoseTimeoutLogAt = 0;
+  private lastScanStampMs?: number;
   private tfUnsubscribeByConnection = new Map<string, Array<() => void>>();
+  private scanPoseByStamp = new Map<string, ScanPoseSidecar>();
+  private pendingLaserByStamp = new Map<string, PendingLaserScan>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
   private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
@@ -241,6 +286,7 @@ export class RosRobotManager extends EventEmitter {
   stop() {
     this.sendZeroTeleopIfNeeded();
     this.cleanupTfSubscriptions();
+    this.clearPendingLaserScans();
     for (const runtime of this.channels.values()) {
       runtime.unsubscribe?.();
       runtime.unsubscribe = undefined;
@@ -253,27 +299,70 @@ export class RosRobotManager extends EventEmitter {
 
   handleCommand(channelName: string, payload: unknown): { ok: boolean; error?: string } {
     const runtime = this.channels.get(channelName);
-    if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}` };
+    if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}`, channelName };
     if (runtime.config.direction !== 'publish')
-      return { ok: false, error: `Channel ${channelName} is not publishable` };
+      return {
+        ok: false,
+        error: `Channel ${channelName} is not publishable`,
+        channelName,
+        topic: runtime.config.topic,
+        direction: runtime.config.direction,
+        connectionId: runtime.config.connectionId ?? 'default',
+      };
 
     let outgoing = payload;
     if (channelName === 'teleop') {
       const result = validateAndClampTeleop(payload, this.teleopLimits);
-      if (!result.ok) return { ok: false, error: result.error };
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error,
+          channelName,
+          topic: runtime.config.topic,
+          connectionId: runtime.config.connectionId ?? 'default',
+        };
+      }
       outgoing = result.value;
       this.armTeleopWatchdog(runtime.config);
     }
 
     const connection = this.getConnectionForChannel(runtime.config);
-    if (!connection) return { ok: false, error: `No connection for channel ${channelName}` };
+    if (!connection) {
+      return {
+        ok: false,
+        error: `No connection for channel ${channelName}`,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+      };
+    }
+    const connectionStatusBefore = connection.getDebugStatus?.() ?? {
+      connected: connection.isConnected(),
+      url: connection.url,
+    };
     try {
       connection.publish(runtime.config.topic, runtime.config.msgType, outgoing as object);
-      return { ok: true };
+      return {
+        ok: true,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+      };
     } catch (error) {
       runtime.errorCount += 1;
       this.emit('error', error as Error);
-      return { ok: false, error: (error as Error).message };
+      return {
+        ok: false,
+        error: (error as Error).message,
+        channelName,
+        topic: runtime.config.topic,
+        msgType: runtime.config.msgType,
+        connectionId: runtime.config.connectionId ?? 'default',
+        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+      };
     }
   }
 
@@ -288,15 +377,16 @@ export class RosRobotManager extends EventEmitter {
       if ((runtime.config.connectionId ?? 'default') !== connectionId) continue;
       if (runtime.config.direction !== 'subscribe') continue;
       runtime.unsubscribe?.();
+      let firstRawSeen = false;
       const throttled = createLatestThrottle(runtime.config.rateLimitHz, (data: unknown) => {
         runtime.lastMessageAt = Date.now();
         let processed = data;
         if (name === 'laser') processed = this.processLaser(data as any);
+        else if (name === 'scanPose') processed = this.processScanPose(data as any);
         else if (name === 'odom') processed = this.processOdom(data as any);
         else if (name === 'amcl') processed = this.processAmcl(data as any);
-        const sanitized = sanitizeChannelPayload(name, processed);
-        this.latestChannelData.set(name, sanitized);
-        this.emit('channel-data', { channel: name, data: sanitized });
+        if (processed === undefined) return;
+        this.emitChannelData(name, processed);
       });
       try {
         const rateHz = runtime.config.rateLimitHz;
@@ -304,10 +394,25 @@ export class RosRobotManager extends EventEmitter {
           typeof rateHz === 'number' && rateHz > 0
             ? Math.max(1, Math.floor(1000 / rateHz))
             : undefined;
+        console.log(
+          JSON.stringify({
+            tag: 'sub',
+            channel: name,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId,
+          })
+        );
         const unsubscribe = connection.subscribe(
           runtime.config.topic,
           runtime.config.msgType,
-          d => throttled(d),
+          d => {
+            if (!firstRawSeen) {
+              firstRawSeen = true;
+              console.log(JSON.stringify({ tag: 'msg-first', channel: name }));
+            }
+            throttled(d);
+          },
           {
             throttleRateMs,
             queueLength: 1,
@@ -317,6 +422,13 @@ export class RosRobotManager extends EventEmitter {
         runtime.errorCount = 0;
       } catch (error) {
         runtime.errorCount += 1;
+        console.log(
+          JSON.stringify({
+            tag: 'sub-error',
+            channel: name,
+            error: (error as Error).message,
+          })
+        );
         this.emit('error', error as Error);
       }
     }
@@ -366,6 +478,12 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
+  private emitChannelData(channelName: string, processed: unknown) {
+    const sanitized = sanitizeChannelPayload(channelName, processed);
+    this.latestChannelData.set(channelName, sanitized);
+    this.emit('channel-data', { channel: channelName, data: sanitized });
+  }
+
   private processOdom(raw: any) {
     if (!raw?.pose?.pose) return raw;
     const pos = raw.pose.pose.position ?? {};
@@ -393,6 +511,10 @@ export class RosRobotManager extends EventEmitter {
       w: ori.w ?? 1,
     });
     const nextPose = { x: pos.x ?? 0, y: pos.y ?? 0, yaw };
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    if (stampMs !== undefined) {
+      this.pushTfHistory(this.mapPoseHistory, { ...nextPose, stampMs });
+    }
     if (this.mapPose) {
       const dx = nextPose.x - this.mapPose.x;
       const dy = nextPose.y - this.mapPose.y;
@@ -404,8 +526,148 @@ export class RosRobotManager extends EventEmitter {
     return raw;
   }
 
-  private processLaser(raw: any) {
-    if (!raw?.ranges || !Array.isArray(raw.ranges)) return raw;
+  private processScanPose(raw: any) {
+    const stampKey = rosStampToKey(raw?.header?.stamp);
+    if (!stampKey) return undefined;
+    const scanPose = this.extractScanPose(raw);
+    if (!scanPose) return undefined;
+
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    const nowMs = Date.now();
+    this.scanPoseByStamp.set(stampKey, { ...scanPose, stampMs, receivedAtMs: nowMs });
+    this.pruneScanPoseBuffer();
+
+    const pending = this.pendingLaserByStamp.get(stampKey);
+    if (nowMs - this.lastScanPoseSidecarLogAt >= 2000) {
+      this.lastScanPoseSidecarLogAt = nowMs;
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose-sidecar',
+          stampMs,
+          stampKey,
+          scanPose,
+          pendingMatched: !!pending,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+        })
+      );
+    }
+    if (pending) {
+      clearTimeout(pending.timeout);
+      this.pendingLaserByStamp.delete(stampKey);
+      const processed = this.processLaser(pending.raw, { allowDefer: false });
+      if (processed !== undefined) this.emitChannelData('laser', processed);
+    }
+
+    return undefined;
+  }
+
+  private extractScanPose(raw: any): ScanPose2D | undefined {
+    return (
+      this.pickScanPose(raw) ??
+      this.pickScanPose(raw?.pose) ??
+      this.pickPoseStamped(raw?.pose) ??
+      this.pickPoseStamped(raw?.pose?.pose) ??
+      this.pickPoseStamped(raw)
+    );
+  }
+
+  private pickScanPose(value: any): ScanPose2D | undefined {
+    const theta = value?.theta ?? value?.yaw;
+    if (isFiniteNumber(value?.x) && isFiniteNumber(value?.y) && isFiniteNumber(theta)) {
+      return { x: value.x, y: value.y, theta };
+    }
+    return undefined;
+  }
+
+  private pickPoseStamped(value: any): ScanPose2D | undefined {
+    const pos = value?.position;
+    const ori = value?.orientation;
+    if (!pos || !isFiniteNumber(pos.x) || !isFiniteNumber(pos.y)) return undefined;
+    if (isFiniteNumber(pos.z)) return { x: pos.x, y: pos.y, theta: pos.z };
+    if (!ori) return undefined;
+    const theta = quaternionToYaw({
+      x: ori.x ?? 0,
+      y: ori.y ?? 0,
+      z: ori.z ?? 0,
+      w: ori.w ?? 1,
+    });
+    return Number.isFinite(theta) ? { x: pos.x, y: pos.y, theta } : undefined;
+  }
+
+  private pruneScanPoseBuffer() {
+    const cutoff = Date.now() - SCAN_POSE_BUFFER_MS;
+    for (const [stampKey, sample] of this.scanPoseByStamp.entries()) {
+      if (sample.receivedAtMs >= cutoff && this.scanPoseByStamp.size <= SCAN_POSE_MAX_BUFFER) break;
+      this.scanPoseByStamp.delete(stampKey);
+    }
+  }
+
+  private deferLaserUntilPose(raw: any, stampKey: string) {
+    if (SCAN_POSE_MATCH_TIMEOUT_MS <= 0) return false;
+    const previous = this.pendingLaserByStamp.get(stampKey);
+    if (previous) clearTimeout(previous.timeout);
+    const stampMs = rosStampToMs(raw?.header?.stamp);
+    const nowMs = Date.now();
+    if (nowMs - this.lastScanPoseWaitLogAt >= 2000) {
+      this.lastScanPoseWaitLogAt = nowMs;
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose-wait',
+          reason: 'sidecar-not-yet-received',
+          stampMs,
+          stampKey,
+          waitMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+        })
+      );
+    }
+    const timeout = setTimeout(() => {
+      this.pendingLaserByStamp.delete(stampKey);
+      const timeoutNowMs = Date.now();
+      if (timeoutNowMs - this.lastScanPoseTimeoutLogAt >= 2000) {
+        this.lastScanPoseTimeoutLogAt = timeoutNowMs;
+        console.log(
+          JSON.stringify({
+            tag: 'scan-pose-timeout',
+            reason: 'sidecar-match-timeout',
+            stampMs,
+            stampKey,
+            waitedMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+            sidecarBufferSize: this.scanPoseByStamp.size,
+            pendingLaserCount: this.pendingLaserByStamp.size,
+          })
+        );
+      }
+      const processed = this.processLaser(raw, { allowDefer: false });
+      if (processed !== undefined) this.emitChannelData('laser', processed);
+    }, SCAN_POSE_MATCH_TIMEOUT_MS);
+    this.pendingLaserByStamp.set(stampKey, { raw, timeout });
+    return true;
+  }
+
+  private clearPendingLaserScans() {
+    for (const pending of this.pendingLaserByStamp.values()) {
+      clearTimeout(pending.timeout);
+    }
+    this.pendingLaserByStamp.clear();
+  }
+
+  private processLaser(raw: any, options: { allowDefer?: boolean } = {}) {
+    if (!raw?.ranges || !Array.isArray(raw.ranges)) {
+      if (!this.lastLoggedOffsetSource) {
+        console.log(
+          JSON.stringify({
+            tag: 'laser-skip',
+            reason: 'no-ranges',
+            keys: raw && typeof raw === 'object' ? Object.keys(raw) : null,
+          })
+        );
+        this.lastLoggedOffsetSource = 'default';
+      }
+      return raw;
+    }
 
     const { ranges, angle_increment } = raw;
     const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
@@ -414,11 +676,118 @@ export class RosRobotManager extends EventEmitter {
       downsampledRanges.push(ranges[i]);
     }
 
-    const offset = this.laserToBase ?? this.laserOffset;
+    const scanFrameId = typeof raw?.header?.frame_id === 'string' ? raw.header.frame_id : undefined;
+    const scanInBaseFrame = scanFrameId !== undefined && this.baseFrames.includes(scanFrameId);
+    const frameOffset = scanInBaseFrame
+      ? { x: 0, y: 0, yaw: 0 }
+      : scanFrameId
+        ? this.sensorOffsetsByFrame.get(scanFrameId)
+        : undefined;
+    const offset = frameOffset ?? this.laserToBase ?? this.laserOffset;
+    const offsetSource: 'identity' | 'frame_id' | 'legacy' | 'default' = scanInBaseFrame
+      ? 'identity'
+      : frameOffset
+        ? 'frame_id'
+        : this.laserToBase
+          ? 'legacy'
+          : 'default';
+    if (
+      offsetSource !== this.lastLoggedOffsetSource ||
+      (scanFrameId ?? null) !== (this.lastLoggedScanFrameId ?? null)
+    ) {
+      console.log(
+        JSON.stringify({
+          tag: 'scan-offset',
+          scanFrameId: scanFrameId ?? null,
+          offsetSource,
+          offset,
+          knownFrames: [...this.sensorOffsetsByFrame.keys()],
+        })
+      );
+      this.lastLoggedOffsetSource = offsetSource;
+      this.lastLoggedScanFrameId = scanFrameId ?? null;
+    }
     const stampMs = rosStampToMs(raw?.header?.stamp);
-    const pose =
-      stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
-    const scanPose = pose ? { x: pose.x, y: pose.y, theta: pose.yaw } : undefined;
+    const stampKey = rosStampToKey(raw?.header?.stamp);
+    const fw = raw?.pose;
+    const fwValid = fw && isFiniteNumber(fw.x) && isFiniteNumber(fw.y) && isFiniteNumber(fw.theta);
+    const sidecarPose = stampKey ? this.scanPoseByStamp.get(stampKey) : undefined;
+    let scanPoseSource: ScanPoseSource = 'none';
+    let scanPose: ScanPose2D | undefined;
+    if (fwValid) {
+      scanPose = { x: fw.x, y: fw.y, theta: fw.theta };
+      scanPoseSource = 'firmware';
+    } else if (sidecarPose) {
+      scanPose = { x: sidecarPose.x, y: sidecarPose.y, theta: sidecarPose.theta };
+      scanPoseSource = 'sidecar';
+    } else if ((options.allowDefer ?? true) && stampKey && this.channels.has('scanPose')) {
+      this.deferLaserUntilPose(raw, stampKey);
+      return undefined;
+    } else {
+      const pose =
+        stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
+      if (pose) {
+        scanPose = { x: pose.x, y: pose.y, theta: pose.yaw };
+        scanPoseSource = 'computed';
+      }
+    }
+
+    const nowMs = Date.now();
+    const scanInterval =
+      stampMs !== undefined && this.lastScanStampMs !== undefined
+        ? stampMs - this.lastScanStampMs
+        : null;
+    if (stampMs !== undefined) this.lastScanStampMs = stampMs;
+    if (nowMs - this.lastScanDetailLogAt >= 2000) {
+      this.lastScanDetailLogAt = nowMs;
+      const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
+      const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+      const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
+      const amclExtrapolated =
+        amclLatest !== undefined && stampMs !== undefined && stampMs > amclLatest;
+      let omegaRadPerSec: number | null = null;
+      if (this.mapPoseHistory.length >= 2) {
+        const a = this.mapPoseHistory[this.mapPoseHistory.length - 2];
+        const b = this.mapPoseHistory[this.mapPoseHistory.length - 1];
+        if (a && b) {
+          const dt = (b.stampMs - a.stampMs) / 1000;
+          if (dt > 0) {
+            let dyaw = b.yaw - a.yaw;
+            if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+            if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+            omegaRadPerSec = dyaw / dt;
+          }
+        }
+      }
+      console.log(
+        JSON.stringify({
+          tag: 'scan-pose',
+          stampMs,
+          stampKey,
+          scanPose,
+          scanPoseSource,
+          scanPoseChannelEnabled: this.channels.has('scanPose'),
+          sidecarAvailable: !!sidecarPose,
+          sidecarStampMs: sidecarPose?.stampMs ?? null,
+          sidecarAgeMs: sidecarPose ? nowMs - sidecarPose.receivedAtMs : null,
+          sidecarBufferSize: this.scanPoseByStamp.size,
+          pendingLaserCount: this.pendingLaserByStamp.size,
+          scanPoseMatchTimeoutMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+          scanInterval,
+          amclExtrapolated,
+          omegaRadPerSec,
+          amclLatestStamp: amclLatest,
+          amclAgeVsScan: amclLatest && stampMs !== undefined ? amclLatest - stampMs : null,
+          amclHistLen: this.mapPoseHistory.length,
+          m2oLatestStamp: m2oLatest,
+          m2oAgeVsScan: m2oLatest && stampMs !== undefined ? m2oLatest - stampMs : null,
+          o2bLatestStamp: o2bLatest,
+          o2bAgeVsScan: o2bLatest && stampMs !== undefined ? o2bLatest - stampMs : null,
+          m2oHistLen: this.mapToOdomHistory.length,
+          o2bHistLen: this.odomToBaseHistory.length,
+        })
+      );
+    }
 
     return {
       ...raw,
@@ -426,6 +795,7 @@ export class RosRobotManager extends EventEmitter {
       angle_increment: angle_increment * stride,
       laserOffset: { x: offset.x, y: offset.y, yaw: offset.yaw },
       scanPose,
+      scanPoseSource,
       frame: 'base_link',
       stampMs,
     };
@@ -564,11 +934,16 @@ export class RosRobotManager extends EventEmitter {
         });
       }
     }
-    if (
-      (child === 'laser' || child === 'base_scan') &&
-      (parent === 'base_footprint' || parent === 'base_link' || this.baseFrames.includes(parent))
-    ) {
-      this.laserToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+    if (this.baseFrames.includes(parent) && !this.baseFrames.includes(child)) {
+      const offset = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+      const isNew = !this.sensorOffsetsByFrame.has(child);
+      this.sensorOffsetsByFrame.set(child, offset);
+      if (isNew) {
+        console.log(JSON.stringify({ tag: 'tf-static', parent, child, offset }));
+      }
+      if (child === 'laser' || child === 'base_scan') {
+        this.laserToBase = { ...offset };
+      }
     }
   }
 
@@ -619,19 +994,58 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private resolveScanPose(scanStampMs: number): Pose2D | undefined {
-    const mapToOdom = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
-    const odomToBase = this.interpolateTfAt(this.odomToBaseHistory, scanStampMs);
-    if (mapToOdom && odomToBase) {
-      return combineTransforms(mapToOdom, odomToBase);
-    }
-    if (odomToBase && this.mapToOdom) {
-      return combineTransforms(this.mapToOdom, odomToBase);
-    }
-    if (mapToOdom && this.odomPose) {
-      return combineTransforms(mapToOdom, this.odomPose);
-    }
-    const fallback = this.computeMapBasePose();
-    return fallback?.pose;
+    const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
+    const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+    const amclAge =
+      amclLatest !== undefined ? Math.abs(scanStampMs - amclLatest) : Number.POSITIVE_INFINITY;
+    const o2bAge =
+      o2bLatest !== undefined ? Math.abs(scanStampMs - o2bLatest) : Number.POSITIVE_INFINITY;
+
+    const amclPose = this.extrapolateAtStamp(this.mapPoseHistory, scanStampMs);
+    const m2o = this.interpolateTfAt(this.mapToOdomHistory, scanStampMs);
+    const o2b = this.extrapolateAtStamp(this.odomToBaseHistory, scanStampMs);
+    const tfPose = m2o && o2b ? combineTransforms(m2o, o2b) : undefined;
+
+    if (amclPose && tfPose) return amclAge <= o2bAge ? amclPose : tfPose;
+    if (amclPose) return amclPose;
+    if (tfPose) return tfPose;
+    if (this.mapPose) return { ...this.mapPose };
+    return this.computeMapBasePose()?.pose;
+  }
+
+  // Returns pose at stampMs. Interpolates within the buffer, extrapolates linearly
+  // forward using the last-two-samples velocity when stampMs > newest sample.
+  // Extrapolation is capped at 2s to avoid wild predictions.
+  private extrapolateAtStamp(
+    buffer: Array<Pose2D & { stampMs: number }>,
+    stampMs: number
+  ): Pose2D | undefined {
+    const newest = buffer[buffer.length - 1];
+    if (!newest) return undefined;
+    if (stampMs <= newest.stampMs) return this.interpolateTfAt(buffer, stampMs);
+
+    const prev = buffer[buffer.length - 2];
+    if (!prev) return { x: newest.x, y: newest.y, yaw: newest.yaw };
+
+    const sampleDt = (newest.stampMs - prev.stampMs) / 1000;
+    if (sampleDt <= 0) return { x: newest.x, y: newest.y, yaw: newest.yaw };
+
+    const vx = (newest.x - prev.x) / sampleDt;
+    const vy = (newest.y - prev.y) / sampleDt;
+    let dyaw = newest.yaw - prev.yaw;
+    if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+    if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+    const omega = dyaw / sampleDt;
+
+    const extrapDt = Math.min(2, (stampMs - newest.stampMs) / 1000);
+    let yaw = newest.yaw + omega * extrapDt;
+    if (yaw > Math.PI) yaw -= 2 * Math.PI;
+    if (yaw < -Math.PI) yaw += 2 * Math.PI;
+    return {
+      x: newest.x + vx * extrapDt,
+      y: newest.y + vy * extrapDt,
+      yaw,
+    };
   }
 
   private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
@@ -715,5 +1129,27 @@ export class RosRobotManager extends EventEmitter {
       channel,
       data,
     }));
+  }
+
+  getStatus() {
+    return {
+      id: (this.config as any).id,
+      started: this.started,
+      connections: Array.from(this.connections.entries()).map(([id, connection]) => ({
+        id,
+        url: connection.url,
+        connected: connection.isConnected(),
+        ...(connection.getDebugStatus?.() ?? {}),
+      })),
+      channels: Array.from(this.channels.entries()).map(([name, runtime]) => ({
+        name,
+        topic: runtime.config.topic,
+        direction: runtime.config.direction,
+        connectionId: runtime.config.connectionId ?? 'default',
+        errorCount: runtime.errorCount,
+        lastMessageAt: runtime.lastMessageAt,
+      })),
+      latestChannels: Array.from(this.latestChannelData.keys()),
+    };
   }
 }
