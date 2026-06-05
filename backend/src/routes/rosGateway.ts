@@ -305,6 +305,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   fastify.get('/health/ros', async () => {
     return {
       robots: registry.getStatuses(),
+      missions: (fastify as any).missionRegistry?.getStatuses?.() ?? [],
     };
   });
 
