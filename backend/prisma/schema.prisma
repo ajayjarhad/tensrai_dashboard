@@ -116,13 +116,27 @@ model Robot {
 }
 
 model Map {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  name      String   @unique
-  filename  String   @unique
-  image     Bytes    // Binary PGM data
-  metadata  Json     // YAML metadata (resolution, origin)
-  features  Json     // Location tags, missions
-  robots    Robot[]
+  id                     String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                   String    @unique
+  filename               String    @unique
+  image                  Bytes     // Binary PGM data
+  metadata               Json      // YAML metadata (resolution, origin)
+  features               Json      // Location tags, missions
+  contentHash            String?
+  pixelWidth             Int?
+  pixelHeight            Int?
+  imageSizeBytes         Int?
+  displayWebp            Bytes?
+  displayWebpSizeBytes   Int?
+  displayWebpGeneratedAt DateTime?
+  displayPng             Bytes?
+  displayPngSizeBytes    Int?
+  displayPngGeneratedAt  DateTime?
+  previewWebp            Bytes?
+  previewPng             Bytes?
+  previewSizeBytes       Int?
+  displayGenerationError String?
+  robots                 Robot[]
 }
 
 enum RobotMode {

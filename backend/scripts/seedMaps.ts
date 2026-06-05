@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { load } from 'js-yaml';
+import { generateMapAssets } from '../src/services/mapAssets.js';
 
 const prisma = new PrismaClient() as any;
 
@@ -15,6 +16,7 @@ async function main() {
   const map1Pgm = await fs.readFile(path.join(assetsDir, 'map.pgm'));
   const map1Yaml = await fs.readFile(path.join(assetsDir, 'map.yaml'), 'utf-8');
   const map1Metadata = load(map1Yaml) as any;
+  const map1Assets = await generateMapAssets(map1Pgm, map1Metadata);
   const map1Features = {
     locationTags: [
       { id: 'home', name: 'Home Base', x: -153, y: -34, theta: -1.387 }, // 79.47 deg -> 1.387 rad
@@ -38,6 +40,7 @@ async function main() {
   const map2Pgm = await fs.readFile(path.join(assetsDir, 'map2.pgm'));
   const map2Yaml = await fs.readFile(path.join(assetsDir, 'map2.yaml'), 'utf-8');
   const map2Metadata = load(map2Yaml) as any;
+  const map2Assets = await generateMapAssets(map2Pgm, map2Metadata);
   const map2Features = {
     locationTags: [
       { id: 'station_a', name: 'Station A', x: 3.22933, y: -36.12, theta: -2.95 }, // -169 deg -> -2.95 rad
@@ -55,6 +58,7 @@ async function main() {
   const map3Pgm = await fs.readFile(path.join(assetsDir, 'gas_station_map.pgm'));
   const map3Yaml = await fs.readFile(path.join(assetsDir, 'gas_station_map.yaml'), 'utf-8');
   const map3Metadata = load(map3Yaml) as any;
+  const map3Assets = await generateMapAssets(map3Pgm, map3Metadata);
   const map3Features = {
     locationTags: [
       { id: 'home', name: 'Home Base', x: -153, y: -34, theta: -1.387 }, // 79.47 deg -> 1.387 rad
@@ -81,12 +85,15 @@ async function main() {
       image: map1Pgm,
       metadata: map1Metadata,
       features: map1Features,
+      ...map1Assets,
     },
     create: {
       name: 'Warehouse Floor 1',
+      filename: 'map.yaml',
       image: map1Pgm,
       metadata: map1Metadata,
       features: map1Features,
+      ...map1Assets,
     },
   });
 
@@ -96,12 +103,15 @@ async function main() {
       image: map2Pgm,
       metadata: map2Metadata,
       features: map2Features,
+      ...map2Assets,
     },
     create: {
       name: 'Warehouse Floor 2',
+      filename: 'map2.yaml',
       image: map2Pgm,
       metadata: map2Metadata,
       features: map2Features,
+      ...map2Assets,
     },
   });
   const map3 = await prisma.map.upsert({
@@ -110,12 +120,15 @@ async function main() {
       image: map3Pgm,
       metadata: map3Metadata,
       features: map3Features,
+      ...map3Assets,
     },
     create: {
       name: 'Gas Station',
+      filename: 'gas_station_map.yaml',
       image: map3Pgm,
       metadata: map3Metadata,
       features: map3Features,
+      ...map3Assets,
     },
   });
 

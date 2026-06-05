@@ -44,8 +44,9 @@ export function parsePGM(buffer: ArrayBuffer): ParsedPGM {
   const maxVal = readNumber(dataView, offset);
   offset = skipPastNumber(dataView, offset);
 
-  // Skip single whitespace before pixel data
-  offset = skipWhitespace(dataView, offset);
+  // Consume the required single delimiter before binary pixels. Pixel data can
+  // itself start with a whitespace byte value, so do not skip repeatedly here.
+  offset = consumeSingleWhitespace(dataView, offset);
 
   // Calculate data size
   const dataSize = width * height;
@@ -81,6 +82,12 @@ function skipWhitespace(dataView: DataView, offset: number): number {
     }
   }
   return currentOffset;
+}
+
+function consumeSingleWhitespace(dataView: DataView, offset: number): number {
+  if (offset >= dataView.byteLength) return offset;
+  const char = String.fromCharCode(dataView.getUint8(offset));
+  return char === ' ' || char === '\t' || char === '\n' || char === '\r' ? offset + 1 : offset;
 }
 
 /**

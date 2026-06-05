@@ -3,16 +3,22 @@ import { useEffect, useRef, useState } from 'react';
 
 interface ProcessedMapDataWithBitmap extends ProcessedMapData {
   imageBitmap?: ImageBitmap;
+  imageElement?: HTMLImageElement;
+  contentHash?: string;
 }
 
 export function useMapImage(
   mapData: ProcessedMapDataWithBitmap | null | undefined,
   mapId: string = 'map'
 ) {
-  const imageCache = useRef<Map<string, ImageBitmap | HTMLCanvasElement>>(new Map());
+  const imageCache = useRef<Map<string, ImageBitmap | HTMLCanvasElement | HTMLImageElement>>(
+    new Map()
+  );
   // Track which bitmaps we created locally so we only close those
   const ownedBitmaps = useRef<Set<ImageBitmap>>(new Set());
-  const [image, setImage] = useState<ImageBitmap | HTMLCanvasElement | undefined>(undefined);
+  const [image, setImage] = useState<
+    ImageBitmap | HTMLCanvasElement | HTMLImageElement | undefined
+  >(undefined);
 
   useEffect(() => {
     if (!mapData) {
@@ -23,6 +29,11 @@ export function useMapImage(
     const dataWithBitmap = mapData as ProcessedMapDataWithBitmap;
     if (dataWithBitmap.imageBitmap) {
       setImage(dataWithBitmap.imageBitmap);
+      return;
+    }
+
+    if (dataWithBitmap.imageElement) {
+      setImage(dataWithBitmap.imageElement);
       return;
     }
 

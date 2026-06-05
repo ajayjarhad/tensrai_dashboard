@@ -2,7 +2,7 @@ import { trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
 import { getMissionState } from '../services/missionStatus.js';
-import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
+import { fetchMapViaMappingBridge, getMapSyncStatus } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance } from '../types/app.js';
 
 const RobotModeSchema = z.enum([
@@ -132,6 +132,14 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
 
     return { success: true, data: { ...robot, mission: getMissionState(robot.id) } };
   });
+
+  server.get<{ Params: { id: string } }>(
+    '/robots/:id/map-sync',
+    async (request: any, _reply: any) => {
+      const { id } = request.params;
+      return { success: true, data: getMapSyncStatus(id) };
+    }
+  );
 
   // Create robot (Backend/Testing only)
   server.post<{ Body: z.infer<typeof CreateRobotSchema> }>(
