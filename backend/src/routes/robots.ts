@@ -2,7 +2,11 @@ import { trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
 import { getMissionState } from '../services/missionStatus.js';
-import { fetchMapViaMappingBridge, getMapSyncStatus } from '../services/saveMapFromMapping.js';
+import {
+  fetchMapViaMappingBridge,
+  getMapSyncStatus,
+  isMapSyncActive,
+} from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance } from '../types/app.js';
 
 const RobotModeSchema = z.enum([
@@ -138,6 +142,45 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
     async (request: any, _reply: any) => {
       const { id } = request.params;
       return { success: true, data: getMapSyncStatus(id) };
+    }
+  );
+
+  server.post<{ Params: { id: string } }>(
+    '/robots/:id/map-sync',
+    async (request: any, reply: any) => {
+      const { id } = request.params;
+      const prisma = server.prisma as any;
+      const robot = await prisma.robot.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          ipAddress: true,
+          mappingBridgePort: true,
+        },
+      });
+
+      if (!robot) {
+        return reply.status(404).send({ success: false, error: 'Robot not found' });
+      }
+
+      if (!robot.ipAddress || !robot.mappingBridgePort) {
+        return reply
+          .status(400)
+          .send({ success: false, error: 'Robot mapping bridge is not configured' });
+      }
+
+      const current = getMapSyncStatus(id);
+      if (isMapSyncActive(current)) {
+        return {
+          success: true,
+          data: current,
+          message: 'Map sync already in progress',
+        };
+      }
+
+      const status = await fetchMapViaMappingBridge(server, robot);
+      return { success: true, data: status ?? getMapSyncStatus(id) };
     }
   );
 

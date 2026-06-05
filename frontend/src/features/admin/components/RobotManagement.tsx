@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import {
   ArrowLeft,
@@ -13,6 +14,8 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api';
+import { evictFromCache } from '@/lib/map';
+import { queryKeys } from '@/lib/query-keys';
 import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { useAuth } from '@/stores/auth';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
@@ -73,8 +76,39 @@ const defaultChannels = [
   },
 ];
 
+type MapSyncStatus = {
+  phase:
+    | 'idle'
+    | 'connecting'
+    | 'manifest'
+    | 'skipped'
+    | 'receiving'
+    | 'processing'
+    | 'complete'
+    | 'failed';
+  robotId: string;
+  mapId?: string;
+  mapName?: string;
+  filename?: string;
+  contentHash?: string;
+  bytesReceived: number;
+  totalBytes?: number;
+  percent?: number;
+  lastError?: string;
+};
+
+const MAP_SYNC_TERMINAL_PHASES = new Set<MapSyncStatus['phase']>(['complete', 'skipped', 'failed']);
+const MAP_SYNC_POLL_INTERVAL_MS = 2_000;
+const MAP_SYNC_POLL_TIMEOUT_MS = 5 * 60_000;
+
+const isTerminalMapSyncStatus = (status: MapSyncStatus | null | undefined) =>
+  Boolean(status && MAP_SYNC_TERMINAL_PHASES.has(status.phase));
+
+const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
 export function RobotManagement() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { isAdmin } = useAuth();
   const isAdminUser = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const [robots, setRobots] = useState<Robot[]>([]);
@@ -88,11 +122,13 @@ export function RobotManagement() {
   const [customChannels, setCustomChannels] = useState<any[]>(defaultChannels);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [mapSyncByRobotId, setMapSyncByRobotId] = useState<Record<string, MapSyncStatus>>({});
+  const [refreshingMapRobotId, setRefreshingMapRobotId] = useState<string | null>(null);
   const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
   const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
   const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
 
-  const loadRobots = useCallback(async (options?: { silent?: boolean }) => {
+  const loadRobots = useCallback(async (options?: { silent?: boolean }): Promise<Robot[]> => {
     const silent = options?.silent ?? false;
     try {
       if (!silent) setLoading(true);
@@ -102,6 +138,7 @@ export function RobotManagement() {
       if (res.success) {
         setRobots(res.data);
         setError(null);
+        return res.data;
       } else {
         setError(res.message ?? 'Failed to load robots');
       }
@@ -111,6 +148,7 @@ export function RobotManagement() {
     } finally {
       if (!silent) setLoading(false);
     }
+    return [];
   }, []);
 
   const loadMaps = useCallback(async () => {
@@ -235,6 +273,76 @@ export function RobotManagement() {
     }
   };
 
+  const handleRefreshRobotMap = async () => {
+    if (!form.id || refreshingMapRobotId) return;
+
+    const robotId = form.id;
+    const savedRobot = robots.find(robot => robot.id === robotId);
+    const fallbackMapId = savedRobot?.mapId ?? form.mapId;
+    const toastId = toast.loading('Refreshing map from robot');
+
+    setRefreshingMapRobotId(robotId);
+    try {
+      const startResponse = await apiClient.post<{
+        success: boolean;
+        data?: MapSyncStatus;
+        error?: string;
+      }>(`robots/${robotId}/map-sync`);
+      let status = startResponse.data ?? null;
+      if (status) {
+        const nextStatus = status;
+        setMapSyncByRobotId(current => ({ ...current, [robotId]: nextStatus }));
+      }
+
+      const startedAt = Date.now();
+      while (!isTerminalMapSyncStatus(status)) {
+        if (Date.now() - startedAt > MAP_SYNC_POLL_TIMEOUT_MS) {
+          throw new Error('Map refresh timed out');
+        }
+
+        await sleep(MAP_SYNC_POLL_INTERVAL_MS);
+        const pollResponse = await apiClient.get<{ success: boolean; data?: MapSyncStatus }>(
+          `robots/${robotId}/map-sync`
+        );
+        status = pollResponse.data ?? null;
+        if (status) {
+          const nextStatus = status;
+          setMapSyncByRobotId(current => ({ ...current, [robotId]: nextStatus }));
+        }
+      }
+
+      if (status?.phase === 'failed') {
+        throw new Error(status.lastError ?? 'Map refresh failed');
+      }
+
+      const affectedMapId = status?.mapId ?? fallbackMapId;
+      if (affectedMapId) {
+        evictFromCache(affectedMapId);
+      }
+
+      await queryClient.invalidateQueries({ queryKey: queryKeys.robots.lists });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.missions.all });
+
+      const [nextRobots] = await Promise.all([loadRobots({ silent: true }), loadMaps()]);
+      const refreshedRobot = nextRobots.find(robot => robot.id === robotId);
+      if (refreshedRobot) {
+        setForm(current =>
+          current.id === robotId ? { ...current, mapId: refreshedRobot.mapId ?? '' } : current
+        );
+      }
+
+      toast.success(status?.phase === 'skipped' ? 'Map metadata refreshed' : 'Map refreshed', {
+        id: toastId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to refresh map';
+      setError(message);
+      toast.error(message, { id: toastId });
+    } finally {
+      setRefreshingMapRobotId(null);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this robot?')) return;
     try {
@@ -272,6 +380,20 @@ export function RobotManagement() {
   };
 
   const effectiveChannels = useMemo(() => customChannels, [customChannels]);
+  const editingRobot = form.id ? robots.find(robot => robot.id === form.id) : null;
+  const currentMapSyncStatus = form.id ? mapSyncByRobotId[form.id] : undefined;
+  const isRefreshingCurrentMap = Boolean(form.id && refreshingMapRobotId === form.id);
+  const refreshMapDisabled = Boolean(
+    !form.id ||
+      isRefreshingCurrentMap ||
+      !editingRobot?.ipAddress ||
+      !editingRobot?.mappingBridgePort
+  );
+  const refreshMapTitle = form.id
+    ? !editingRobot?.ipAddress || !editingRobot?.mappingBridgePort
+      ? 'Saved robot needs IP address and mapping bridge port'
+      : 'Refresh map and metadata from robot'
+    : 'Save the robot before refreshing map data';
 
   const handleEditChannelRow = (channel: any) => {
     const current = Array.isArray(customChannels) ? [...customChannels] : [];
@@ -549,19 +671,52 @@ export function RobotManagement() {
                   </p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Map</label>
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.mapId ?? ''}
-                    onChange={e => setForm(f => ({ ...f, mapId: e.target.value || undefined }))}
-                  >
-                    <option value="">Select a map (optional)</option>
-                    {maps.map(map => (
-                      <option key={map.id} value={map.id}>
-                        {map.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-sm text-muted-foreground">Map</label>
+                    {form.id && (
+                      <button
+                        type="button"
+                        onClick={handleRefreshRobotMap}
+                        disabled={refreshMapDisabled}
+                        title={refreshMapTitle}
+                        aria-label="Refresh map and metadata from robot"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RefreshCcw
+                          className={`h-4 w-4 ${isRefreshingCurrentMap ? 'animate-spin' : ''}`}
+                        />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
+                      value={form.mapId ?? ''}
+                      onChange={e => setForm(f => ({ ...f, mapId: e.target.value || undefined }))}
+                    >
+                      <option value="">Select a map (optional)</option>
+                      {maps.map(map => (
+                        <option key={map.id} value={map.id}>
+                          {map.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {currentMapSyncStatus && form.id && (
+                    <div className="text-xs text-muted-foreground">
+                      {currentMapSyncStatus.phase === 'failed'
+                        ? (currentMapSyncStatus.lastError ?? 'Map refresh failed')
+                        : currentMapSyncStatus.phase === 'skipped'
+                          ? 'Image unchanged; metadata checked'
+                          : currentMapSyncStatus.phase === 'complete'
+                            ? 'Map refresh complete'
+                            : `Refreshing map${
+                                typeof currentMapSyncStatus.percent === 'number'
+                                  ? ` (${Math.round(currentMapSyncStatus.percent)}%)`
+                                  : ''
+                              }`}
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <label className="text-sm text-muted-foreground">Status</label>

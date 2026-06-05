@@ -46,6 +46,7 @@ type MapMetadataResponse = {
     metadata: MapYamlMetadata;
     features?: ProcessedMapData['features'];
     contentHash?: string | null;
+    featuresHash?: string | null;
     pixelWidth?: number | null;
     pixelHeight?: number | null;
     imageSizeBytes?: number | null;
@@ -71,8 +72,8 @@ let accessCounter = 0;
 let mapWorker: Worker | null = null;
 let mapWorkerRequestId = 0;
 
-const cacheKeyForMap = (mapId: string, contentHash?: string | null) =>
-  `map_${mapId}_${contentHash || 'nohash'}`;
+const cacheKeyForMap = (mapId: string, contentHash?: string | null, featuresHash?: string | null) =>
+  `map_${mapId}_${contentHash || 'nohash'}_${featuresHash || 'nofeatures'}`;
 
 const getWorker = () => {
   if (!mapWorker) {
@@ -364,7 +365,7 @@ export async function loadMapAssets(
 
   const mapData = mapResponse.data;
   const { metadata, features } = mapData;
-  const cacheKey = cacheKeyForMap(mapId, mapData.contentHash);
+  const cacheKey = cacheKeyForMap(mapId, mapData.contentHash, mapData.featuresHash);
 
   if (cacheEnabled) {
     options.progressCallback?.({ phase: 'checking-cache', progress: 5 });

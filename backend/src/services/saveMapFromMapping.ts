@@ -18,6 +18,7 @@ type MapSyncStatus = {
     | 'complete'
     | 'failed';
   robotId: string;
+  mapId?: string;
   mapName?: string;
   filename?: string;
   contentHash?: string;
@@ -31,6 +32,7 @@ type MapSyncStatus = {
 };
 
 const mapSyncStatusByRobot = new Map<string, MapSyncStatus>();
+const ACTIVE_MAP_SYNC_PHASES = new Set(['connecting', 'manifest', 'receiving', 'processing']);
 
 const updateMapSyncStatus = (
   robotId: string,
@@ -70,6 +72,9 @@ export const getMapSyncStatus = (robotId: string): MapSyncStatus => {
     elapsedMs: Date.now() - current.startedAt,
   };
 };
+
+export const isMapSyncActive = (status: Pick<MapSyncStatus, 'phase'> | null | undefined) =>
+  Boolean(status && ACTIVE_MAP_SYNC_PHASES.has(status.phase));
 
 const looksLikeFilename = (value: unknown, ext: string) =>
   typeof value === 'string' && value.trim().toLowerCase().endsWith(ext) && !value.includes('\n');
@@ -194,6 +199,10 @@ const getMapDetails = (files: any) => {
   return { features, filename, name };
 };
 
+const hasFeaturePayload = (value: any) => value && Object.hasOwn(value, 'metadata_json');
+
+const getFeaturePayload = (value: any) => value?.metadata_json ?? {};
+
 const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRobot: boolean) => {
   const logger = fastify.log;
   const prisma = fastify.prisma as any;
@@ -271,7 +280,7 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRo
 export const upsertMapFromResponse = async (fastify: any, robotId: string, files: any) => {
   if (!files) return;
   // Process primary map and link robot
-  await upsertSingleMap(fastify, robotId, files, true);
+  const primaryMap = await upsertSingleMap(fastify, robotId, files, true);
 
   // Process additional maps if provided (not linked to robot)
   if (Array.isArray(files.additional_maps)) {
@@ -279,6 +288,8 @@ export const upsertMapFromResponse = async (fastify: any, robotId: string, files
       await upsertSingleMap(fastify, robotId, extra, false);
     }
   }
+
+  return primaryMap;
 };
 
 // Connects to the mapping bridge, requests map data, and upserts it.
@@ -287,10 +298,20 @@ export const fetchMapViaMappingBridge = async (
   robot: { id: string; ipAddress?: string | null; mappingBridgePort?: number | null }
 ) => {
   const logger = fastify.log;
+  const prisma = fastify.prisma as any;
   const robotId = robot.id;
   if (!robot.ipAddress || !robot.mappingBridgePort) {
     logger.warn({ robotId }, 'Cannot fetch map: mapping bridge not configured');
     return;
+  }
+
+  const currentStatus = mapSyncStatusByRobot.get(robotId);
+  if (isMapSyncActive(currentStatus)) {
+    logger.info(
+      { robotId, phase: currentStatus?.phase },
+      'Map sync already active; reusing status'
+    );
+    return getMapSyncStatus(robotId);
   }
 
   const targetUrl = `ws://${robot.ipAddress}:${robot.mappingBridgePort}`;
@@ -358,6 +379,16 @@ export const fetchMapViaMappingBridge = async (
     });
   };
 
+  const updateExistingMapFeatures = async (filename: string, manifest: any) => {
+    if (!hasFeaturePayload(manifest)) return false;
+    const features = normalizeFeatures(getFeaturePayload(manifest));
+    await prisma.map.update({
+      where: { filename },
+      data: { features },
+    });
+    return true;
+  };
+
   const finalizeChunkedTransfer = async (transferId: string) => {
     const transfer = transfers.get(transferId);
     if (!transfer) return;
@@ -405,6 +436,7 @@ export const fetchMapViaMappingBridge = async (
       const storedContentHash = storedMap.contentHash ?? manifest.contentHash ?? manifest.sha256;
       updateMapSyncStatus(robotId, {
         phase: 'complete',
+        mapId: storedMap.id,
         filename: manifest.map_yaml,
         mapName: manifest.name,
         contentHash: storedContentHash,
@@ -465,7 +497,7 @@ export const fetchMapViaMappingBridge = async (
         }
         const existing = await prisma.map.findUnique({
           where: { filename },
-          select: { contentHash: true },
+          select: { id: true, contentHash: true },
         });
         const expectedContentHash =
           manifest.contentHash ?? manifest.content_hash ?? manifest.map_content_hash;
@@ -473,11 +505,13 @@ export const fetchMapViaMappingBridge = async (
           existing?.contentHash &&
           (existing.contentHash === expectedContentHash || existing.contentHash === rawHash)
         ) {
+          const featuresUpdated = await updateExistingMapFeatures(filename, manifest);
           if (manifest.is_default ?? manifest.isDefault ?? true) {
             await linkExistingMapToRobot(filename);
           }
           updateMapSyncStatus(robotId, {
             phase: 'skipped',
+            mapId: existing.id,
             filename,
             mapName: manifest.name,
             contentHash: existing.contentHash,
@@ -490,6 +524,7 @@ export const fetchMapViaMappingBridge = async (
             transferId,
             reason: 'unchanged',
             contentHash: existing.contentHash,
+            featuresUpdated,
           });
           return;
         }
@@ -582,9 +617,10 @@ export const fetchMapViaMappingBridge = async (
           percent: undefined,
           lastError: undefined,
         });
-        await upsertMapFromResponse(fastify, robotId, parsed.payload.files);
+        const storedMap = await upsertMapFromResponse(fastify, robotId, parsed.payload.files);
         updateMapSyncStatus(robotId, {
           phase: 'complete',
+          mapId: storedMap?.id,
           percent: 100,
           lastError: undefined,
         });
@@ -611,4 +647,6 @@ export const fetchMapViaMappingBridge = async (
   socket.on('close', () => {
     if (activityTimeout) clearTimeout(activityTimeout);
   });
+
+  return getMapSyncStatus(robotId);
 };

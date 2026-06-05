@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { trace } from '@opentelemetry/api';
 import { databaseMetrics, mapMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
@@ -28,6 +29,28 @@ const displayFieldsForMap = (map: any) => ({
   previewSizeBytes: map.previewSizeBytes ?? null,
   error: map.displayGenerationError ?? null,
 });
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stableStringify(item)).join(',')}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+  return `{${entries
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+    .join(',')}}`;
+};
+
+const hashJson = (value: unknown) =>
+  createHash('sha256')
+    .update(stableStringify(value ?? null))
+    .digest('hex');
 
 const mapRoutes: any = async (server: AppFastifyInstance) => {
   // GET /api/maps - list maps (id + name)
@@ -138,6 +161,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
         success: true,
         data: {
           ...map,
+          featuresHash: hashJson(map.features),
           displayAssets: displayFieldsForMap(map),
           previewWebp: undefined,
           previewPng: undefined,
