@@ -47,6 +47,11 @@ const ROS_COMMAND_LOG_INTERVAL_MS = (() => {
   if (!Number.isFinite(raw) || raw < 0) return 2000;
   return raw;
 })();
+const ROS_TELEOP_STALE_WARN_MS = (() => {
+  const raw = Number(process.env['ROS_TELEOP_STALE_WARN_MS'] ?? 1000);
+  if (!Number.isFinite(raw) || raw <= 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(raw);
+})();
 
 type ForwardableChannelEvent = {
   channel: string;
@@ -213,12 +218,21 @@ const rosGateway = async (fastify: FastifyInstance) => {
       });
 
       if (parsed.type === 'command') {
-        logRosCommand('info', 'received', {
+        const commandAgeMs =
+          typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null;
+        const commandLogLevel =
+          parsed.channel === 'teleop' &&
+          typeof commandAgeMs === 'number' &&
+          commandAgeMs >= ROS_TELEOP_STALE_WARN_MS
+            ? 'warn'
+            : 'info';
+        logRosCommand(commandLogLevel, 'received', {
           robotId,
           channel: parsed.channel,
           commandId: parsed.commandId ?? null,
           sentAtMs: parsed.sentAtMs ?? null,
-          ageMs: typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null,
+          ageMs: commandAgeMs,
+          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
           managerAttached: Boolean(attachedManager),
         });
         const currentManager = registry.getManager(robotId);
@@ -248,10 +262,11 @@ const rosGateway = async (fastify: FastifyInstance) => {
           );
           return;
         }
-        logRosCommand('info', 'published', {
+        logRosCommand(commandLogLevel, 'published', {
           robotId,
           channel: parsed.channel,
           commandId: parsed.commandId ?? null,
+          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
           result,
         });
         return;

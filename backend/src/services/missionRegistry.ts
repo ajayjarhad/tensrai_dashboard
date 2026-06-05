@@ -637,7 +637,7 @@ export class MissionRegistry extends EventEmitter {
     );
 
     try {
-      connection.socket.removeAllListeners();
+      this.detachRetiredSocket(connection);
       connection.socket.terminate();
     } catch {}
 
@@ -651,13 +651,18 @@ export class MissionRegistry extends EventEmitter {
     this.clearConnectionTimers(connection);
     this.connections.delete(robotId);
     try {
-      connection.socket.removeAllListeners();
+      this.detachRetiredSocket(connection);
       if (connection.socket.readyState === WebSocket.OPEN) {
         connection.socket.close();
       } else if (connection.socket.readyState !== WebSocket.CLOSED) {
         connection.socket.terminate();
       }
     } catch {}
+  }
+
+  private detachRetiredSocket(connection: ActiveConnection) {
+    connection.socket.removeAllListeners();
+    connection.socket.on('error', () => {});
   }
 
   private scheduleReconnect(robotId: string) {

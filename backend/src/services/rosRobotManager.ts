@@ -326,15 +326,52 @@ export class RosRobotManager extends EventEmitter {
       this.armTeleopWatchdog(runtime.config);
     }
 
+    const requestedConnectionId = runtime.config.connectionId ?? 'default';
     const connection = this.getConnectionForChannel(runtime.config);
+    const fallbackConnection =
+      requestedConnectionId !== 'default' ? this.connections.get('default') : undefined;
     if (!connection) {
+      if (fallbackConnection) {
+        try {
+          fallbackConnection.publish(
+            runtime.config.topic,
+            runtime.config.msgType,
+            outgoing as object
+          );
+          return {
+            ok: true,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.() ?? {
+              connected: fallbackConnection.isConnected(),
+              url: fallbackConnection.url,
+            },
+          };
+        } catch (error) {
+          runtime.errorCount += 1;
+          this.emit('error', error as Error);
+          return {
+            ok: false,
+            error: (error as Error).message,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.(),
+          };
+        }
+      }
       return {
         ok: false,
         error: `No connection for channel ${channelName}`,
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
       };
     }
     const connectionStatusBefore = connection.getDebugStatus?.() ?? {
@@ -348,10 +385,46 @@ export class RosRobotManager extends EventEmitter {
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
         connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
       };
     } catch (error) {
+      if (fallbackConnection) {
+        try {
+          fallbackConnection.publish(
+            runtime.config.topic,
+            runtime.config.msgType,
+            outgoing as object
+          );
+          return {
+            ok: true,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            primaryError: (error as Error).message,
+            connection: fallbackConnection.getDebugStatus?.() ?? {
+              connected: fallbackConnection.isConnected(),
+              url: fallbackConnection.url,
+            },
+          };
+        } catch (fallbackError) {
+          runtime.errorCount += 1;
+          this.emit('error', fallbackError as Error);
+          return {
+            ok: false,
+            error: (fallbackError as Error).message,
+            primaryError: (error as Error).message,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.(),
+          };
+        }
+      }
       runtime.errorCount += 1;
       this.emit('error', error as Error);
       return {
@@ -360,7 +433,7 @@ export class RosRobotManager extends EventEmitter {
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
         connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
       };
     }

@@ -182,6 +182,18 @@ test('times out a mission bridge socket that accepts TCP but never upgrades', as
   });
 });
 
+test('retired connecting sockets still absorb late error events after timeout cleanup', async () => {
+  const port = await startHungUpgradeServer();
+  const { registry } = createRegistry([createRobot(port)]);
+
+  await registry.reloadFromDb();
+  const activeConnection = (registry as any).connections.get('robot-1');
+
+  await waitFor(() => registry.getStatuses()[0]?.status === 'disconnected');
+
+  expect(() => activeConnection.socket.emit('error', new Error('late socket error'))).not.toThrow();
+});
+
 test('reload reconnects an unchanged URL when the existing mission socket is stale connecting', async () => {
   const port = await startHungUpgradeServer();
   const logger = createLogger();

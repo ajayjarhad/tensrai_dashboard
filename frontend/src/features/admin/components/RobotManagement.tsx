@@ -55,7 +55,7 @@ const defaultChannels = [
     topic: '/scan_ui',
     msgType: 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
-    rateLimitHz: 10,
+    rateLimitHz: 3,
   },
   {
     name: 'waypoints',
@@ -69,6 +69,7 @@ const defaultChannels = [
     topic: '/cmd_vel_ui',
     msgType: 'geometry_msgs/msg/Twist',
     direction: 'publish',
+    connectionId: 'control',
   },
 ];
 
@@ -608,8 +609,8 @@ export function RobotManagement() {
                         <div className="text-xs text-muted-foreground">
                           Provide an array of channels. Leave blank to start from defaults.
                           Edit/Delete rows below to change the working set; Save to persist to the
-                          robot. Use <code>connectionId</code> (e.g. "default" or "mapping") to pick
-                          which ROS bridge port to use.
+                          robot. Use <code>connectionId</code> (e.g. "default", "control", or
+                          "mapping") to pick which ROS bridge port to use.
                         </div>
                         {channelsError && (
                           <div className="text-xs text-destructive mt-1">{channelsError}</div>
