@@ -99,7 +99,6 @@ type MapSyncStatus = {
 
 const MAP_SYNC_TERMINAL_PHASES = new Set<MapSyncStatus['phase']>(['complete', 'skipped', 'failed']);
 const MAP_SYNC_POLL_INTERVAL_MS = 2_000;
-const MAP_SYNC_POLL_TIMEOUT_MS = 5 * 60_000;
 
 const isTerminalMapSyncStatus = (status: MapSyncStatus | null | undefined) =>
   Boolean(status && MAP_SYNC_TERMINAL_PHASES.has(status.phase));
@@ -294,12 +293,7 @@ export function RobotManagement() {
         setMapSyncByRobotId(current => ({ ...current, [robotId]: nextStatus }));
       }
 
-      const startedAt = Date.now();
       while (!isTerminalMapSyncStatus(status)) {
-        if (Date.now() - startedAt > MAP_SYNC_POLL_TIMEOUT_MS) {
-          throw new Error('Map refresh timed out');
-        }
-
         await sleep(MAP_SYNC_POLL_INTERVAL_MS);
         const pollResponse = await apiClient.get<{ success: boolean; data?: MapSyncStatus }>(
           `robots/${robotId}/map-sync`
