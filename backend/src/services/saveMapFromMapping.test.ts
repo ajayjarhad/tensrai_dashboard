@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
+import { createServer, type Socket } from 'node:net';
 import fastify from 'fastify';
 import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
@@ -34,6 +35,40 @@ const createLogger = () =>
     error: () => {},
     debug: () => {},
   }) as any;
+
+const startStalledTcpServer = async () => {
+  const sockets = new Set<Socket>();
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to bind stalled TCP server');
+  }
+
+  closeFns.push(
+    () =>
+      new Promise(resolve => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close(() => resolve());
+      })
+  );
+
+  return { port: address.port };
+};
 
 const startMappingServer = async (
   onMessage?: (socket: WebSocket, parsed: any) => void
@@ -195,6 +230,32 @@ test('reuses the active map sync status instead of opening a duplicate socket', 
   expect(status).toMatchObject({
     phase: 'connecting',
     robotId: 'robot-duplicate-sync',
+  });
+});
+
+test('fails a map sync that cannot complete the websocket handshake', async () => {
+  const server = await startStalledTcpServer();
+  const prisma = {
+    map: {
+      findUnique: async () => null,
+    },
+    robot: {
+      update: async () => ({}),
+    },
+  };
+  const fastify = { log: createLogger(), prisma, mapSyncConnectTimeoutMs: 50 };
+
+  await fetchMapViaMappingBridge(fastify, {
+    id: 'robot-stalled-connect',
+    ipAddress: '127.0.0.1',
+    mappingBridgePort: server.port,
+  });
+
+  await waitFor(() => getMapSyncStatus('robot-stalled-connect').phase === 'failed', 500);
+
+  expect(getMapSyncStatus('robot-stalled-connect')).toMatchObject({
+    phase: 'failed',
+    lastError: 'map-sync-connect-timeout',
   });
 });
 

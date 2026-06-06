@@ -6,6 +6,7 @@ import WebSocket from 'ws';
 import { generateMapAssets } from './mapAssets.js';
 
 const MAP_TRANSFER_ACTIVITY_TIMEOUT_MS = 45_000;
+const DEFAULT_MAP_SYNC_CONNECT_TIMEOUT_MS = 15_000;
 
 type MapSyncStatus = {
   phase:
@@ -75,6 +76,15 @@ export const getMapSyncStatus = (robotId: string): MapSyncStatus => {
 
 export const isMapSyncActive = (status: Pick<MapSyncStatus, 'phase'> | null | undefined) =>
   Boolean(status && ACTIVE_MAP_SYNC_PHASES.has(status.phase));
+
+const resolveMapSyncConnectTimeoutMs = (fastify: any) => {
+  const configured = Number(
+    fastify?.mapSyncConnectTimeoutMs ?? process.env.MAP_SYNC_CONNECT_TIMEOUT_MS
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_MAP_SYNC_CONNECT_TIMEOUT_MS;
+};
 
 const looksLikeFilename = (value: unknown, ext: string) =>
   typeof value === 'string' && value.trim().toLowerCase().endsWith(ext) && !value.includes('\n');
@@ -326,6 +336,12 @@ export const fetchMapViaMappingBridge = async (
   });
 
   const socket = new WebSocket(targetUrl);
+  const connectTimeout = setTimeout(() => {
+    const current = mapSyncStatusByRobot.get(robotId);
+    if (current?.phase === 'connecting') {
+      markFailed('map-sync-connect-timeout');
+    }
+  }, resolveMapSyncConnectTimeoutMs(fastify));
   const transfers = new Map<
     string,
     {
@@ -338,6 +354,7 @@ export const fetchMapViaMappingBridge = async (
   let activityTimeout: NodeJS.Timeout | undefined;
 
   const stop = (reason?: string) => {
+    clearTimeout(connectTimeout);
     if (activityTimeout) clearTimeout(activityTimeout);
     try {
       socket.close();
@@ -461,6 +478,7 @@ export const fetchMapViaMappingBridge = async (
 
   socket.on('open', () => {
     try {
+      clearTimeout(connectTimeout);
       resetActivityTimeout();
       socket.send(JSON.stringify({ event: 'GET_MAP_DATA', payload: {} }));
       logger.info({ robotId, targetUrl }, 'Sent GET_MAP_DATA via mapping bridge');
@@ -645,7 +663,15 @@ export const fetchMapViaMappingBridge = async (
   });
 
   socket.on('close', () => {
+    clearTimeout(connectTimeout);
     if (activityTimeout) clearTimeout(activityTimeout);
+    const current = mapSyncStatusByRobot.get(robotId);
+    if (isMapSyncActive(current)) {
+      updateMapSyncStatus(robotId, {
+        phase: 'failed',
+        lastError: 'map-sync-connection-closed',
+      });
+    }
   });
 
   return getMapSyncStatus(robotId);

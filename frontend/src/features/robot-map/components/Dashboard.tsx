@@ -10,7 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { apiClient } from '@/lib/api';
 import { loadMapAssets } from '@/lib/map/loadMapAssets';
 import { worldToRosPose } from '@/lib/map/mapTransforms';
 import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
@@ -157,35 +156,6 @@ type EmergencyAlert = {
   kind: 'software' | 'hardware';
 };
 
-type MapSyncStatus = {
-  phase:
-    | 'idle'
-    | 'connecting'
-    | 'manifest'
-    | 'skipped'
-    | 'receiving'
-    | 'processing'
-    | 'complete'
-    | 'failed';
-  bytesReceived: number;
-  totalBytes?: number;
-  percent?: number;
-  mapName?: string;
-  filename?: string;
-  lastError?: string;
-};
-
-const isMapSyncVisible = (status: MapSyncStatus | null) =>
-  Boolean(
-    status && status.phase !== 'idle' && status.phase !== 'complete' && status.phase !== 'skipped'
-  );
-
-const formatSyncBytes = (bytes?: number) => {
-  if (!bytes) return '';
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
 const resolveMissionSortRank = (status: OngoingMissionView['status']) => {
   if (status === 'running') return 0;
   if (status === 'paused') return 1;
@@ -280,40 +250,6 @@ export function Dashboard() {
   } = useRobotSelection(robots, { suspendAutoMapSync: Boolean(focusedMission) });
 
   const selectedRobot = robots.find(robot => robot.id === (selectedRobotId ?? '')) ?? null;
-  const [mapSyncStatus, setMapSyncStatus] = useState<MapSyncStatus | null>(null);
-
-  useEffect(() => {
-    if (!activeRobotId) {
-      setMapSyncStatus(null);
-      return;
-    }
-
-    let cancelled = false;
-    const loadStatus = async () => {
-      try {
-        const response = await apiClient.get<{ success: boolean; data?: MapSyncStatus }>(
-          `robots/${activeRobotId}/map-sync`
-        );
-        if (!cancelled) {
-          setMapSyncStatus(response.data ?? null);
-        }
-      } catch {
-        if (!cancelled) {
-          setMapSyncStatus(null);
-        }
-      }
-    };
-
-    void loadStatus();
-    const interval = window.setInterval(() => {
-      void loadStatus();
-    }, 2_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [activeRobotId]);
 
   const { missions: prioritizedMissions } = useRobotMissions(robots, activeMapId);
   const robotsOnActiveMap = useMapRobots(robots, activeMapId);
@@ -1412,36 +1348,6 @@ export function Dashboard() {
                 highlightTagIds={highlightTagIds}
                 dimNonMissionTags={dimNonMissionTags}
               />
-              {isMapSyncVisible(mapSyncStatus) && (
-                <div className="pointer-events-none absolute left-4 top-4 w-[min(22rem,calc(100%-2rem))] rounded-md border border-border bg-background/90 p-3 text-sm shadow-sm backdrop-blur">
-                  <div className="flex items-center justify-between gap-3 text-muted-foreground">
-                    <span>Syncing map from robot</span>
-                    {typeof mapSyncStatus?.percent === 'number' && (
-                      <span>{Math.round(mapSyncStatus.percent)}%</span>
-                    )}
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded bg-muted">
-                    <div
-                      className="h-full bg-primary transition-all"
-                      style={{
-                        width:
-                          typeof mapSyncStatus?.percent === 'number'
-                            ? `${Math.max(5, Math.min(100, mapSyncStatus.percent))}%`
-                            : '35%',
-                      }}
-                    />
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    {mapSyncStatus?.lastError
-                      ? mapSyncStatus.lastError
-                      : `${formatSyncBytes(mapSyncStatus?.bytesReceived)}${
-                          mapSyncStatus?.totalBytes
-                            ? ` of ${formatSyncBytes(mapSyncStatus.totalBytes)}`
-                            : ''
-                        }`}
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             <div className="flex items-center justify-center h-full text-muted-foreground">

@@ -680,10 +680,10 @@ export function RobotManagement() {
                         disabled={refreshMapDisabled}
                         title={refreshMapTitle}
                         aria-label="Refresh map and metadata from robot"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <RefreshCcw
-                          className={`h-4 w-4 ${isRefreshingCurrentMap ? 'animate-spin' : ''}`}
+                          className={`h-3.5 w-3.5 ${isRefreshingCurrentMap ? 'animate-spin' : ''}`}
                         />
                       </button>
                     )}
