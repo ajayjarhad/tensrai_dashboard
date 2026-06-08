@@ -30,6 +30,11 @@ const SCAN_POSE_MATCH_TIMEOUT_MS = (() => {
 })();
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
+const POSE_ODOM_AMCL_MAX_DELTA_M = (() => {
+  const raw = Number(process.env['ROS_POSE_ODOM_AMCL_MAX_DELTA_M'] ?? 2);
+  if (!Number.isFinite(raw) || raw <= 0) return 2;
+  return raw;
+})();
 // Teleop safety defaults
 const TELEOP_MAX_LINEAR = 0.5; // m/s
 const TELEOP_MAX_ANGULAR = 0.8; // rad/s
@@ -1151,6 +1156,12 @@ export class RosRobotManager extends EventEmitter {
     // 3) map->odom TF + odom pose topic (fallback)
     if (this.mapToOdom && this.odomPose && !this.isTfStale(this.mapToOdom, this.odomPose.stampMs)) {
       const pose = combineTransforms(this.mapToOdom, this.odomPose);
+      if (this.mapPose) {
+        const amclDeltaM = Math.hypot(pose.x - this.mapPose.x, pose.y - this.mapPose.y);
+        if (amclDeltaM > POSE_ODOM_AMCL_MAX_DELTA_M) {
+          return { pose: { ...this.mapPose }, source: 'amcl' };
+        }
+      }
       return { pose, source: 'tf:map->odom + odom topic', stampMs: this.mapToOdom.stampMs };
     }
     // 4) amcl pose as last resort
