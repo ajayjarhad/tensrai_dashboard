@@ -251,14 +251,17 @@ export function RobotManagement() {
         emergencyBridgePort: form.emergencyBridgePort
           ? Number(form.emergencyBridgePort)
           : undefined,
-        mapId: form.mapId || undefined,
         status: form.status ?? 'UNKNOWN',
         channels: finalChannels,
       };
       if (form.id) {
         await apiClient.patch(`robots/${form.id}`, payload);
+        // Map assignment is managed via the active-map endpoint, not PATCH.
+        if (form.mapId) {
+          await apiClient.post(`robots/${form.id}/active-map`, { mapId: form.mapId });
+        }
       } else {
-        await apiClient.post('robots', payload);
+        await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
       }
       resetForm();
       await loadRobots();
@@ -320,6 +323,10 @@ export function RobotManagement() {
       const [nextRobots] = await Promise.all([loadRobots({ silent: true }), loadMaps()]);
       const refreshedRobot = nextRobots.find(robot => robot.id === robotId);
       if (refreshedRobot) {
+        // A sync can refresh several of the robot's maps, so evict every cached map.
+        for (const map of refreshedRobot.maps ?? []) {
+          evictFromCache(map.id);
+        }
         setForm(current =>
           current.id === robotId ? { ...current, mapId: refreshedRobot.mapId ?? '' } : current
         );
@@ -517,7 +524,14 @@ export function RobotManagement() {
                         {robot.emergencyBridgePort ? ` / ${robot.emergencyBridgePort}` : ''}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
-                        {maps.find(m => m.id === robot.mapId)?.name ?? '—'}
+                        {robot.maps?.find(m => m.isActive)?.name ??
+                          maps.find(m => m.id === robot.mapId)?.name ??
+                          '—'}
+                        {robot.maps && robot.maps.length > 1 ? (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            (+{robot.maps.length - 1})
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                         {getRobotDisplayStatusLabel(robot)}
@@ -689,7 +703,13 @@ export function RobotManagement() {
                       onChange={e => setForm(f => ({ ...f, mapId: e.target.value || undefined }))}
                     >
                       <option value="">Select a map (optional)</option>
-                      {maps.map(map => (
+                      {(form.id
+                        ? (robots.find(r => r.id === form.id)?.maps ?? []).map(m => ({
+                            id: m.id,
+                            name: m.name ?? m.id,
+                          }))
+                        : maps
+                      ).map(map => (
                         <option key={map.id} value={map.id}>
                           {map.name}
                         </option>

@@ -20,11 +20,13 @@ import { type Robot, RobotMode } from '@/types/robot';
 import { useMapRobots } from '../hooks/useMapRobots';
 import { useMissionRuns } from '../hooks/useMissionRuns';
 import { useRobotMissions } from '../hooks/useRobotMissions';
-import { useRobotSelection } from '../hooks/useRobotSelection';
+import { robotHasMap, useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
+import { resolveSelectionMap } from '../utils/mapSelection';
 import { DashboardLayout } from './DashboardLayout';
 import { LiveOccupancyMap } from './LiveOccupancyMap';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
+import { MapSelector } from './MapSelector';
 import type { MissionWithContext } from './MissionDialog';
 import {
   MissionDock,
@@ -531,14 +533,17 @@ export function Dashboard() {
       setStartMissionId(null);
       return;
     }
-    if (robot.mapId && activeMapId !== robot.mapId) {
-      setActiveMapId(robot.mapId);
-    }
-    if (!startMissionId) return;
-    const mission = prioritizedMissions.find(
-      m => m.id === startMissionId && m.mapId === robot.mapId
+    // A selected mission may live on any of the robot's maps; follow that map,
+    // otherwise default to the robot's active map.
+    const { mapId: desiredMapId, clearMission } = resolveSelectionMap(
+      robot,
+      startMissionId,
+      prioritizedMissions
     );
-    if (!mission) {
+    if (desiredMapId && activeMapId !== desiredMapId) {
+      setActiveMapId(desiredMapId);
+    }
+    if (clearMission) {
       setStartMissionId(null);
     }
   }, [activeMapId, prioritizedMissions, robots, setActiveMapId, startMissionId, startRobotId]);
@@ -546,9 +551,9 @@ export function Dashboard() {
   useEffect(() => {
     if (!startRobotId || !startMissionId) return;
     const robot = robots.find(item => item.id === startRobotId);
-    if (!robot?.mapId) return;
+    if (!robot) return;
     const mission = prioritizedMissions.find(
-      m => m.id === startMissionId && m.mapId === robot.mapId
+      m => m.id === startMissionId && robotHasMap(robot, m.mapId)
     );
     if (!mission) return;
     setFocusedMission(current => {
@@ -1328,6 +1333,14 @@ export function Dashboard() {
         map={
           activeMapId ? (
             <div className="relative h-full w-full">
+              <MapSelector
+                robot={selectedRobot}
+                activeMapId={activeMapId}
+                onActiveMapChange={setActiveMapId}
+                onRefresh={() => {
+                  void refetchRobots();
+                }}
+              />
               <LiveOccupancyMap
                 mapId={activeMapId}
                 onMapChange={mapId => {

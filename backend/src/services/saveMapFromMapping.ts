@@ -213,7 +213,35 @@ const hasFeaturePayload = (value: any) => value && Object.hasOwn(value, 'metadat
 
 const getFeaturePayload = (value: any) => value?.metadata_json ?? {};
 
-const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRobot: boolean) => {
+// Link a map to a robot via the RobotMap join, refreshing syncedAt. Does not
+// touch isActive — active designation is centralized in designateActiveAfterSync.
+const linkMapToRobot = async (prisma: any, robotId: string, mapId: string) => {
+  await prisma.robotMap.upsert({
+    where: { robotId_mapId: { robotId, mapId } },
+    update: { syncedAt: new Date() },
+    create: { robotId, mapId, isActive: false, isPinned: false },
+  });
+};
+
+// Decide the robot's active map after a sync without clobbering a manual choice:
+// respect a pinned row, keep any existing active map, and only fall back to the
+// primary when the robot has no active assignment yet (first sync / active gone).
+const designateActiveAfterSync = async (prisma: any, robotId: string, primaryMapId: string) => {
+  const rows = await prisma.robotMap.findMany({ where: { robotId } });
+  if (rows.some((row: any) => row.isPinned)) return;
+  if (rows.some((row: any) => row.isActive)) return;
+
+  await prisma.$transaction([
+    prisma.robotMap.updateMany({ where: { robotId }, data: { isActive: false } }),
+    prisma.robotMap.update({
+      where: { robotId_mapId: { robotId, mapId: primaryMapId } },
+      data: { isActive: true },
+    }),
+    prisma.robot.update({ where: { id: robotId }, data: { mapId: primaryMapId } }),
+  ]);
+};
+
+const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
   const logger = fastify.log;
   const prisma = fastify.prisma as any;
 
@@ -271,12 +299,7 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRo
       },
     });
 
-    if (linkRobot) {
-      await prisma.robot.update({
-        where: { id: robotId },
-        data: { map: { connect: { id: map.id } } },
-      });
-    }
+    await linkMapToRobot(prisma, robotId, map.id);
 
     logger.info({ robotId, mapId: map.id, filename }, 'Map upserted from mapping bridge');
     return map;
@@ -289,14 +312,20 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any, linkRo
 // files: { map_yaml, map_pgm, map_yaml_content?, map_pgm_content?, metadata_json?, additional_maps? }
 export const upsertMapFromResponse = async (fastify: any, robotId: string, files: any) => {
   if (!files) return;
-  // Process primary map and link robot
-  const primaryMap = await upsertSingleMap(fastify, robotId, files, true);
+  const prisma = fastify.prisma as any;
 
-  // Process additional maps if provided (not linked to robot)
+  // Link the primary map and every additional map to the robot via RobotMap.
+  const primaryMap = await upsertSingleMap(fastify, robotId, files);
+
   if (Array.isArray(files.additional_maps)) {
     for (const extra of files.additional_maps) {
-      await upsertSingleMap(fastify, robotId, extra, false);
+      await upsertSingleMap(fastify, robotId, extra);
     }
+  }
+
+  // Designate the primary as active without clobbering a pinned / existing choice.
+  if (primaryMap) {
+    await designateActiveAfterSync(prisma, robotId, primaryMap.id);
   }
 
   return primaryMap;
@@ -390,10 +419,8 @@ export const fetchMapViaMappingBridge = async (
   const linkExistingMapToRobot = async (filename: string) => {
     const existing = await prisma.map.findUnique({ where: { filename }, select: { id: true } });
     if (!existing) return;
-    await prisma.robot.update({
-      where: { id: robotId },
-      data: { map: { connect: { id: existing.id } } },
-    });
+    await linkMapToRobot(prisma, robotId, existing.id);
+    await designateActiveAfterSync(prisma, robotId, existing.id);
   };
 
   const updateExistingMapFeatures = async (filename: string, manifest: any) => {
@@ -432,21 +459,21 @@ export const fetchMapViaMappingBridge = async (
         throw new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actualHash}`);
       }
 
-      const storedMap = await upsertSingleMap(
-        fastify,
-        robotId,
-        {
-          name: manifest.name,
-          map_yaml: manifest.map_yaml,
-          map_pgm: manifest.map_pgm,
-          map_yaml_content: manifest.map_yaml_content,
-          map_pgm_content: pgmBytes,
-          metadata_json: manifest.metadata_json,
-        },
-        Boolean(manifest.is_default ?? manifest.isDefault ?? true)
-      );
+      const storedMap = await upsertSingleMap(fastify, robotId, {
+        name: manifest.name,
+        map_yaml: manifest.map_yaml,
+        map_pgm: manifest.map_pgm,
+        map_yaml_content: manifest.map_yaml_content,
+        map_pgm_content: pgmBytes,
+        metadata_json: manifest.metadata_json,
+      });
       if (!storedMap) {
         throw new Error('Map upsert failed');
+      }
+
+      const isDefaultMap = Boolean(manifest.is_default ?? manifest.isDefault ?? true);
+      if (isDefaultMap) {
+        await designateActiveAfterSync(prisma, robotId, storedMap.id);
       }
 
       transfers.delete(transferId);

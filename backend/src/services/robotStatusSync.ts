@@ -11,6 +11,8 @@ const statusUpdateSchema = z.object({
   mode: z.enum(['teleop', 'autonomous']),
   batteryPercentage: z.number().nullable().optional(),
   chargingStatus: z.string().nullable().optional(),
+  // Map stem the robot reports it is currently localized on (auto-follow signal).
+  currentMap: z.string().nullable().optional(),
   mission: z
     .object({
       status: z.enum(['ACTIVE', 'PAUSED', 'IDLE']).optional(),
@@ -41,6 +43,63 @@ const normalizeBattery = (value: unknown) => {
 const hasBatteryChanged = (current: unknown, next: number) => {
   if (typeof current !== 'number' || !Number.isFinite(current)) return true;
   return Math.abs(current - next) >= BATTERY_EPSILON;
+};
+
+const stemToFilenames = (stem: string) => {
+  const base = stem.replace(/\.ya?ml$/i, '');
+  return [`${base}.yaml`, `${base}.yml`, base];
+};
+
+// Auto-follow: pick the robot's active map from the status update without clobbering
+// a manual pin. Primary signal is `currentMap` (the loaded map stem); the fallback
+// resolves the current mission to the map whose metadata contains it.
+const resolveActiveMapFromStatus = async (
+  deps: SyncDeps,
+  robotId: string,
+  currentMap: string | null | undefined,
+  currentMissionId: string | number | null | undefined
+) => {
+  const prisma = deps.prisma as any;
+  try {
+    const rows = await prisma.robotMap.findMany({
+      where: { robotId },
+      include: { map: { select: { id: true, filename: true, features: true } } },
+    });
+    if (rows.length === 0) return;
+    if (rows.some((row: any) => row.isPinned)) return;
+
+    let targetMapId: string | null = null;
+
+    if (currentMap) {
+      const candidates = stemToFilenames(currentMap);
+      const match = rows.find((row: any) => candidates.includes(row.map?.filename));
+      targetMapId = match?.mapId ?? null;
+    }
+
+    if (!targetMapId && currentMissionId != null && currentMissionId !== '') {
+      const missionKey = String(currentMissionId);
+      const match = rows.find((row: any) => {
+        const missions = row.map?.features?.missions;
+        return Array.isArray(missions) && missions.some((m: any) => String(m?.id) === missionKey);
+      });
+      targetMapId = match?.mapId ?? null;
+    }
+
+    if (!targetMapId) return;
+    const active = rows.find((row: any) => row.isActive);
+    if (active?.mapId === targetMapId) return;
+
+    await prisma.$transaction([
+      prisma.robotMap.updateMany({ where: { robotId }, data: { isActive: false } }),
+      prisma.robotMap.update({
+        where: { robotId_mapId: { robotId, mapId: targetMapId } },
+        data: { isActive: true },
+      }),
+      prisma.robot.update({ where: { id: robotId }, data: { mapId: targetMapId } }),
+    ]);
+  } catch (error) {
+    deps.log.error({ robotId, error }, 'Failed to resolve active map from ROBOT_STATUS_UPDATE');
+  }
 };
 
 export const parseRobotStatusUpdatePayload = (
@@ -85,6 +144,14 @@ export const syncRobotStatusUpdate = async (
   if (!robot) {
     return { ok: false, updated: false, reason: 'robot_not_found' };
   }
+
+  // Auto-follow the robot's reported map (independent of the field updates below).
+  await resolveActiveMapFromStatus(
+    deps,
+    robotId,
+    parsed.value.currentMap,
+    parsed.value.mission?.currentMissionId
+  );
 
   const updateData: Record<string, unknown> = {};
   let hasFieldChange = false;
