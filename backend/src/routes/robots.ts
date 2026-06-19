@@ -50,7 +50,7 @@ const CreateRobotSchema = z.object({
 const UpdateRobotSchema = z.object({
   status: RobotModeSchema.optional(),
   battery: z.number().min(0).max(100).optional(),
-  mapId: z.string().optional(),
+  // Map assignment is managed via POST /robots/:id/active-map and map-sync, not PATCH.
   x: z.number().optional(),
   y: z.number().optional(),
   theta: z.number().optional(),
@@ -73,6 +73,31 @@ const UpdateRobotSchema = z.object({
     .optional(),
 });
 
+const ActiveMapSchema = z.object({
+  mapId: z.string().min(1),
+});
+
+const robotMapInclude = {
+  robotMaps: {
+    include: { map: { select: { id: true, name: true } } },
+  },
+};
+
+// Collapse a robot's RobotMap rows into a flat `maps` array and expose the active
+// map id via the legacy `mapId` field for backward compatibility.
+const shapeRobotWithMaps = (robot: any) => {
+  const maps = (robot.robotMaps ?? []).map((rm: any) => ({
+    id: rm.mapId,
+    name: rm.map?.name ?? null,
+    isActive: rm.isActive,
+    isPinned: rm.isPinned,
+    syncedAt: rm.syncedAt,
+  }));
+  const active = maps.find((m: any) => m.isActive);
+  const { robotMaps: _robotMaps, ...rest } = robot;
+  return { ...rest, maps, mapId: active?.id ?? robot.mapId ?? null };
+};
+
 const robotRoutes: any = async (server: AppFastifyInstance) => {
   // List all robots
   server.get('/robots', async (_request: any, _reply: any) => {
@@ -84,6 +109,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       const prisma = server.prisma as any;
       const robots = await prisma.robot.findMany({
         orderBy: { name: 'asc' },
+        include: robotMapInclude,
       });
 
       // Record query duration
@@ -104,7 +130,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       span.end();
 
       const withMission = robots.map((robot: any) => ({
-        ...robot,
+        ...shapeRobotWithMaps(robot),
         mission: getMissionState(robot.id),
       }));
 
@@ -128,14 +154,92 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
     const prisma = server.prisma as any;
     const robot = await prisma.robot.findUnique({
       where: { id },
+      include: robotMapInclude,
     });
 
     if (!robot) {
       return reply.status(404).send({ success: false, error: 'Robot not found' });
     }
 
-    return { success: true, data: { ...robot, mission: getMissionState(robot.id) } };
+    return {
+      success: true,
+      data: { ...shapeRobotWithMaps(robot), mission: getMissionState(robot.id) },
+    };
   });
+
+  // List a robot's maps (the RobotMap assignments)
+  server.get<{ Params: { id: string } }>('/robots/:id/maps', async (request: any, reply: any) => {
+    const { id } = request.params;
+    const prisma = server.prisma as any;
+    const robot = await prisma.robot.findUnique({
+      where: { id },
+      include: robotMapInclude,
+    });
+
+    if (!robot) {
+      return reply.status(404).send({ success: false, error: 'Robot not found' });
+    }
+
+    return { success: true, data: shapeRobotWithMaps(robot).maps };
+  });
+
+  // Manually pin a robot's active map (suppresses auto-follow until cleared)
+  server.post<{ Params: { id: string }; Body: z.infer<typeof ActiveMapSchema> }>(
+    '/robots/:id/active-map',
+    async (request: any, reply: any) => {
+      const { id } = request.params;
+      const result = ActiveMapSchema.safeParse(request.body);
+      if (!result.success) {
+        return reply.status(400).send({ success: false, error: result.error });
+      }
+      const { mapId } = result.data;
+      const prisma = server.prisma as any;
+
+      const assignment = await prisma.robotMap.findUnique({
+        where: { robotId_mapId: { robotId: id, mapId } },
+        select: { robotId: true },
+      });
+      if (!assignment) {
+        return reply
+          .status(404)
+          .send({ success: false, error: 'Map is not assigned to this robot' });
+      }
+
+      await prisma.$transaction([
+        prisma.robotMap.updateMany({
+          where: { robotId: id },
+          data: { isActive: false, isPinned: false },
+        }),
+        prisma.robotMap.update({
+          where: { robotId_mapId: { robotId: id, mapId } },
+          data: { isActive: true, isPinned: true },
+        }),
+        prisma.robot.update({ where: { id }, data: { mapId } }),
+      ]);
+
+      const robot = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
+      return { success: true, data: shapeRobotWithMaps(robot).maps };
+    }
+  );
+
+  // Clear the manual pin and re-enable auto-follow
+  server.post<{ Params: { id: string } }>(
+    '/robots/:id/active-map/auto',
+    async (request: any, reply: any) => {
+      const { id } = request.params;
+      const prisma = server.prisma as any;
+
+      const robot = await prisma.robot.findUnique({ where: { id }, select: { id: true } });
+      if (!robot) {
+        return reply.status(404).send({ success: false, error: 'Robot not found' });
+      }
+
+      await prisma.robotMap.updateMany({ where: { robotId: id }, data: { isPinned: false } });
+
+      const updated = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
+      return { success: true, data: shapeRobotWithMaps(updated).maps };
+    }
+  );
 
   server.get<{ Params: { id: string } }>(
     '/robots/:id/map-sync',
@@ -212,6 +316,13 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
               : {}),
           } as any,
         });
+        if (mapId) {
+          await prisma.robotMap.upsert({
+            where: { robotId_mapId: { robotId: robot.id, mapId } },
+            update: { isActive: true },
+            create: { robotId: robot.id, mapId, isActive: true, isPinned: false },
+          });
+        }
         (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
         (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
         (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
@@ -261,20 +372,11 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
           select: { status: true, battery: true },
         });
 
-        const { mapId, channels, ...rest } = result.data;
+        const { channels, ...rest } = result.data;
         const robot = await prisma.robot.update({
           where: { id },
           data: {
             ...rest,
-            ...(mapId !== undefined
-              ? {
-                  map: mapId
-                    ? {
-                        connect: { id: mapId },
-                      }
-                    : { disconnect: true },
-                }
-              : {}),
             channels: channels ?? undefined,
             lastSeen: new Date(),
           } as any,

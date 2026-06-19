@@ -158,7 +158,7 @@ async function main() {
   ];
 
   for (const robot of robots) {
-    await prisma.robot.upsert({
+    const created = await prisma.robot.upsert({
       where: { name: robot.name },
       update: {
         status: robot.status as any,
@@ -178,6 +178,14 @@ async function main() {
         battery: robot.battery,
       },
     });
+
+    if (robot.mapId) {
+      await prisma.robotMap.upsert({
+        where: { robotId_mapId: { robotId: created.id, mapId: robot.mapId } },
+        update: { isActive: true, syncedAt: new Date() },
+        create: { robotId: created.id, mapId: robot.mapId, isActive: true, isPinned: false },
+      });
+    }
   }
 
   console.log('Seeding completed.');

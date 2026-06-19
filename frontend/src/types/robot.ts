@@ -12,12 +12,23 @@ export enum RobotMode {
   UNKNOWN = 'UNKNOWN',
 }
 
+export interface RobotMapAssignment {
+  id: string;
+  name: string | null;
+  isActive: boolean;
+  isPinned: boolean;
+  syncedAt: string;
+}
+
 export interface Robot {
   id: string;
   name: string;
   status: RobotMode;
   battery?: number;
+  /** Active map id (kept in sync with the active RobotMap assignment for compatibility). */
   mapId?: string;
+  /** All maps assigned to this robot via RobotMap. */
+  maps?: RobotMapAssignment[];
   bridgePort?: number;
   mappingBridgePort?: number;
   missionBridgePort?: number;
@@ -72,5 +83,7 @@ export interface Robot {
     waypointIndex?: number;
     totalWaypoints?: number;
     phase?: string;
+    /** Map stem the robot reports it is currently localized on (auto-follow signal). */
+    currentMap?: string | null;
   };
 }

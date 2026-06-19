@@ -113,6 +113,7 @@ model Robot {
   updatedAt           DateTime  @updatedAt
 
   missionRuns         MissionRun[]
+  robotMaps           RobotMap[]
 }
 
 model Map {
@@ -137,6 +138,24 @@ model Map {
   previewSizeBytes       Int?
   displayGenerationError String?
   robots                 Robot[]
+  robotMaps              RobotMap[]
+}
+
+model RobotMap {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  robotId   String   @db.ObjectId
+  mapId     String   @db.ObjectId
+  isActive  Boolean  @default(false) // map currently shown / localized for this robot
+  isPinned  Boolean  @default(false) // user manually overrode auto-follow
+  syncedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  robot Robot @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  map   Map   @relation(fields: [mapId], references: [id], onDelete: Cascade)
+
+  @@unique([robotId, mapId])
+  @@index([robotId, isActive])
+  @@index([mapId])
 }
 
 enum RobotMode {
