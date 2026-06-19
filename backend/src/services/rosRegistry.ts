@@ -3,6 +3,8 @@ import { RosRobotManager } from './rosRobotManager.js';
 
 const DEFAULT_PORT = Number(process.env['ROS_BRIDGE_PORT'] ?? 9090);
 const DEFAULT_MAPPING_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
+const DEFAULT_CONNECTION_ID = 'default';
+const CONTROL_CONNECTION_ID = 'control';
 
 const serializeConfig = (config: any) => {
   const connections = Array.isArray(config?.connections)
@@ -51,9 +53,9 @@ const parseMsgTypeOverride = (envKey: string) => {
 };
 
 const rateLimitOverrides: Record<string, number> = {
-  odom: parseRateLimit('ROS_ODOM_RATE_HZ', 8),
+  odom: parseRateLimit('ROS_ODOM_RATE_HZ', 5),
   laser: parseRateLimit('ROS_LASER_RATE_HZ', 3),
-  scanPose: parseRateLimit('ROS_SCAN_POSE_RATE_HZ', 10),
+  scanPose: parseRateLimit('ROS_SCAN_POSE_RATE_HZ', 5),
   amcl: parseRateLimit('ROS_AMCL_RATE_HZ', 4),
 };
 
@@ -77,14 +79,14 @@ const defaultChannels = [
     topic: '/odom_ui',
     msgType: 'nav_msgs/msg/Odometry',
     direction: 'subscribe',
-    rateLimitHz: 5,
+    rateLimitHz: rateLimitOverrides.odom,
   },
   {
     name: 'laser',
     topic: '/scan_ui',
     msgType: msgTypeOverrides.laser ?? 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
-    rateLimitHz: 10,
+    rateLimitHz: rateLimitOverrides.laser,
   },
   {
     name: 'scanPose',
@@ -105,19 +107,21 @@ const defaultChannels = [
     topic: '/cmd_vel_ui',
     msgType: 'geometry_msgs/msg/Twist',
     direction: 'publish',
+    connectionId: CONTROL_CONNECTION_ID,
   },
   {
     name: 'amcl',
     topic: '/amcl_pose_ui',
     msgType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
     direction: 'subscribe',
-    rateLimitHz: 5,
+    rateLimitHz: rateLimitOverrides.amcl,
   },
   {
     name: 'initialpose',
     topic: '/initialpose_ui',
     msgType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
     direction: 'publish',
+    connectionId: CONTROL_CONNECTION_ID,
   },
 ];
 
@@ -128,7 +132,7 @@ const _mergeChannels = (base: any[], custom: any[] | undefined) => {
     byName.set(ch.name, ch);
   }
   for (const ch of custom) {
-    byName.set(ch.name, ch);
+    byName.set(ch.name, { ...(byName.get(ch.name) ?? {}), ...ch });
   }
   return Array.from(byName.values());
 };
@@ -154,7 +158,10 @@ export class RosRegistry {
         configuredMappingPort ??
         (process.env['ROS_MAPPING_BRIDGE_PORT'] ? DEFAULT_MAPPING_PORT : undefined);
       const bridgeUrl = `ws://${robot.ipAddress}:${bridgePort}`;
-      const connections: Array<{ id: string; url: string }> = [{ id: 'default', url: bridgeUrl }];
+      const connections: Array<{ id: string; url: string }> = [
+        { id: DEFAULT_CONNECTION_ID, url: bridgeUrl },
+        { id: CONTROL_CONNECTION_ID, url: bridgeUrl },
+      ];
 
       // Only attach the mapping connection when requested per-robot or via env
       if (resolvedMappingPort) {

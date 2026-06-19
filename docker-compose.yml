@@ -7,6 +7,7 @@ services:
         VITE_API_URL: /api
         VITE_WS_URL: /ws
         VITE_CLOUD_DASHBOARD: ${CLOUD_DASHBOARD:-true}
+        VITE_ROS_TELEOP_RATE_HZ: ${VITE_ROS_TELEOP_RATE_HZ:-4}
     ports:
       - "8080:80"
     depends_on:
@@ -90,6 +91,12 @@ services:
       ROS_MAPPING_BRIDGE_PORT: 8765
       ROS_MISSION_BRIDGE_PORT: 9487
       ROS_EMERGENCY_BRIDGE_PORT: 8766
+      ROS_ODOM_RATE_HZ: ${ROS_ODOM_RATE_HZ:-4}
+      ROS_LASER_RATE_HZ: ${ROS_LASER_RATE_HZ:-1}
+      ROS_SCAN_POSE_RATE_HZ: ${ROS_SCAN_POSE_RATE_HZ:-4}
+      ROS_AMCL_RATE_HZ: ${ROS_AMCL_RATE_HZ:-2}
+      ROS_MAX_LASER_POINTS: ${ROS_MAX_LASER_POINTS:-120}
+      ROS_TELEOP_STALE_WARN_MS: ${ROS_TELEOP_STALE_WARN_MS:-1000}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       BASE_URL: ${BASE_URL:-http://localhost:5001}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
@@ -114,6 +121,8 @@ services:
         echo '✅ MongoDB ready!';
         echo '🌱 Seeding users...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' node --loader ts-node/esm scripts/seed.ts || echo '⚠️ User seeding failed or already completed';
+        cd .. && echo '🗺️ Backfilling map display assets if needed...';
+        cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillMapAssets.ts || echo '⚠️ Map asset backfill failed or already completed';
         cd .. && echo '🚀 Starting backend server...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bun --watch src/index.ts
       "

@@ -13,11 +13,12 @@ export type MapWorkerRequest = {
 };
 
 export type MapWorkerResponse = {
-  type: 'MAP_PROCESSED';
+  type: 'MAP_PROCESSED' | 'MAP_PROGRESS';
   requestId: number;
-  bitmap: ImageBitmap;
-  width: number;
-  height: number;
+  bitmap?: ImageBitmap;
+  width?: number;
+  height?: number;
+  progress?: number;
   error?: string;
 };
 
@@ -31,10 +32,16 @@ ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
   try {
     let parsedPGM: ParsedPGM;
     if (useOptimized) {
-      const result = await parsePGMOptimized(
-        pgmBuffer,
-        pgmQuality !== undefined ? { quality: pgmQuality } : {}
-      );
+      const result = await parsePGMOptimized(pgmBuffer, {
+        ...(pgmQuality !== undefined ? { quality: pgmQuality } : {}),
+        progressCallback: progress => {
+          ctx.postMessage({
+            type: 'MAP_PROGRESS',
+            requestId,
+            progress,
+          } as MapWorkerResponse);
+        },
+      });
       parsedPGM = result.parsedPGM;
     } else {
       parsedPGM = parsePGM(pgmBuffer);

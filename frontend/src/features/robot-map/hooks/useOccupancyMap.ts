@@ -6,11 +6,13 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clearMapAssetCache, evictFromCache, loadMapAssets } from '../../../lib/map';
+import type { MapLoadProgress } from '../../../lib/map/loadMapAssets';
 
 export interface UseOccupancyMapState {
   data: ProcessedMapData | null;
   loading: boolean;
   error: string | null;
+  progress: MapLoadProgress | null;
   reload: () => void;
 }
 
@@ -22,7 +24,7 @@ export interface UseOccupancyMapOptions {
   useOptimizedParser?: boolean;
   pgmQuality?: number; // 1-100, lower values reduce resolution
   chunkSize?: number; // Chunk size for processing large files
-  progressCallback?: (progress: number) => void; // Progress reporting
+  progressCallback?: (progress: MapLoadProgress) => void; // Progress reporting
 }
 
 /**
@@ -45,10 +47,12 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
     data: ProcessedMapData | null;
     loading: boolean;
     error: string | null;
+    progress: MapLoadProgress | null;
   }>({
     data: null,
     loading: false,
     error: null,
+    progress: null,
   });
 
   const mountedRef = useRef(false);
@@ -58,7 +62,12 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
       return;
     }
 
-    setState(prev => ({ ...prev, loading: true, error: null }));
+    setState(prev => ({
+      ...prev,
+      loading: true,
+      error: null,
+      progress: { phase: 'fetching-metadata', progress: 0 },
+    }));
 
     const requestId = ++requestIdRef.current;
 
@@ -74,9 +83,12 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
         loadOptions.chunkSize = chunkSize;
       }
 
-      if (progressCallback !== undefined) {
-        loadOptions.progressCallback = progressCallback;
-      }
+      loadOptions.progressCallback = (progress: MapLoadProgress) => {
+        progressCallback?.(progress);
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setState(prev => ({ ...prev, progress }));
+        }
+      };
 
       const data = await loadMapAssets(loadOptions);
 
@@ -86,6 +98,7 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
           data,
           loading: false,
           error: null,
+          progress: { phase: 'ready', progress: 100 },
         });
       }
     } catch (error) {
@@ -94,6 +107,10 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
           ...prev,
           loading: false,
           error: error instanceof Error ? error.message : 'Failed to load map',
+          progress: {
+            phase: 'failed',
+            message: error instanceof Error ? error.message : 'Failed to load map',
+          },
         }));
       }
     }
@@ -125,6 +142,7 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
     data: state.data,
     loading: state.loading,
     error: state.error,
+    progress: state.progress,
     reload,
   };
 }

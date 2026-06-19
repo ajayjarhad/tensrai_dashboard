@@ -1,6 +1,56 @@
+import { createHash } from 'node:crypto';
 import { trace } from '@opentelemetry/api';
 import { databaseMetrics, mapMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
+
+const sendBinaryAsset = (
+  reply: AppFastifyReply,
+  asset: Buffer | Uint8Array,
+  contentType: string,
+  contentHash?: string | null
+) => {
+  const bytes = Buffer.from(asset);
+  if (contentHash) {
+    reply.header('ETag', `"${contentHash}"`);
+  }
+  reply.header('Content-Type', contentType);
+  reply.header('Content-Length', String(bytes.length));
+  reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return reply.send(bytes);
+};
+
+const displayFieldsForMap = (map: any) => ({
+  webp: Boolean(map.displayWebpSizeBytes),
+  png: Boolean(map.displayPngSizeBytes),
+  previewWebp: Boolean(map.previewWebp),
+  previewPng: Boolean(map.previewPng),
+  displayWebpSizeBytes: map.displayWebpSizeBytes ?? null,
+  displayPngSizeBytes: map.displayPngSizeBytes ?? null,
+  previewSizeBytes: map.previewSizeBytes ?? null,
+  error: map.displayGenerationError ?? null,
+});
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stableStringify(item)).join(',')}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+  return `{${entries
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+    .join(',')}}`;
+};
+
+const hashJson = (value: unknown) =>
+  createHash('sha256')
+    .update(stableStringify(value ?? null))
+    .digest('hex');
 
 const mapRoutes: any = async (server: AppFastifyInstance) => {
   // GET /api/maps - list maps (id + name)
@@ -15,6 +65,14 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
         select: {
           id: true,
           name: true,
+          contentHash: true,
+          pixelWidth: true,
+          pixelHeight: true,
+          imageSizeBytes: true,
+          displayWebpSizeBytes: true,
+          displayPngSizeBytes: true,
+          previewSizeBytes: true,
+          displayGenerationError: true,
         },
         orderBy: { name: 'asc' },
       });
@@ -78,6 +136,16 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
           name: true,
           metadata: true,
           features: true,
+          contentHash: true,
+          pixelWidth: true,
+          pixelHeight: true,
+          imageSizeBytes: true,
+          displayWebpSizeBytes: true,
+          displayPngSizeBytes: true,
+          previewWebp: true,
+          previewPng: true,
+          previewSizeBytes: true,
+          displayGenerationError: true,
           // Exclude image for performance
         },
       });
@@ -91,8 +159,98 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
 
       return {
         success: true,
-        data: map,
+        data: {
+          ...map,
+          featuresHash: hashJson(map.features),
+          displayAssets: displayFieldsForMap(map),
+          previewWebp: undefined,
+          previewPng: undefined,
+        },
       };
+    }
+  );
+
+  server.get(
+    '/maps/:id/display/:format',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            format: { type: 'string', enum: ['webp', 'png'] },
+          },
+          required: ['id', 'format'],
+        },
+      },
+    },
+    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+      const { id, format } = request.params as { id: string; format: 'webp' | 'png' };
+      const prisma = server.prisma as any;
+      const map = await prisma.map.findUnique({
+        where: { id },
+        select:
+          format === 'webp'
+            ? { displayWebp: true, contentHash: true }
+            : { displayPng: true, contentHash: true },
+      });
+
+      const asset = format === 'webp' ? map?.displayWebp : map?.displayPng;
+      if (!asset) {
+        return reply.status(404).send({
+          success: false,
+          error: `Map ${format.toUpperCase()} display asset not found`,
+        });
+      }
+
+      return sendBinaryAsset(
+        reply,
+        asset,
+        format === 'webp' ? 'image/webp' : 'image/png',
+        map.contentHash
+      );
+    }
+  );
+
+  server.get(
+    '/maps/:id/preview/:format',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            format: { type: 'string', enum: ['webp', 'png'] },
+          },
+          required: ['id', 'format'],
+        },
+      },
+    },
+    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+      const { id, format } = request.params as { id: string; format: 'webp' | 'png' };
+      const prisma = server.prisma as any;
+      const map = await prisma.map.findUnique({
+        where: { id },
+        select:
+          format === 'webp'
+            ? { previewWebp: true, contentHash: true }
+            : { previewPng: true, contentHash: true },
+      });
+
+      const asset = format === 'webp' ? map?.previewWebp : map?.previewPng;
+      if (!asset) {
+        return reply.status(404).send({
+          success: false,
+          error: `Map ${format.toUpperCase()} preview asset not found`,
+        });
+      }
+
+      return sendBinaryAsset(
+        reply,
+        asset,
+        format === 'webp' ? 'image/webp' : 'image/png',
+        map.contentHash
+      );
     }
   );
 
@@ -127,6 +285,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
           where: { id },
           select: {
             image: true,
+            contentHash: true,
           },
         });
 
@@ -163,6 +322,10 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
         span.end();
 
         reply.header('Content-Type', 'image/x-portable-graymap');
+        reply.header('Content-Length', String(map.image ? map.image.length : 0));
+        if (map.contentHash) {
+          reply.header('ETag', `"${map.contentHash}"`);
+        }
         reply.header('Cache-Control', 'public, max-age=31536000, immutable');
         return reply.send(map.image);
       } catch (error) {

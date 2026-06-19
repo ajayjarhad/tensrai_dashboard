@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { loadMapAssets } from '@/lib/map/loadMapAssets';
 import { worldToRosPose } from '@/lib/map/mapTransforms';
 import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
@@ -19,11 +20,13 @@ import { type Robot, RobotMode } from '@/types/robot';
 import { useMapRobots } from '../hooks/useMapRobots';
 import { useMissionRuns } from '../hooks/useMissionRuns';
 import { useRobotMissions } from '../hooks/useRobotMissions';
-import { useRobotSelection } from '../hooks/useRobotSelection';
+import { robotHasMap, useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
+import { resolveSelectionMap } from '../utils/mapSelection';
 import { DashboardLayout } from './DashboardLayout';
 import { LiveOccupancyMap } from './LiveOccupancyMap';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
+import { MapSelector } from './MapSelector';
 import type { MissionWithContext } from './MissionDialog';
 import {
   MissionDock,
@@ -211,6 +214,32 @@ export function Dashboard() {
       )
     );
   }, [emergencyByRobot, missionStatusByRobot, robotsFromApi]);
+
+  const prefetchedMapIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const mapIds = Array.from(
+      new Set(robots.map(robot => robot.mapId).filter((mapId): mapId is string => Boolean(mapId)))
+    ).filter(mapId => !prefetchedMapIdsRef.current.has(mapId));
+
+    if (mapIds.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const mapId of mapIds) {
+        if (cancelled) return;
+        prefetchedMapIdsRef.current.add(mapId);
+        try {
+          await loadMapAssets({ mapId, cacheEnabled: true, timeout: 60_000 });
+        } catch {
+          prefetchedMapIdsRef.current.delete(mapId);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [robots]);
 
   const {
     selectedRobotId,
@@ -504,14 +533,17 @@ export function Dashboard() {
       setStartMissionId(null);
       return;
     }
-    if (robot.mapId && activeMapId !== robot.mapId) {
-      setActiveMapId(robot.mapId);
-    }
-    if (!startMissionId) return;
-    const mission = prioritizedMissions.find(
-      m => m.id === startMissionId && m.mapId === robot.mapId
+    // A selected mission may live on any of the robot's maps; follow that map,
+    // otherwise default to the robot's active map.
+    const { mapId: desiredMapId, clearMission } = resolveSelectionMap(
+      robot,
+      startMissionId,
+      prioritizedMissions
     );
-    if (!mission) {
+    if (desiredMapId && activeMapId !== desiredMapId) {
+      setActiveMapId(desiredMapId);
+    }
+    if (clearMission) {
       setStartMissionId(null);
     }
   }, [activeMapId, prioritizedMissions, robots, setActiveMapId, startMissionId, startRobotId]);
@@ -519,9 +551,9 @@ export function Dashboard() {
   useEffect(() => {
     if (!startRobotId || !startMissionId) return;
     const robot = robots.find(item => item.id === startRobotId);
-    if (!robot?.mapId) return;
+    if (!robot) return;
     const mission = prioritizedMissions.find(
-      m => m.id === startMissionId && m.mapId === robot.mapId
+      m => m.id === startMissionId && robotHasMap(robot, m.mapId)
     );
     if (!mission) return;
     setFocusedMission(current => {
@@ -1300,26 +1332,36 @@ export function Dashboard() {
         }}
         map={
           activeMapId ? (
-            <LiveOccupancyMap
-              mapId={activeMapId}
-              onMapChange={mapId => {
-                if (focusedMission) return;
-                setActiveMapId(mapId);
-              }}
-              robots={robotsOnActiveMap}
-              telemetryRobotId={activeRobotId}
-              selectedRobotId={selectedRobotId}
-              onRobotSelect={id => {
-                const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
-                handleSidebarRobotSelect(robot);
-              }}
-              onMapFeaturesChange={setMapFeatures}
-              setPoseMode={isSettingPose}
-              onPoseConfirm={handlePoseConfirm}
-              onPoseCancel={handlePoseCancel}
-              highlightTagIds={highlightTagIds}
-              dimNonMissionTags={dimNonMissionTags}
-            />
+            <div className="relative h-full w-full">
+              <MapSelector
+                robot={selectedRobot}
+                activeMapId={activeMapId}
+                onActiveMapChange={setActiveMapId}
+                onRefresh={() => {
+                  void refetchRobots();
+                }}
+              />
+              <LiveOccupancyMap
+                mapId={activeMapId}
+                onMapChange={mapId => {
+                  if (focusedMission) return;
+                  setActiveMapId(mapId);
+                }}
+                robots={robotsOnActiveMap}
+                telemetryRobotId={activeRobotId}
+                selectedRobotId={selectedRobotId}
+                onRobotSelect={id => {
+                  const robot = id ? (robotsOnActiveMap.find(ro => ro.id === id) ?? null) : null;
+                  handleSidebarRobotSelect(robot);
+                }}
+                onMapFeaturesChange={setMapFeatures}
+                setPoseMode={isSettingPose}
+                onPoseConfirm={handlePoseConfirm}
+                onPoseCancel={handlePoseCancel}
+                highlightTagIds={highlightTagIds}
+                dimNonMissionTags={dimNonMissionTags}
+              />
+            </div>
           ) : (
             <div className="flex items-center justify-center h-full text-muted-foreground">
               {robots.length > 0 ? 'Select a robot to view map' : 'No robots available'}
