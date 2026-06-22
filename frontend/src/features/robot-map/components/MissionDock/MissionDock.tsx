@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { getRobotDisplayStatusLabel, isRobotEmergencyActive } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
 import type { Robot } from '@/types/robot';
+import { robotHasMap } from '../../utils/mapSelection';
 import type { MissionWithContext } from '../MissionDialog';
 
 export type OngoingMissionView = {
@@ -170,11 +171,11 @@ export function MissionDock({
       ? (robots.find(robot => robot.id === effectiveStartRobotId) ?? null)
       : null;
   const startMissionOptions = useMemo(() => {
-    if (!selectedStartRobot?.mapId) return [];
+    if (!selectedStartRobot) return [];
     return missions
-      .filter(mission => mission.mapId === selectedStartRobot.mapId)
+      .filter(mission => robotHasMap(selectedStartRobot, mission.mapId))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [missions, selectedStartRobot?.mapId]);
+  }, [missions, selectedStartRobot]);
   const selectedStartMission =
     startMissionId !== null
       ? (startMissionOptions.find(m => m.id === startMissionId) ?? null)
@@ -546,11 +547,8 @@ export function MissionDock({
                       </div>
                       <div className="text-xs text-muted-foreground truncate">
                         {selectedStartRobot
-                          ? `${selectedStartRobot.name} • ${
-                              selectedStartRobot.mapId
-                                ? (missionMapNameById.get(selectedStartRobot.mapId) ??
-                                  selectedStartRobot.mapId)
-                                : 'No map'
+                          ? `${selectedStartRobot.name} • ${selectedStartRobot.maps?.length ?? 0} map${
+                              (selectedStartRobot.maps?.length ?? 0) === 1 ? '' : 's'
                             }`
                           : 'Select a robot first'}
                       </div>
