@@ -45,6 +45,8 @@ const MAX_LASER_POINTS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 450;
   return Math.max(60, Math.floor(raw));
 })();
+// Nav plans can carry thousands of poses; the dashboard only draws a polyline.
+const MAX_PATH_POSES = 300;
 
 const rosStampToMs = (stamp: any): number | undefined => {
   if (!stamp || typeof stamp !== 'object') return undefined;
@@ -131,10 +133,10 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   }
   if (channelName === 'waypoints') {
     const path = data as any;
-    const poses = Array.isArray(path.poses)
-      ? path.poses.map((p: any) => ({ pose: pickPose(p.pose) }))
-      : [];
-    return { poses };
+    const raw: any[] = Array.isArray(path.poses) ? path.poses : [];
+    const stride = Math.max(1, Math.ceil((raw.length - 1) / (MAX_PATH_POSES - 1)));
+    const kept = raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
+    return { poses: kept.map((p: any) => ({ pose: pickPose(p.pose) })) };
   }
   return data;
 };

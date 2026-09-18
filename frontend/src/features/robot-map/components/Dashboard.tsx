@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog';
 import { loadMapAssets } from '@/lib/map/loadMapAssets';
 import { worldToRosPose } from '@/lib/map/mapTransforms';
-import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
+import { mergeEmergencyRuntimeIntoRobot, shouldRearmEmergencyPopup } from '@/lib/robotStatus';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import { type MissionStatus, useRobotMissionStore } from '@/stores/robotMission';
 import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
@@ -276,6 +276,14 @@ export function Dashboard() {
     return map;
   }, [robots]);
 
+  // Persisted status straight from the API. The merged `robots` status is rewritten to
+  // TELEOP/AUTONOMOUS whenever the mission bridge heartbeats, so it cannot tell us
+  // whether the backend still considers the robot e-stopped.
+  const apiStatusById = useMemo(
+    () => new Map(robotsFromApi.map(robot => [robot.id, robot.status])),
+    [robotsFromApi]
+  );
+
   const missionLogs = useMemo<MissionLogView[]>(() => {
     return (missionRunData ?? [])
       .filter(
@@ -407,8 +415,15 @@ export function Dashboard() {
   }, [robotsFromApi, syncEmergencyRobots]);
 
   useEffect(() => {
+    // Active flag included so a release refetches the persisted status promptly;
+    // the emergency-popup re-arm reads that status rather than waiting for the 10 s poll.
     const signature = robots
-      .map(robot => `${robot.id}:${robot.emergency?.connectionStatus ?? 'none'}`)
+      .map(
+        robot =>
+          `${robot.id}:${robot.emergency?.connectionStatus ?? 'none'}:${
+            robot.emergency?.effectiveEmergencyActive ? 1 : 0
+          }`
+      )
       .sort()
       .join('|');
     if (!signature) return;
@@ -453,7 +468,14 @@ export function Dashboard() {
         (lastEmergencyAckAtRef.current[robot.id] ?? 0) < eventAt;
 
       if (!active) {
-        delete hasShownInitialEmergencyPopupRef.current[robot.id];
+        // Re-arm the popup only on a genuine release. A bridge disconnect (or the
+        // synthetic "connected, inactive" snapshot after a backend restart) also
+        // reads as inactive, and re-arming there re-opened the dialog on every reconnect.
+        if (
+          shouldRearmEmergencyPopup(robot.emergency?.connectionStatus, apiStatusById.get(robot.id))
+        ) {
+          delete hasShownInitialEmergencyPopupRef.current[robot.id];
+        }
         continue;
       }
 
@@ -461,9 +483,8 @@ export function Dashboard() {
         continue;
       }
 
-      if (canShowInitialSnapshot) {
-        hasShownInitialEmergencyPopupRef.current[robot.id] = true;
-      }
+      // Either path has now surfaced this emergency; a later reconnect snapshot must not repeat it.
+      hasShownInitialEmergencyPopupRef.current[robot.id] = true;
       if (canShowAckPopup && eventAt) {
         lastEmergencyAckAtRef.current[robot.id] = eventAt;
       }
@@ -487,7 +508,7 @@ export function Dashboard() {
         ];
       });
     }
-  }, [robots]);
+  }, [apiStatusById, robots]);
 
   useEffect(() => {
     const nextIds = new Set(robots.map(robot => robot.id));
