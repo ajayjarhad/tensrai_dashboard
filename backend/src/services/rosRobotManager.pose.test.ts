@@ -27,7 +27,7 @@ test('rejects map-to-odom plus odom topic pose when it diverges far from AMCL', 
   manager.mapPose = { x: -111.88421059791425, y: 159.7770146994187, yaw: 0 };
   manager.mapToOdom = {
     x: -361.59706034969054,
-    y: 235.97354353346963,
+    y: 235.97354353346964,
     yaw: 0,
     stampMs: 1780761541203.9036,
   };
@@ -55,7 +55,7 @@ test('keeps map-to-odom plus odom topic pose when AMCL is unavailable', () => {
   const resolved = manager.computeMapBasePose();
 
   expect(resolved).toEqual({
-    pose: { x: 11.690508080615567, y: 23.184679329127733, yaw: 0.30000000000000004 },
+    pose: { x: 11.690508080615567, y: 23.184679329127732, yaw: 0.30000000000000004 },
     source: 'tf:map->odom + odom topic',
     stampMs: 1000,
   });
@@ -71,7 +71,7 @@ test('keeps map-to-odom plus odom topic pose when it agrees with AMCL', () => {
   const resolved = manager.computeMapBasePose();
 
   expect(resolved).toEqual({
-    pose: { x: 11.690508080615567, y: 23.184679329127733, yaw: 0.30000000000000004 },
+    pose: { x: 11.690508080615567, y: 23.184679329127732, yaw: 0.30000000000000004 },
     source: 'tf:map->odom + odom topic',
     stampMs: 1000,
   });
@@ -88,7 +88,7 @@ test('keeps full TF pose ahead of AMCL even when AMCL disagrees', () => {
   const resolved = manager.computeMapBasePose();
 
   expect(resolved).toEqual({
-    pose: { x: 11.690508080615567, y: 23.184679329127733, yaw: 0.30000000000000004 },
+    pose: { x: 11.690508080615567, y: 23.184679329127732, yaw: 0.30000000000000004 },
     source: 'tf:map->odom + odom->base',
     stampMs: 1000,
   });

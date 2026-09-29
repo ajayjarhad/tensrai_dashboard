@@ -140,16 +140,11 @@ export function MapLayers({
       handleSetPoseModeClick();
       return;
     }
-    const target = e.target;
-    const clickedRobot = target.findAncestor(
-      (node: Konva.Node) => typeof node.hasName === 'function' && node.hasName('robot-marker'),
-      true
-    );
-    const clickedLocation = target.findAncestor(
+    const clickedLocation = e.target.findAncestor(
       (node: Konva.Node) => typeof node.hasName === 'function' && node.hasName('location-pin'),
       true
     );
-    handleNormalModeClick(clickedRobot, clickedLocation);
+    handleNormalModeClick(clickedLocation);
   };
 
   const handleSetPoseModeClick = () => {
@@ -162,12 +157,11 @@ export function MapLayers({
     }
   };
 
-  const handleNormalModeClick = (
-    clickedRobot: Konva.Node | null,
-    clickedLocation: Konva.Node | null
-  ) => {
-    if (!clickedRobot && !clickedLocation) {
-      onRobotSelect?.(null);
+  // Robot clicks are handled in the robot layer above and never reach here.
+  // A background click only clears the location-pin label: deselecting the robot
+  // here would also close the teleop panel and drop mission focus on a stray click.
+  const handleNormalModeClick = (clickedLocation: Konva.Node | null) => {
+    if (!clickedLocation) {
       setSelectedLocationId(null);
     }
   };
@@ -207,7 +201,14 @@ export function MapLayers({
             {...(dimNonMissionTags !== undefined ? { dimNonMissionTags } : {})}
             onLocationSelect={handleLocationSelect}
           />
+        </Group>
+      </Layer>
 
+      {/* Robot marker on its own layer: it redraws on every pose update and pulse tick,
+          and must not drag the pin layer above with it. Sits over the pins so robot
+          clicks resolve here; empty-map clicks fall through to the Rect below. */}
+      <Layer>
+        <Group {...sharedGroupProps}>
           <RobotLayer
             robots={robots}
             transforms={transforms}

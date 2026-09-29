@@ -1,3 +1,4 @@
+import type { RobotEmergencyConnectionStatus } from '@tensrai/shared';
 import { type Robot, RobotMode } from '@/types/robot';
 
 type EmergencyRuntimeSource = 'live' | 'fallback' | 'unknown';
@@ -6,6 +7,15 @@ const isEmergencyStatus = (status: RobotMode | undefined) =>
   status === RobotMode.SW_EMERGENCY || status === RobotMode.HW_EMERGENCY;
 
 const hasLiveEmergencyState = (robot: Robot) => robot.emergency?.source === 'live';
+
+// An "inactive" emergency reading only counts as a genuine release when the bridge is
+// connected AND the persisted API status agrees. A disconnect, or the synthetic
+// connected+inactive snapshot the backend emits on reconnect before the real state,
+// also reads as inactive and must not re-arm the one-time popup.
+export const shouldRearmEmergencyPopup = (
+  connectionStatus: RobotEmergencyConnectionStatus | undefined,
+  apiStatus: RobotMode | undefined
+) => connectionStatus === 'connected' && !isEmergencyStatus(apiStatus);
 
 export const getRobotEmergencyMode = (robot: Robot): RobotMode | null => {
   if (hasLiveEmergencyState(robot)) {

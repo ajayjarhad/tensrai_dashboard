@@ -110,6 +110,17 @@ services:
       mongo-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    # A runaway backend (2026-09-15: 6.8 GB) must restart alone, not take the host down.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    memswap_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     networks:
       - tensrai-network
       - signoz-backend
@@ -124,7 +135,7 @@ services:
         cd .. && echo '🗺️ Backfilling map display assets if needed...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillMapAssets.ts || echo '⚠️ Map asset backfill failed or already completed';
         cd .. && echo '🚀 Starting backend server...';
-        cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bun --watch src/index.ts
+        cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bun src/index.ts
       "
 
   # --- SigNoz stack ---
