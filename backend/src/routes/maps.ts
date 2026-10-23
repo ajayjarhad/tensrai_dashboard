@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { trace } from '@opentelemetry/api';
 import { databaseMetrics, mapMetrics } from '../metrics/index.js';
+import { requireActiveSession } from '../middleware/auth.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const sendBinaryAsset = (
@@ -53,14 +54,16 @@ const hashJson = (value: unknown) =>
     .digest('hex');
 
 const mapRoutes: any = async (server: AppFastifyInstance) => {
+  server.addHook('onRequest', requireActiveSession);
+
   // GET /api/maps - list maps (id + name)
-  server.get('/maps', async (_request: AppFastifyRequest) => {
+  server.get('/maps', async (request: AppFastifyRequest) => {
     const tracer = trace.getTracer('map-routes');
     const span = tracer.startSpan('maps.list');
     const startTime = Date.now();
 
     try {
-      const prisma = server.prisma as any;
+      const prisma = request.db as any;
       const maps = await prisma.map.findMany({
         select: {
           id: true,
@@ -127,7 +130,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       const { id } = request.params as { id: string };
-      const prisma = server.prisma as any;
+      const prisma = request.db as any;
 
       const map = await prisma.map.findUnique({
         where: { id },
@@ -186,7 +189,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       const { id, format } = request.params as { id: string; format: 'webp' | 'png' };
-      const prisma = server.prisma as any;
+      const prisma = request.db as any;
       const map = await prisma.map.findUnique({
         where: { id },
         select:
@@ -228,7 +231,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       const { id, format } = request.params as { id: string; format: 'webp' | 'png' };
-      const prisma = server.prisma as any;
+      const prisma = request.db as any;
       const map = await prisma.map.findUnique({
         where: { id },
         select:
@@ -279,7 +282,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
       const startTime = Date.now();
 
       try {
-        const prisma = server.prisma as any;
+        const prisma = request.db as any;
 
         const map = await prisma.map.findUnique({
           where: { id },

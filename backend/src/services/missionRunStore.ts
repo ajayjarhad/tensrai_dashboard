@@ -90,6 +90,15 @@ export class MissionRunStore {
     return expired;
   }
 
+  private async orgIdOf(robotId: string): Promise<string> {
+    const robot = await (this.prisma as any).robot.findUnique({
+      where: { id: robotId },
+      select: { orgId: true },
+    });
+    if (!robot) throw new Error(`Robot ${robotId} not found`);
+    return robot.orgId;
+  }
+
   async hydrateActiveRuns() {
     const prisma = this.prisma as any;
     const runs = await prisma.missionRun.findMany({
@@ -109,9 +118,10 @@ export class MissionRunStore {
     }
   }
 
-  async listRuns(options: { robotId?: string; status?: string; limit?: number }) {
+  async listRuns(options: { orgId?: string; robotId?: string; status?: string; limit?: number }) {
     const prisma = this.prisma as any;
     const where: Record<string, unknown> = {};
+    if (options.orgId) where['orgId'] = options.orgId;
     if (options.robotId) where['robotId'] = options.robotId;
     if (options.status) {
       const normalized = String(options.status).toLowerCase();
@@ -258,7 +268,9 @@ export class MissionRunStore {
           return null;
         }
 
-        const created = await prisma.missionRun.create({ data });
+        const created = await prisma.missionRun.create({
+          data: { ...data, orgId: await this.orgIdOf(meta.robotId) },
+        });
         this.activeRunIdsByRobot.set(meta.robotId, created.id);
         return created;
       } catch (error) {
@@ -335,7 +347,9 @@ export class MissionRunStore {
           };
           const run = baseId
             ? await prisma.missionRun.update({ where: { id: baseId }, data })
-            : await prisma.missionRun.create({ data });
+            : await prisma.missionRun.create({
+                data: { ...data, orgId: await this.orgIdOf(meta.robotId) },
+              });
           if (isSuccess) {
             this.activeRunIdsByRobot.set(meta.robotId, run.id);
           } else {
@@ -530,6 +544,7 @@ export class MissionRunStore {
           const phase: MissionRunStatus = runtimeStatus === 'PAUSED' ? 'PAUSED' : 'RUNNING';
           const created = await prisma.missionRun.create({
             data: {
+              orgId: await this.orgIdOf(meta.robotId),
               robotId: meta.robotId,
               robotNameSnapshot: meta.robotName,
               missionId: runtimeMissionId,

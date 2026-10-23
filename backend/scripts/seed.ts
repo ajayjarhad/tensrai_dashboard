@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { ensureDefaultOrg } from './defaultOrg.js';
 
 const prisma = new PrismaClient();
 
@@ -28,7 +29,7 @@ const seedUsers: SeedConfig[] = [
   },
 ];
 
-async function upsertUser(config: SeedConfig) {
+async function upsertUser(config: SeedConfig, orgId: string) {
   const passwordHash = await bcrypt.hash(config.password, 12);
   const existing = await prisma.user.findUnique({ where: { email: config.email } });
 
@@ -51,6 +52,7 @@ async function upsertUser(config: SeedConfig) {
 
   await prisma.user.create({
     data: {
+      orgId,
       email: config.email,
       username: config.username,
       displayName: config.displayName,
@@ -65,8 +67,9 @@ async function upsertUser(config: SeedConfig) {
 
 async function main() {
   console.log('🌱 Seeding baseline users');
+  const org = await ensureDefaultOrg(prisma);
   for (const user of seedUsers) {
-    const action = await upsertUser(user);
+    const action = await upsertUser(user, org.id);
     console.log(` → ${user.role} user ${action} (${user.email})`);
   }
   console.log('✅ Seed complete');

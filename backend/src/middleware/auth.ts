@@ -49,6 +49,72 @@ export const requireUser = async (request: AppFastifyRequest, reply: AppFastifyR
   });
 };
 
+// Session gate for hot read paths (polled REST routes, websocket upgrades). Unlike
+// requireUser it writes no audit row, so polling cannot turn into a DB write per request.
+export const requireActiveSession = async (
+  request: AppFastifyRequest,
+  reply: AppFastifyReply
+): Promise<AppFastifyReply | undefined> => {
+  const user = await request.getCurrentUser();
+
+  if (!user) {
+    return reply.code(401).send({
+      error: 'Authentication required',
+      code: 'AUTH_REQUIRED',
+    });
+  }
+
+  if (!user.isActive) {
+    return reply.code(403).send({
+      error: 'Account is disabled',
+      code: 'ACCOUNT_DISABLED',
+    });
+  }
+
+  if (user.mustResetPassword) {
+    return reply.code(428).send({
+      error: 'Password setup required',
+      code: 'PASSWORD_SETUP_REQUIRED',
+      requiresPasswordSetup: true,
+    });
+  }
+
+  if (!user.orgId) {
+    return reply.code(403).send({
+      error: 'Account is not part of an organization',
+      code: 'NO_ORGANIZATION',
+    });
+  }
+
+  request.orgId = user.orgId;
+  return undefined;
+};
+
+// Proves the robot in the URL belongs to the caller's organization. The registries and bridges
+// are keyed by robot id alone, so everything reaching them through a route must pass this first.
+export const requireOwnedRobot =
+  (param = 'id') =>
+  async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    let robot = null;
+    try {
+      robot = await request.server.prisma.robot.findFirst({
+        where: { id: request.params?.[param], orgId: request.orgId },
+        select: { id: true },
+      });
+    } catch {
+      // A malformed id cannot belong to anyone.
+    }
+
+    if (!robot) {
+      return reply.code(404).send({
+        success: false,
+        error: 'Robot not found',
+        code: 'ROBOT_NOT_FOUND',
+      });
+    }
+    return undefined;
+  };
+
 export const requireAdmin = async (request: AppFastifyRequest, reply: AppFastifyReply) => {
   const user = await request.getCurrentUser();
 

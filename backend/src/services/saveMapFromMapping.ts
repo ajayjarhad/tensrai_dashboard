@@ -213,6 +213,18 @@ const hasFeaturePayload = (value: any) => value && Object.hasOwn(value, 'metadat
 
 const getFeaturePayload = (value: any) => value?.metadata_json ?? {};
 
+// Maps are unique per organization, so a filename only identifies a map within the
+// organization of the robot that synced it.
+const orgIdOfRobot = async (prisma: any, robotId: string): Promise<string> => {
+  const robot = await prisma.robot.findUnique({ where: { id: robotId }, select: { orgId: true } });
+  if (!robot?.orgId) throw new Error(`Robot ${robotId} has no organization`);
+  return robot.orgId;
+};
+
+const mapKey = async (prisma: any, robotId: string, filename: string) => ({
+  orgId_filename: { orgId: await orgIdOfRobot(prisma, robotId), filename },
+});
+
 // Link a map to a robot via the RobotMap join, refreshing syncedAt. Does not
 // touch isActive — active designation is centralized in designateActiveAfterSync.
 const linkMapToRobot = async (prisma: any, robotId: string, mapId: string) => {
@@ -280,8 +292,9 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
   }
 
   try {
+    const orgId = await orgIdOfRobot(prisma, robotId);
     const map = await prisma.map.upsert({
-      where: { filename },
+      where: { orgId_filename: { orgId, filename } },
       update: {
         name,
         image: pgmBytes,
@@ -290,6 +303,7 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
         ...generatedAssets,
       },
       create: {
+        orgId,
         name,
         filename,
         image: pgmBytes,
@@ -417,7 +431,10 @@ export const fetchMapViaMappingBridge = async (
   };
 
   const linkExistingMapToRobot = async (filename: string) => {
-    const existing = await prisma.map.findUnique({ where: { filename }, select: { id: true } });
+    const existing = await prisma.map.findUnique({
+      where: await mapKey(prisma, robotId, filename),
+      select: { id: true },
+    });
     if (!existing) return;
     await linkMapToRobot(prisma, robotId, existing.id);
     await designateActiveAfterSync(prisma, robotId, existing.id);
@@ -427,7 +444,7 @@ export const fetchMapViaMappingBridge = async (
     if (!hasFeaturePayload(manifest)) return false;
     const features = normalizeFeatures(getFeaturePayload(manifest));
     await prisma.map.update({
-      where: { filename },
+      where: await mapKey(prisma, robotId, filename),
       data: { features },
     });
     return true;
@@ -541,7 +558,7 @@ export const fetchMapViaMappingBridge = async (
           return;
         }
         const existing = await prisma.map.findUnique({
-          where: { filename },
+          where: await mapKey(prisma, robotId, filename),
           select: { id: true, contentHash: true },
         });
         const expectedContentHash =
@@ -682,10 +699,12 @@ export const fetchMapViaMappingBridge = async (
 
   socket.on('error', err => {
     logger.error({ robotId, targetUrl, err }, 'Mapping bridge socket error');
-    updateMapSyncStatus(robotId, {
-      phase: 'failed',
-      lastError: err instanceof Error ? err.message : String(err),
-    });
+    // Tearing the socket down after an earlier failure (e.g. the connect timeout) raises this
+    // too; keep the first, real reason. Bun delivers an ErrorEvent, not an Error.
+    if (mapSyncStatusByRobot.get(robotId)?.phase !== 'failed') {
+      const message = (err as { message?: string } | undefined)?.message;
+      updateMapSyncStatus(robotId, { phase: 'failed', lastError: message || String(err) });
+    }
     stop('error');
   });
 

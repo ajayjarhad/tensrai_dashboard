@@ -43,6 +43,21 @@ bun run seed
 
 Override the generated credentials by exporting `SEED_ADMIN_*` / `SEED_USER_*` env vars before running the command (see `backend/scripts/seed.ts`).
 
+### Organizations (multi-tenancy)
+
+All customers share one deployment and database; every user, robot, map and mission run belongs to one organization, and the API only ever returns the signed-in user's organization.
+
+```bash
+cd backend
+bun run org:create "Acme Robotics" acme acme-admin admin@acme.com   # org + its first admin (prints a temporary password)
+bun run backfill:org                                                  # one-off: assigns pre-existing data to the "Default" org
+```
+
+- The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step. Run them yourself when deploying another way: the old global unique indexes on robot name and map filename have to be replaced by the per-organization ones.
+- Usernames and emails stay unique across all organizations. Robot and map names are unique per organization.
+- Robots are created by an organization's admin in its own dashboard; there is no cross-organization admin.
+- Isolation tests that need a database run when `TEST_DATABASE_URL` points at a Mongo replica set: `TEST_DATABASE_URL=mongodb://localhost:27017/tenancy_test?replicaSet=rs0 bun test` (from `backend/`).
+
 ### Development Workflow
 
 ```bash

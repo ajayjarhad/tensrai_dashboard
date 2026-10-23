@@ -2,6 +2,8 @@ import type { Role } from '../constants/permissions';
 
 export interface User {
   id: string;
+  orgId: string;
+  orgName?: string | null;
   username: string;
   email: string;
   role: Role;

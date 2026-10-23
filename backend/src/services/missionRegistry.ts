@@ -387,7 +387,12 @@ export class MissionRegistry extends EventEmitter {
     }
   }
 
-  async listMissionRuns(options: { robotId?: string; status?: string; limit?: number }) {
+  async listMissionRuns(options: {
+    orgId: string;
+    robotId?: string;
+    status?: string;
+    limit?: number;
+  }) {
     return this.runStore.listRuns(options);
   }
 

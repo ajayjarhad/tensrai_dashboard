@@ -16,6 +16,8 @@
     "seed:maps": "./scripts/mongoReplica.sh && tsx scripts/seedMaps.ts",
     "seed:all": "./scripts/mongoReplica.sh && tsx scripts/seed.ts && tsx scripts/seedMaps.ts",
     "backfill:map-assets": "./scripts/mongoReplica.sh && tsx scripts/backfillMapAssets.ts",
+    "backfill:org": "./scripts/mongoReplica.sh && tsx scripts/backfillOrg.ts",
+    "org:create": "./scripts/mongoReplica.sh && tsx scripts/createOrg.ts",
     "dev:with-seed": "npm run seed:all && bun --watch src/index.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

@@ -11,6 +11,7 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { apiClient } from '@/lib/api';
 import { navigateAfterLogin, navigateToLogin } from '@/lib/navigation';
+import { queryClient } from '@/lib/query-client';
 
 // Check if localStorage is available
 const isLocalStorageAvailable = () => {
@@ -397,6 +398,12 @@ export const useAuthStore = create<AuthStore>()(
     { name: 'auth-store' }
   )
 );
+
+// Cached robots, maps and runs belong to one organization: drop them whenever the signed-in
+// user changes (logout, expired session, another account logging in).
+useAuthStore.subscribe((state, previous) => {
+  if (state.user?.id !== previous.user?.id) queryClient.clear();
+});
 
 const getPersistApi = (): PersistApi | undefined => {
   return (useAuthStore as typeof useAuthStore & { persist?: PersistApi }).persist;

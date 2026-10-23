@@ -61,6 +61,11 @@ export const auth = (prisma: PrismaClient) => {
 
       user: {
         additionalFields: {
+          orgId: {
+            type: 'string',
+            required: false,
+            input: false,
+          },
           username: {
             type: 'string',
             required: true,

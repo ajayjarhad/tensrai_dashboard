@@ -6,6 +6,7 @@ import authPlugin from './plugins/auth.js';
 import databasePlugin from './plugins/database.js';
 import observabilityPlugin from './plugins/observability.js';
 import securityPlugin from './plugins/security.js';
+import tenantPlugin from './plugins/tenant.js';
 import mapRoutes from './routes/maps.js';
 import missionRunRoutes from './routes/missionRuns.js';
 import robotRoutes from './routes/robots.js';
@@ -87,6 +88,7 @@ const registerPlugins = async () => {
   await server.register(observabilityPlugin);
   await server.register(securityPlugin);
   await server.register(authPlugin);
+  await server.register(tenantPlugin);
   await server.register(rosGateway);
 
   await server.register(userRoutes, { prefix: '/api' });

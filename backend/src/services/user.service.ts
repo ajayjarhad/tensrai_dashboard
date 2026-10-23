@@ -53,13 +53,15 @@ async function logAuditEvent(
 
 /**
  * Create a new user with a temporary password (admin workflow)
- * Returns the temp password for admin to share manually
+ * Returns the temp password for admin to share manually.
+ * Pass the unscoped client: usernames and emails are unique across all organizations.
  */
 export async function createUserWithTempPassword(
   prisma: PrismaClient,
   userData: CreateUserInput,
   adminUserId: string,
-  adminRole: string
+  adminRole: string,
+  orgId: string
 ): Promise<CreateUserResponse> {
   const existingUser = await prisma.user.findFirst({
     where: {
@@ -82,6 +84,7 @@ export async function createUserWithTempPassword(
 
   const user = await prisma.user.create({
     data: {
+      orgId,
       username: userData.username,
       email: userData.email,
       displayName: userData.displayName || userData.username,

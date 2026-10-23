@@ -1,4 +1,4 @@
-import { requireUser } from '../middleware/auth.js';
+import { requireActiveSession, requireAdmin } from '../middleware/auth.js';
 import {
   createUserWithTempPassword,
   deleteUser,
@@ -13,7 +13,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.post(
     '/users',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
       schema: {
         body: {
           type: 'object',
@@ -55,7 +55,8 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           fastify.prisma,
           userData,
           currentUser.id,
-          currentUser.role
+          currentUser.role,
+          currentUser.orgId
         );
 
         return reply.code(201).send({
@@ -77,7 +78,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -90,7 +91,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
-        const users = await getAllUsers(fastify.prisma);
+        const users = await getAllUsers(request.db);
 
         return reply.send({
           success: true,
@@ -111,7 +112,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -125,7 +126,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         }
 
         const { id } = request.params;
-        const user = await getUserById(fastify.prisma, id);
+        const user = await getUserById(request.db, id);
 
         if (!user) {
           return reply.code(404).send({
@@ -153,7 +154,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.put(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -170,7 +171,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         const updateData = request.body;
 
         const updatedUser = await updateUser(
-          fastify.prisma,
+          request.db,
           id,
           updateData,
           currentUser.id,
@@ -196,7 +197,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.delete(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -218,7 +219,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
-        await deleteUser(fastify.prisma, id, currentUser.id, currentUser.role);
+        await deleteUser(request.db, id, currentUser.id, currentUser.role);
 
         return reply.send({
           success: true,

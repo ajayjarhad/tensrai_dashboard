@@ -7,8 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Organization {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+}
+
 model User {
   id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  orgId              String    @db.ObjectId
   username           String    @unique
   email              String    @unique
   passwordHash       String
@@ -25,6 +33,7 @@ model User {
   sessions Session[]
 
   @@index([role])
+  @@index([orgId])
 }
 
 model Account {
@@ -89,7 +98,8 @@ enum Role {
 
 model Robot {
   id                  String    @id @default(auto()) @map("_id") @db.ObjectId
-  name                String    @unique
+  orgId               String    @db.ObjectId
+  name                String
   status              RobotMode @default(UNKNOWN)
   statusBeforeEmergency RobotMode?
   battery             Float?    // Battery percentage (0-100)
@@ -114,12 +124,16 @@ model Robot {
 
   missionRuns         MissionRun[]
   robotMaps           RobotMap[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
 }
 
 model Map {
   id                     String    @id @default(auto()) @map("_id") @db.ObjectId
-  name                   String    @unique
-  filename               String    @unique
+  orgId                  String    @db.ObjectId
+  name                   String
+  filename               String
   image                  Bytes     // Binary PGM data
   metadata               Json      // YAML metadata (resolution, origin)
   features               Json      // Location tags, missions
@@ -139,6 +153,10 @@ model Map {
   displayGenerationError String?
   robots                 Robot[]
   robotMaps              RobotMap[]
+
+  @@unique([orgId, name])
+  @@unique([orgId, filename])
+  @@index([orgId])
 }
 
 model RobotMap {
@@ -172,6 +190,7 @@ enum RobotMode {
 
 model MissionRun {
   id                  String           @id @default(auto()) @map("_id") @db.ObjectId
+  orgId               String           @db.ObjectId
   robotId             String           @db.ObjectId
   robot               Robot             @relation(fields: [robotId], references: [id], onDelete: Cascade)
   robotNameSnapshot   String
@@ -193,6 +212,7 @@ model MissionRun {
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
+  @@index([orgId, updatedAt])
   @@index([robotId, updatedAt])
   @@index([runId])
   @@index([status, updatedAt])

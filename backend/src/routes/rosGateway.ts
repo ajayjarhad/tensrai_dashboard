@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import WebSocket from 'ws';
 import { websocketMetrics } from '../metrics/index.js';
+import { requireActiveSession, requireOwnedRobot } from '../middleware/auth.js';
 import { buildMissionFailureAck, isMissionControlEvent } from '../services/missionStatus.js';
 import { RosRegistry } from '../services/rosRegistry.js';
 
@@ -336,13 +337,23 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId', { websocket: true }, robotBridgeHandler);
-  fastify.get('/ws/robots/:robotId/telemetry/:label', { websocket: true }, robotBridgeHandler);
+  // The upgrade runs through normal routing, so a rejected hook answers the handshake with
+  // 401/403/404. The registries are keyed by robot id alone, so the robot must be the caller's.
+  const authedSocket = {
+    websocket: true,
+    onRequest: [requireActiveSession, requireOwnedRobot('robotId')],
+  } as const;
 
-  fastify.get('/health/ros', async () => {
+  fastify.get('/ws/robots/:robotId', authedSocket, robotBridgeHandler);
+  fastify.get('/ws/robots/:robotId/telemetry/:label', authedSocket, robotBridgeHandler);
+
+  fastify.get('/health/ros', { onRequest: requireActiveSession }, async (request: any) => {
+    const robots = await request.db.robot.findMany({ select: { id: true } });
+    const owned = new Set<string>(robots.map((robot: { id: string }) => robot.id));
+    const missions: { robotId: string }[] = (fastify as any).missionRegistry?.getStatuses?.() ?? [];
     return {
-      robots: registry.getStatuses(),
-      missions: (fastify as any).missionRegistry?.getStatuses?.() ?? [],
+      robots: registry.getStatuses().filter((status: { id: string }) => owned.has(status.id)),
+      missions: missions.filter(status => owned.has(status.robotId)),
     };
   });
 
@@ -499,8 +510,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, unifiedMappingHandler);
-  fastify.get('/ws/robots/:robotId/mapping/:label', { websocket: true }, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping', authedSocket, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping/:label', authedSocket, unifiedMappingHandler);
 
   const emergencyProxyHandler = async (connection, request) => {
     const { robotId } = request.params as { robotId: string };
@@ -636,8 +647,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId/emergency', { websocket: true }, emergencyProxyHandler);
-  fastify.get('/ws/robots/:robotId/emergency/:label', { websocket: true }, emergencyProxyHandler);
+  fastify.get('/ws/robots/:robotId/emergency', authedSocket, emergencyProxyHandler);
+  fastify.get('/ws/robots/:robotId/emergency/:label', authedSocket, emergencyProxyHandler);
 
   fastify.addHook('onClose', async () => {
     registry.stop();

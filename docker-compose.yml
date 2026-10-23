@@ -130,7 +130,11 @@ services:
         echo '⏳ Waiting for MongoDB...';
         while ! nc -z mongo 27017; do sleep 1; done;
         echo '✅ MongoDB ready!';
-        echo '🌱 Seeding users...';
+        echo '🧱 Syncing database indexes...';
+        cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx prisma db push --skip-generate || exit 1;
+        echo '🏢 Assigning existing data to the default organization...';
+        DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillOrg.ts || exit 1;
+        cd .. && echo '🌱 Seeding users...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' node --loader ts-node/esm scripts/seed.ts || echo '⚠️ User seeding failed or already completed';
         cd .. && echo '🗺️ Backfilling map display assets if needed...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillMapAssets.ts || echo '⚠️ Map asset backfill failed or already completed';

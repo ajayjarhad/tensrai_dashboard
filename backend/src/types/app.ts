@@ -4,6 +4,7 @@ import type { PrismaClient, User as PrismaUser } from '@prisma/client';
 import type { Auth } from '../config/auth.js';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
 import type { MissionRegistry } from '../services/missionRegistry.js';
+import type { ScopedPrisma } from '../services/orgScope.js';
 
 export interface AuditEvent {
   userId: string;
@@ -33,6 +34,10 @@ export interface AppFastifyRequest {
   params: Record<string, string>;
   raw: IncomingMessage;
   startTime?: number;
+  server: AppFastifyInstance;
+  // Set by requireActiveSession; db is a Prisma client confined to this organization.
+  orgId: string | null;
+  db: ScopedPrisma;
   getUserSession(): Promise<{ user: PrismaUser | null } | null>;
   getCurrentUser(): Promise<PrismaUser | null>;
   isAuthenticated(): Promise<boolean>;

@@ -28,6 +28,7 @@ type AuthMethod = 'password' | 'temporary';
 
 type AuthenticatedUser = {
   id: string;
+  orgId: string;
   username: string;
   email: string | null;
   role: string;
@@ -102,6 +103,7 @@ const buildUserPayload = (
   overrides: Partial<Pick<AuthenticatedUser, 'mustResetPassword'>> = {}
 ): AuthenticatedUser => ({
   id: user.id,
+  orgId: user.orgId,
   username: user.username,
   email: user.email,
   role: user.role,
@@ -254,6 +256,7 @@ const initializeAuthInstance = (
 };
 
 type SessionUser = {
+  orgId: string;
   email: string | null;
   username: string;
   role: string;
@@ -266,6 +269,7 @@ const fetchSessionUser = async (prisma: any, userId: string): Promise<RouteResul
   const sessionUser = await prisma.user.findUnique({
     where: { id: userId },
     select: {
+      orgId: true,
       email: true,
       username: true,
       role: true,
@@ -346,12 +350,24 @@ const createSessionForUser = async (
   return ok(normalizeSession(session as Record<string, unknown>));
 };
 
+const fetchOrgName = async (prisma: any, orgId: string | null | undefined) => {
+  if (!orgId) return null;
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { name: true },
+  });
+  return org?.name ?? null;
+};
+
 const buildEnhancedUser = (
   sessionUser: SessionUser,
   authenticatedUser: AuthenticatedUser,
-  authResult: AuthSuccess
+  authResult: AuthSuccess,
+  orgName: string | null
 ) => ({
   id: authenticatedUser.id,
+  orgId: sessionUser.orgId,
+  orgName,
   username: sessionUser.username,
   email: sessionUser.email,
   role: sessionUser.role,
@@ -429,7 +445,12 @@ const finalizeAuthentication = async (
     return sessionResult;
   }
 
-  const enhancedUser = buildEnhancedUser(sessionUserResult.value, authenticatedUser, authResult);
+  const enhancedUser = buildEnhancedUser(
+    sessionUserResult.value,
+    authenticatedUser,
+    authResult,
+    await fetchOrgName(prisma, sessionUserResult.value.orgId)
+  );
 
   setSessionCookie(reply, sessionResult.value);
 
@@ -484,6 +505,7 @@ const fetchSessionFromDatabase = async (fastify: AppFastifyInstance, token: stri
         user: {
           select: {
             id: true,
+            orgId: true,
             username: true,
             email: true,
             role: true,
@@ -665,7 +687,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
 
       return reply.send({
         success: true,
-        user: session.user,
+        user: { ...session.user, orgName: await fetchOrgName(fastify.prisma, session.user.orgId) },
         session: session.session,
       });
     } catch (error) {

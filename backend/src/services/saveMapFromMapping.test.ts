@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createServer, type Socket } from 'node:net';
-import fastify from 'fastify';
 import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
+import { asUser, createTestApp, ORG_A as ORG } from '../testing/authStub.js';
 
 const { fetchMapViaMappingBridge, getMapSyncStatus, upsertMapFromResponse } = await import(
   './saveMapFromMapping.js'
@@ -15,9 +15,6 @@ type TestMappingServer = {
   clients: Set<WebSocket>;
   close: () => Promise<void>;
 };
-type FastifyFactory = (options?: Record<string, unknown>) => any;
-
-const createFastify = fastify as unknown as FastifyFactory;
 
 const closeFns: Array<() => Promise<void>> = [];
 
@@ -51,10 +48,12 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
   const mapUpdates: any[] = [];
   let mapSeq = maps.length;
 
-  const findMap = (where: any) =>
-    where.filename
-      ? (maps.find(m => m.filename === where.filename) ?? null)
+  const findMap = (where: any) => {
+    const key = where.orgId_filename;
+    return key
+      ? (maps.find(m => m.orgId === key.orgId && m.filename === key.filename) ?? null)
       : (maps.find(m => m.id === where.id) ?? null);
+  };
 
   const findRobotMap = (key: any) =>
     robotMaps.find(r => r.robotId === key.robotId && r.mapId === key.mapId) ?? null;
@@ -91,6 +90,8 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
       },
     },
     robot: {
+      findFirst: async ({ where }: any) =>
+        robots.find(r => r.id === where.id && r.orgId === where.orgId) ?? null,
       findUnique: async ({ where, include }: any) => {
         const robot = robots.find(r => r.id === where.id);
         if (!robot) return null;
@@ -255,7 +256,8 @@ test('updates map features from an unchanged manifest without downloading chunks
   });
 
   const { prisma, robotMaps, robotUpdates, mapUpdates } = createFakePrisma({
-    maps: [{ id: 'map-1', filename: 'map.yaml', contentHash: 'stored-content-hash' }],
+    maps: [{ id: 'map-1', orgId: ORG, filename: 'map.yaml', contentHash: 'stored-content-hash' }],
+    robots: [{ id: 'robot-metadata-refresh', orgId: ORG }],
   });
 
   await fetchMapViaMappingBridge(
@@ -280,7 +282,7 @@ test('updates map features from an unchanged manifest without downloading chunks
   expect(robotUpdates[0]).toMatchObject({ data: { mapId: 'map-1' } });
   expect(mapUpdates).toHaveLength(1);
   expect(mapUpdates[0]).toMatchObject({
-    where: { filename: 'map.yaml' },
+    where: { orgId_filename: { orgId: ORG, filename: 'map.yaml' } },
     data: {
       features: {
         locationTags: [{ id: '2', name: 'Dock', x: 1, y: 2, theta: 0 }],
@@ -358,9 +360,10 @@ test('fails a map sync that cannot complete the websocket handshake', async () =
 });
 
 test('manual map sync route rejects a saved robot without mapping bridge config', async () => {
-  const app = createFastify({ logger: false }) as any;
+  const app = createTestApp();
   app.decorate('prisma', {
     robot: {
+      findFirst: async () => ({ id: 'robot-no-map-bridge' }),
       findUnique: async () => ({
         id: 'robot-no-map-bridge',
         name: 'Robot without map bridge',
@@ -375,6 +378,7 @@ test('manual map sync route rejects a saved robot without mapping bridge config'
   const response = await app.inject({
     method: 'POST',
     url: '/api/robots/robot-no-map-bridge/map-sync',
+    headers: asUser('user'),
   });
 
   await app.close();
@@ -389,7 +393,9 @@ test('manual map sync route rejects a saved robot without mapping bridge config'
 const inlineYaml = (image: string) => `image: ${image}\nresolution: 0.05\norigin: [0, 0, 0]\n`;
 
 test('links the primary and every additional map, activating the primary on first sync', async () => {
-  const { prisma, maps, robotMaps, robotUpdates } = createFakePrisma();
+  const { prisma, maps, robotMaps, robotUpdates } = createFakePrisma({
+    robots: [{ id: 'robot-multi', orgId: ORG }],
+  });
   const files = {
     map_yaml: 'map.yaml',
     map_pgm: 'map.pgm',
@@ -426,7 +432,8 @@ test('links the primary and every additional map, activating the primary on firs
 
 test('does not override a pinned active map on re-sync', async () => {
   const { prisma, robotMaps, robotUpdates } = createFakePrisma({
-    maps: [{ id: 'map-pinned', filename: 'map1.yaml', contentHash: 'h' }],
+    maps: [{ id: 'map-pinned', orgId: ORG, filename: 'map1.yaml', contentHash: 'h' }],
+    robots: [{ id: 'robot-pin', orgId: ORG }],
     robotMaps: [{ robotId: 'robot-pin', mapId: 'map-pinned', isActive: true, isPinned: true }],
   });
   const files = {
@@ -448,7 +455,8 @@ test('does not override a pinned active map on re-sync', async () => {
 
 test('keeps the existing unpinned active map on re-sync', async () => {
   const { prisma, robotMaps, robotUpdates } = createFakePrisma({
-    maps: [{ id: 'map-active', filename: 'map.yaml', contentHash: 'h' }],
+    maps: [{ id: 'map-active', orgId: ORG, filename: 'map.yaml', contentHash: 'h' }],
+    robots: [{ id: 'robot-keep', orgId: ORG }],
     robotMaps: [{ robotId: 'robot-keep', mapId: 'map-active', isActive: true, isPinned: false }],
   });
   const files = {
@@ -467,7 +475,7 @@ test('keeps the existing unpinned active map on re-sync', async () => {
 });
 
 const registerRobotApp = async (prisma: any) => {
-  const app = createFastify({ logger: false }) as any;
+  const app = createTestApp();
   app.decorate('prisma', prisma);
   await app.register(robotRoutes, { prefix: '/api' });
   return app;
@@ -475,7 +483,7 @@ const registerRobotApp = async (prisma: any) => {
 
 test('POST /active-map activates and pins the chosen map', async () => {
   const { prisma, robotMaps } = createFakePrisma({
-    robots: [{ id: 'r1', name: 'R1' }],
+    robots: [{ id: 'r1', name: 'R1', orgId: ORG }],
     maps: [
       { id: 'm1', name: 'Map One' },
       { id: 'm2', name: 'Map Two' },
@@ -490,6 +498,7 @@ test('POST /active-map activates and pins the chosen map', async () => {
   const response = await app.inject({
     method: 'POST',
     url: '/api/robots/r1/active-map',
+    headers: asUser('user'),
     payload: { mapId: 'm2' },
   });
   await app.close();
@@ -507,7 +516,7 @@ test('POST /active-map activates and pins the chosen map', async () => {
 
 test('POST /active-map returns 404 for a map not assigned to the robot', async () => {
   const { prisma } = createFakePrisma({
-    robots: [{ id: 'r1', name: 'R1' }],
+    robots: [{ id: 'r1', name: 'R1', orgId: ORG }],
     maps: [{ id: 'm1', name: 'Map One' }],
     robotMaps: [{ robotId: 'r1', mapId: 'm1', isActive: true, isPinned: false }],
   });
@@ -516,6 +525,7 @@ test('POST /active-map returns 404 for a map not assigned to the robot', async (
   const response = await app.inject({
     method: 'POST',
     url: '/api/robots/r1/active-map',
+    headers: asUser('user'),
     payload: { mapId: 'does-not-exist' },
   });
   await app.close();
@@ -529,13 +539,17 @@ test('POST /active-map returns 404 for a map not assigned to the robot', async (
 
 test('POST /active-map/auto clears the pin on a robot’s maps', async () => {
   const { prisma, robotMaps } = createFakePrisma({
-    robots: [{ id: 'r1', name: 'R1' }],
+    robots: [{ id: 'r1', name: 'R1', orgId: ORG }],
     maps: [{ id: 'm1', name: 'Map One' }],
     robotMaps: [{ robotId: 'r1', mapId: 'm1', isActive: true, isPinned: true }],
   });
   const app = await registerRobotApp(prisma);
 
-  const response = await app.inject({ method: 'POST', url: '/api/robots/r1/active-map/auto' });
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/robots/r1/active-map/auto',
+    headers: asUser('user'),
+  });
   await app.close();
 
   expect(response.statusCode).toBe(200);
