@@ -38,7 +38,10 @@ export interface AppFastifyRequest {
   // Set by requireActiveSession; db is a Prisma client confined to this organization.
   orgId: string | null;
   db: ScopedPrisma;
-  getUserSession(): Promise<{ user: PrismaUser | null } | null>;
+  getUserSession(): Promise<{
+    user: PrismaUser | null;
+    session: { id: string; expiresAt: Date };
+  } | null>;
   getCurrentUser(): Promise<PrismaUser | null>;
   isAuthenticated(): Promise<boolean>;
   hasRole(role: string): Promise<boolean>;

@@ -404,6 +404,20 @@ const setSessionCookie = (reply: AppFastifyReply, session: NormalizedSession) =>
   reply.header('Set-Cookie', serializedCookie);
 };
 
+const clearSessionCookie = (reply: AppFastifyReply) => {
+  reply.header(
+    'Set-Cookie',
+    cookie.serialize('better-auth.session_token', '', {
+      path: '/',
+      httpOnly: true,
+      secure: process.env['NODE_ENV'] === 'production',
+      sameSite: 'lax',
+      maxAge: 0,
+      expires: new Date(0),
+    })
+  );
+};
+
 const finalizeAuthentication = async (
   fastify: AppFastifyInstance,
   request: AppFastifyRequest,
@@ -662,22 +676,11 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     try {
       applyCorsHeaders(request, reply);
 
-      // Ensure auth instance is initialized
-      const authInstance = getAuthInstance();
-      if (!authInstance) {
-        return reply.status(500).send({
-          success: false,
-          error: 'Authentication service not available',
-          code: 'AUTH_SERVICE_ERROR',
-        });
-      }
+      // Better Auth first, then the sessions table: sessions made by the custom sign-in carry
+      // an unsigned cookie that Better Auth alone cannot resolve.
+      const session = await request.getUserSession();
 
-      // Get session from Better Auth
-      const session = await authInstance.api.getSession({
-        headers: request.headers,
-      });
-
-      if (!session || !session.user) {
+      if (!session?.user) {
         return reply.status(401).send({
           success: false,
           error: 'No valid session found',
@@ -685,19 +688,50 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         });
       }
 
+      // Allow-list: the Better Auth user also carries credential fields such as tempPasswordHash.
+      const { id, orgId, username, email, role, displayName, isActive, mustResetPassword } =
+        session.user;
       return reply.send({
         success: true,
-        user: { ...session.user, orgName: await fetchOrgName(fastify.prisma, session.user.orgId) },
-        session: session.session,
+        user: {
+          id,
+          orgId,
+          orgName: await fetchOrgName(fastify.prisma, orgId),
+          username,
+          email,
+          role,
+          displayName,
+          isActive,
+          mustResetPassword,
+        },
+        session: { sessionId: session.session.id, expiresAt: session.session.expiresAt },
       });
     } catch (error) {
-      fastify.log.error('Session validation error:', error);
+      fastify.log.error(error, 'Session validation error');
       return reply.status(500).send({
         success: false,
         error: 'Session validation failed',
         code: 'SESSION_ERROR',
       });
     }
+  });
+
+  // Better Auth's own sign-out cannot find sessions created by the custom sign-in (unsigned
+  // cookie), so it answered 200 and left the session usable until it expired.
+  fastify.post('/api/auth/sign-out', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    applyCorsHeaders(request, reply);
+
+    const user = await request.getCurrentUser();
+    const token = extractSessionToken(request.headers);
+    if (token) {
+      await fastify.prisma.session.deleteMany({ where: { token } });
+    }
+    if (user && typeof fastify.audit === 'function') {
+      await fastify.audit({ userId: user.id, role: user.role, action: 'LOGOUT' });
+    }
+
+    clearSessionCookie(reply);
+    return reply.send({ success: true });
   });
 
   // Custom sign-in route that handles both regular and temporary passwords

@@ -72,9 +72,7 @@ const loginRoute = createRoute({
     const { isAuthenticated } = useAuth();
 
     if (isAuthenticated) {
-      throw redirect({
-        to: '/',
-      });
+      return <Navigate to="/" replace />;
     }
 
     return <LoginForm />;
@@ -88,15 +86,11 @@ const firstTimeSetupRoute = createRoute({
     const { isAuthenticated, user } = useAuth();
 
     if (!isAuthenticated) {
-      throw redirect({
-        to: '/auth/login',
-      });
+      return <Navigate to="/auth/login" replace />;
     }
 
     if (!user?.mustResetPassword) {
-      throw redirect({
-        to: '/',
-      });
+      return <Navigate to="/" replace />;
     }
 
     return <FirstTimePasswordForm />;

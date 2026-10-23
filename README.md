@@ -41,7 +41,7 @@ cd backend
 bun run seed
 ```
 
-Override the generated credentials by exporting `SEED_ADMIN_*` / `SEED_USER_*` env vars before running the command (see `backend/scripts/seed.ts`).
+Set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`, `PASSWORD`) before running the command; without a password the account is created with the default `pass`, which the script warns about. The seed only creates accounts that are missing, so it is safe to run on every start and never resets an existing user's password.
 
 ### Organizations (multi-tenancy)
 
