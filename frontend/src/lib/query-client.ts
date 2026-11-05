@@ -22,9 +22,10 @@ export const queryClient = new QueryClient({
       throwOnError: false,
     },
     mutations: {
-      retry: 1,
-      // Default mutation settings
-      throwOnError: true,
+      // Most of these are not safe to repeat, and a refused sign-in would count twice.
+      retry: false,
+      // Screens show a failed action themselves; throwing would replace them with the error page.
+      throwOnError: false,
     },
   },
 });

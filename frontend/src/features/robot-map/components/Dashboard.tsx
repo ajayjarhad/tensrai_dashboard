@@ -151,6 +151,8 @@ type PendingMissionStart = {
   mission: MissionWithContext;
 };
 
+const TELEOP_CONFIRM_TIMEOUT_MS = 5000;
+
 type EmergencyAlert = {
   id: string;
   robotId: string;
@@ -259,6 +261,7 @@ export function Dashboard() {
   const [_mapFeatures, setMapFeatures] = useState<ProcessedMapData['features'] | undefined>();
   const [isSettingPose, setIsSettingPose] = useState(false);
   const [teleopRobotId, setTeleopRobotId] = useState<string | null>(null);
+  const teleopConfirmedRobotRef = useRef<string | null>(null);
 
   const mapNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -461,10 +464,14 @@ export function Dashboard() {
         active &&
         eventType === 'EMERGENCY_STATE' &&
         !hasShownInitialEmergencyPopupRef.current[robot.id];
+      // Releasing software while hardware still holds the robot acks too, but sets nothing new.
+      const ackSetEmergency =
+        (eventType === 'SOFTWARE_EMERGENCY_ACK' && robot.emergency?.softwareEmergencyActive) ||
+        (eventType === 'HARDWARE_EMERGENCY_ACK' && robot.emergency?.hardwareEmergencyActive);
       const canShowAckPopup =
         active &&
         !!eventAt &&
-        (eventType === 'SOFTWARE_EMERGENCY_ACK' || eventType === 'HARDWARE_EMERGENCY_ACK') &&
+        ackSetEmergency &&
         (lastEmergencyAckAtRef.current[robot.id] ?? 0) < eventAt;
 
       if (!active) {
@@ -475,6 +482,12 @@ export function Dashboard() {
           shouldRearmEmergencyPopup(robot.emergency?.connectionStatus, apiStatusById.get(robot.id))
         ) {
           delete hasShownInitialEmergencyPopupRef.current[robot.id];
+          // Still waiting to be acknowledged, an alert for a finished emergency would be false.
+          setEmergencyAlerts(current =>
+            current.some(alert => alert.robotId === robot.id)
+              ? current.filter(alert => alert.robotId !== robot.id)
+              : current
+          );
         }
         continue;
       }
@@ -788,7 +801,9 @@ export function Dashboard() {
           if (requestType === 'SHOW_UP') toast.success(`${prefix}${missionName} ready to start`);
           if (requestType === 'PAUSE') toast.message(`${prefix}${missionName} paused`);
           if (requestType === 'RESUME') toast.success(`${prefix}${missionName} resumed`);
-          if (requestType === 'CANCEL') toast.message(`${prefix}${missionName} cancelled`);
+          if (requestType === 'CANCEL') {
+            toast.message(`${prefix}${missionName} cancelled`, { id: `cancelled:${robot.id}` });
+          }
         } else {
           toast.error(status.message ?? `${prefix}${missionName} control failed`);
         }
@@ -799,7 +814,8 @@ export function Dashboard() {
         if (status.lastEventStatus === 'success') {
           toast.success(`${prefix}${missionName} completed`);
         } else if (status.lastEventStatus === 'cancelled') {
-          toast.message(`${prefix}${missionName} cancelled`);
+          // The robot acks the request and then completes; one cancellation, one toast.
+          toast.message(`${prefix}${missionName} cancelled`, { id: `cancelled:${robot.id}` });
         } else {
           toast.error(`${prefix}${missionName} failed`);
         }
@@ -1228,9 +1244,19 @@ export function Dashboard() {
     const teleopStatus = missionStatusByRobot[teleopRobotId];
     const liveMode =
       teleopStatus?.mode ?? robots.find(robot => robot.id === teleopRobotId)?.runtimeMode;
-    if (liveMode && liveMode !== 'teleop') {
-      setTeleopRobotId(null);
+    if (liveMode === 'teleop') {
+      teleopConfirmedRobotRef.current = teleopRobotId;
+      return;
     }
+    if (teleopConfirmedRobotRef.current === teleopRobotId) {
+      teleopConfirmedRobotRef.current = null;
+      setTeleopRobotId(null);
+      return;
+    }
+    // The panel opens before the robot confirms the switch, so until then "not teleop" only means
+    // the answer has not arrived. A robot that never confirms closes the panel here.
+    const timer = setTimeout(() => setTeleopRobotId(null), TELEOP_CONFIRM_TIMEOUT_MS);
+    return () => clearTimeout(timer);
   }, [missionStatusByRobot, robots, teleopRobotId]);
 
   const handleFocusMission = useCallback(
@@ -1279,10 +1305,9 @@ export function Dashboard() {
       const startedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : undefined;
       const rowMapId = mission?.mapId ?? robot.mapId;
       const rowMapName = mission?.mapName ?? (robot.mapId ? mapNameById[robot.mapId] : undefined);
-      const displayWaypointIndex = toDisplayWaypointIndex(
-        status.waypointIndex,
-        status.totalWaypoints
-      );
+      // A robot first reports the total with its first waypoint, which can be minutes away.
+      const totalWaypoints = status.totalWaypoints ?? mission?.steps.length;
+      const displayWaypointIndex = toDisplayWaypointIndex(status.waypointIndex, totalWaypoints);
 
       rows.push({
         robotId: robot.id,
@@ -1295,7 +1320,7 @@ export function Dashboard() {
           ? 'showing'
           : status.phase) as OngoingMissionView['status'],
         ...(displayWaypointIndex !== undefined ? { waypointIndex: displayWaypointIndex } : {}),
-        ...(status.totalWaypoints !== undefined ? { totalWaypoints: status.totalWaypoints } : {}),
+        ...(totalWaypoints !== undefined ? { totalWaypoints } : {}),
         ...(startedAt ? { startedAt } : {}),
         ...(status.updatedAt !== undefined ? { updatedAt: status.updatedAt } : {}),
         ...(status.lastSeenTs !== undefined ? { lastSeenTs: status.lastSeenTs } : {}),

@@ -275,8 +275,10 @@ export function RobotManagement() {
       };
       if (form.id) {
         await apiClient.patch(`robots/${form.id}`, payload);
-        // Map assignment is managed via the active-map endpoint, not PATCH.
-        if (form.mapId) {
+        // Map assignment is managed via the active-map endpoint, not PATCH. That also pins the map,
+        // so saving an unrelated edit must not turn off auto-follow.
+        const savedMapId = robots.find(robot => robot.id === form.id)?.mapId ?? '';
+        if (form.mapId && form.mapId !== savedMapId) {
           await apiClient.post(`robots/${form.id}/active-map`, { mapId: form.mapId });
         }
       } else {
