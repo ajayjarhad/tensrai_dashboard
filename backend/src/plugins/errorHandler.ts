@@ -16,6 +16,17 @@ export const appErrorHandler = (
     });
   }
 
+  // On MongoDB, an id that isn't a valid ObjectId can't name anything.
+  if (error.code === 'P2023') {
+    return reply.status(404).send({ success: false, error: 'Not found', code: 'NOT_FOUND' });
+  }
+  if (error.name === 'PrismaClientValidationError') {
+    request.server.log.warn({ url: request.url, method: request.method }, 'Invalid query shape');
+    return reply
+      .status(400)
+      .send({ success: false, error: 'Invalid request', code: 'BAD_REQUEST' });
+  }
+
   request.server.log.error(
     {
       error: error.message,

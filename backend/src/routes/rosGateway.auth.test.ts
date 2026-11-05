@@ -73,6 +73,18 @@ test('accepts the upgrade for a signed-in user', async () => {
   }
 });
 
+test('refuses a robot socket opened from another site, whoever is signed in', async () => {
+  for (const path of SOCKET_PATHS) {
+    const headers = { ...asUser('user'), Host: '127.0.0.1' };
+    const evil = { ...headers, Origin: 'https://evil.example' };
+    expect([path, await handshakeStatus(path, evil)]).toEqual([path, 403]);
+    expect([path, await handshakeStatus(path, { ...headers, Origin: 'null' })]).toEqual([
+      path,
+      403,
+    ]);
+  }
+});
+
 test('keeps robot status behind a session', async () => {
   const anonymous = await app.inject({ method: 'GET', url: '/health/ros' });
   expect(anonymous.statusCode).toBe(401);

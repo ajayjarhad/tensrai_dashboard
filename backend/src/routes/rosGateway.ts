@@ -119,6 +119,17 @@ const auditRobotCommand = async (fastify: any, request: any, action: string, met
   });
 };
 
+// CORS doesn't cover sockets and the session cookie goes with any same-site page, including another
+// port on this host, so a page has to be this dashboard (or an allowed origin) to drive a robot.
+const refuseForeignOrigin = async (request: any, reply: any) => {
+  const origin: string | undefined = request.headers.origin;
+  if (!origin || request.server.isAllowedOrigin?.(origin)) return;
+  const host = request.headers['x-forwarded-host'] ?? request.headers.host;
+  if (URL.canParse(origin) && new URL(origin).host === host) return;
+  request.log.warn({ origin }, 'Refused a robot socket from another origin');
+  return reply.status(403).send({ success: false, error: 'Origin not allowed' });
+};
+
 const rosGateway = async (fastify: FastifyInstance) => {
   const registry = new RosRegistry(fastify.prisma, fastify.log);
   fastify.decorate('rosRegistry', registry);
@@ -382,7 +393,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   // 401/403/404. The registries are keyed by robot id alone, so the robot must be the caller's.
   const authedSocket = {
     websocket: true,
-    onRequest: [requireActiveSession, requireOwnedRobot('robotId')],
+    onRequest: [refuseForeignOrigin, requireActiveSession, requireOwnedRobot('robotId')],
   } as const;
 
   fastify.get('/ws/robots/:robotId', authedSocket, robotBridgeHandler);
