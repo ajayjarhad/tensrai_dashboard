@@ -28,6 +28,8 @@ type RobotEmergencyBridgeEvent =
   | { event: 'HARDWARE_EMERGENCY_ACK'; payload?: RobotEmergencyAckPayload }
   | { event: string; payload?: unknown };
 
+// A robot decides what it sends. Real emergency frames are a few hundred bytes.
+const MAX_EMERGENCY_FRAME_CHARS = 16 * 1024;
 const DEFAULT_EMERGENCY_BRIDGE_PORT = Number(process.env['ROS_EMERGENCY_BRIDGE_PORT'] ?? 8766);
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_MS = 1_000;
@@ -501,6 +503,13 @@ export class EmergencyRegistry {
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {
+    if (payloadText.length > MAX_EMERGENCY_FRAME_CHARS) {
+      this.log.warn(
+        { robotId, length: payloadText.length },
+        'Dropped oversized emergency bridge frame'
+      );
+      return;
+    }
     const parsed = (() => {
       try {
         return parseRobotEmergencyEvent(JSON.parse(payloadText));

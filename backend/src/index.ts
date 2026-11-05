@@ -185,6 +185,11 @@ const start = async () => {
   }
 };
 
+// Every organization shares this process, so a bug one robot's data reaches must not drop everyone
+// else's robot connections, e-stops included.
+process.on('uncaughtException', err => server.log.error({ err }, 'Uncaught exception'));
+process.on('unhandledRejection', err => server.log.error({ err }, 'Unhandled rejection'));
+
 process.on('SIGINT', async () => {
   server.log.info('SIGINT received, shutting down gracefully');
   await server.close();

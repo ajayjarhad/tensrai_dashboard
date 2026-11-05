@@ -70,6 +70,9 @@ type ActiveConnection = {
   lastPongAt?: number;
 };
 
+// A robot decides what it sends, and these frames are relayed to every open dashboard. Real ones
+// are a few hundred bytes.
+const MAX_MISSION_FRAME_CHARS = 64 * 1024;
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 const RECONNECT_BASE_MS = 1_000;
@@ -701,6 +704,13 @@ export class MissionRegistry extends EventEmitter {
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {
+    if (payloadText.length > MAX_MISSION_FRAME_CHARS) {
+      this.log.warn(
+        { robotId, length: payloadText.length },
+        'Dropped oversized mission bridge frame'
+      );
+      return;
+    }
     const parsed = parseGatewayEvent(payloadText);
     if (!parsed?.event || !isMissionStatusEvent(parsed.event)) {
       return;
