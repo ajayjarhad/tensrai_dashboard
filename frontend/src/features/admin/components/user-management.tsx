@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useAuth } from '@/stores/auth';
 import type { ResetUserPasswordResult } from '../api/resetUserPassword';
 import { useDeleteUser, useResetUserPassword, useUpdateUser, useUsers } from '../hooks';
+import { AdminNav } from './AdminNav';
 import { TemporaryPassword } from './TemporaryPassword';
 import { UserRow } from './UserRow';
 
@@ -55,14 +56,17 @@ export function UserManagement() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => navigate({ to: '/' })}
-            className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Dashboard
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => navigate({ to: '/' })}
+              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Dashboard
+            </button>
+            <AdminNav />
+          </div>
           <button
             type="button"
             onClick={() => navigate({ to: '/admin/create-temporary-user' })}

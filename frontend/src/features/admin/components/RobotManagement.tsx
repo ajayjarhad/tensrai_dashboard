@@ -22,6 +22,7 @@ import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/li
 import { useAuth } from '@/stores/auth';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import type { Robot, RobotMode } from '@/types/robot';
+import { AdminNav } from './AdminNav';
 
 type EditableRobot = Partial<Robot> & {
   id?: string;
@@ -468,14 +469,17 @@ export function RobotManagement() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => navigate({ to: '/' })}
-            className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Dashboard
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => navigate({ to: '/' })}
+              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Dashboard
+            </button>
+            <AdminNav />
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
