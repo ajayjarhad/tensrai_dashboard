@@ -24,9 +24,19 @@ const EMPTY_FORM: OrgForm = { name: '', slug: '', username: '', email: '' };
 
 const askFor = (label: string) => window.prompt(label)?.trim() || null;
 
+export const slugFromName = (name: string) =>
+  name
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
 export function OrgTable() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<OrgForm>(EMPTY_FORM);
+  // Follows the name until someone types their own. The server refuses a slug already in use.
+  const slug = form.slug || slugFromName(form.name);
   const [newAdmin, setNewAdmin] = useState<NewAdmin | null>(null);
   const { data: orgs = [], isLoading } = useQuery({
     queryKey: queryKeys.staff.orgs,
@@ -86,13 +96,13 @@ export function OrgTable() {
     if (ip) approveAhead.mutate({ orgId: org.id, ip });
   };
 
-  const field = (key: keyof OrgForm, placeholder: string, type = 'text') => (
+  const field = (key: keyof OrgForm, placeholder: string, type = 'text', value = form[key]) => (
     <input
       required
       type={type}
       aria-label={placeholder}
       placeholder={placeholder}
-      value={form[key]}
+      value={value}
       onChange={event => setForm(current => ({ ...current, [key]: event.target.value }))}
       className={INPUT}
     />
@@ -115,11 +125,11 @@ export function OrgTable() {
         className="bg-card shadow sm:rounded-md p-4 flex gap-2 flex-wrap items-center"
         onSubmit={event => {
           event.preventDefault();
-          create.mutate(form);
+          create.mutate({ ...form, slug });
         }}
       >
         {field('name', 'Organization name')}
-        {field('slug', 'slug (lowercase-with-dashes)')}
+        {field('slug', 'slug (lowercase-with-dashes)', 'text', slug)}
         {field('username', 'First admin username')}
         {field('email', 'First admin email', 'email')}
         <button
