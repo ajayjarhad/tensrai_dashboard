@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth';
 
 interface SidebarHeaderProps {
   isOpen: boolean;
@@ -8,16 +9,14 @@ interface SidebarHeaderProps {
 }
 
 export function SidebarHeader({ isOpen, onToggle, title = 'Robots' }: SidebarHeaderProps) {
+  const orgName = useAuthStore(state => state.user?.orgName);
+
   return (
     <div className="flex items-center justify-between p-4 border-b border-border/60 min-w-[20rem]">
-      <h2
-        className={cn(
-          'font-semibold text-foreground transition-opacity duration-200 whitespace-nowrap',
-          !isOpen && 'opacity-0 hidden'
-        )}
-      >
-        {title}
-      </h2>
+      <div className={cn('transition-opacity duration-200', !isOpen && 'opacity-0 hidden')}>
+        <h2 className="font-semibold text-foreground whitespace-nowrap">{title}</h2>
+        {orgName && <p className="text-xs text-muted-foreground whitespace-nowrap">{orgName}</p>}
+      </div>
       <button
         type="button"
         onClick={onToggle}

@@ -2,6 +2,7 @@ import type { PrismaClient, RobotMode } from '@prisma/client';
 import WebSocket from 'ws';
 import { emergencyMetrics } from '../metrics/index.js';
 import { deriveRobotModeFromMissionState } from './missionStatus.js';
+import { withApprovedAddress } from './robotAddress.js';
 
 type RobotEmergencyConnectionStatus =
   | 'unconfigured'
@@ -27,6 +28,8 @@ type RobotEmergencyBridgeEvent =
   | { event: 'HARDWARE_EMERGENCY_ACK'; payload?: RobotEmergencyAckPayload }
   | { event: string; payload?: unknown };
 
+// A robot decides what it sends. Real emergency frames are a few hundred bytes.
+const MAX_EMERGENCY_FRAME_CHARS = 16 * 1024;
 const DEFAULT_EMERGENCY_BRIDGE_PORT = Number(process.env['ROS_EMERGENCY_BRIDGE_PORT'] ?? 8766);
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_MS = 1_000;
@@ -179,16 +182,20 @@ export class EmergencyRegistry {
   }
 
   async reloadFromDb() {
-    const robots = await this.prisma.robot.findMany({
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        statusBeforeEmergency: true,
-        ipAddress: true,
-        emergencyBridgePort: true,
-      },
-    });
+    const robots = await withApprovedAddress(
+      this.prisma,
+      await this.prisma.robot.findMany({
+        select: {
+          id: true,
+          orgId: true,
+          name: true,
+          status: true,
+          statusBeforeEmergency: true,
+          ipAddress: true,
+          emergencyBridgePort: true,
+        },
+      })
+    );
 
     const desiredIds = new Set<string>();
 
@@ -496,6 +503,13 @@ export class EmergencyRegistry {
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {
+    if (payloadText.length > MAX_EMERGENCY_FRAME_CHARS) {
+      this.log.warn(
+        { robotId, length: payloadText.length },
+        'Dropped oversized emergency bridge frame'
+      );
+      return;
+    }
     const parsed = (() => {
       try {
         return parseRobotEmergencyEvent(JSON.parse(payloadText));

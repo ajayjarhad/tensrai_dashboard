@@ -11,6 +11,8 @@ import { ArrowLeft, Home } from 'lucide-react';
 import { RobotManagement, UserCreation, UserManagement } from '@/features/admin/components';
 import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
 import { Dashboard } from '@/features/robot-map/components/Dashboard';
+import { OrganizationsPage } from '@/features/staff/components/OrganizationsPage';
+import { StaffOrgBanner } from '@/features/staff/components/StaffOrgBanner';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
 import { useAuth, useAuthStore } from '@/stores/auth';
@@ -19,8 +21,11 @@ import { useAuth, useAuthStore } from '@/stores/auth';
 const rootRoute = createRootRoute({
   component: () => {
     return (
-      <div className="min-h-screen bg-background text-foreground">
-        <Outlet />
+      <div className="h-screen flex flex-col bg-background text-foreground">
+        <StaffOrgBanner />
+        <div className="flex-1 min-h-0 overflow-auto">
+          <Outlet />
+        </div>
       </div>
     );
   },
@@ -72,9 +77,7 @@ const loginRoute = createRoute({
     const { isAuthenticated } = useAuth();
 
     if (isAuthenticated) {
-      throw redirect({
-        to: '/',
-      });
+      return <Navigate to="/" replace />;
     }
 
     return <LoginForm />;
@@ -88,15 +91,11 @@ const firstTimeSetupRoute = createRoute({
     const { isAuthenticated, user } = useAuth();
 
     if (!isAuthenticated) {
-      throw redirect({
-        to: '/auth/login',
-      });
+      return <Navigate to="/auth/login" replace />;
     }
 
     if (!user?.mustResetPassword) {
-      throw redirect({
-        to: '/',
-      });
+      return <Navigate to="/" replace />;
     }
 
     return <FirstTimePasswordForm />;
@@ -146,6 +145,28 @@ const robotManagementRoute = createRoute({
   component: () => {
     return <RobotManagement />;
   },
+});
+
+// Staff Route
+const staffRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/staff',
+  beforeLoad: () => {
+    const { hasPermission, isAuthenticated } = useAuthStore.getState();
+
+    if (!isAuthenticated) {
+      throw redirect({
+        to: '/auth/login',
+      });
+    }
+
+    if (!hasPermission(PERMISSIONS.STAFF_CONSOLE)) {
+      throw redirect({
+        to: '/unauthorized',
+      });
+    }
+  },
+  component: OrganizationsPage,
 });
 
 // Unauthorized Route
@@ -206,6 +227,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   authRoute.addChildren([loginRoute, firstTimeSetupRoute]),
   adminRoute.addChildren([userManagementRoute, createTempUserRoute, robotManagementRoute]),
+  staffRoute,
   unauthorizedRoute,
 ]);
 

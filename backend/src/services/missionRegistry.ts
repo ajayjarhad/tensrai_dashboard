@@ -8,6 +8,7 @@ import {
   recordMissionCommandIntent,
   updateMissionFromEvent,
 } from './missionStatus.js';
+import { withApprovedAddress } from './robotAddress.js';
 import { type SyncResult, syncRobotStatusUpdate } from './robotStatusSync.js';
 
 type MissionConnectionStatus =
@@ -69,6 +70,9 @@ type ActiveConnection = {
   lastPongAt?: number;
 };
 
+// A robot decides what it sends, and these frames are relayed to every open dashboard. Real ones
+// are a few hundred bytes.
+const MAX_MISSION_FRAME_CHARS = 64 * 1024;
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 const RECONNECT_BASE_MS = 1_000;
@@ -148,6 +152,7 @@ export class MissionRegistry extends EventEmitter {
   private connections = new Map<string, ActiveConnection>();
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
   private reconnectAttempts = new Map<string, number>();
+  private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
   private runStore: MissionRunStore;
@@ -208,16 +213,20 @@ export class MissionRegistry extends EventEmitter {
         hydrateMissionStateFromPersistedRun(run.robotId, run);
       }
 
-      const robots = await this.prisma.robot.findMany({
-        select: {
-          id: true,
-          name: true,
-          ipAddress: true,
-          mapId: true,
-          missionBridgePort: true,
-          mappingBridgePort: true,
-        },
-      });
+      const robots = await withApprovedAddress(
+        this.prisma,
+        await this.prisma.robot.findMany({
+          select: {
+            id: true,
+            orgId: true,
+            name: true,
+            ipAddress: true,
+            mapId: true,
+            missionBridgePort: true,
+            mappingBridgePort: true,
+          },
+        })
+      );
 
       this.log.info({ robotCount: robots.length }, 'Mission registry robot configs loaded');
       const desiredIds = new Set<string>();
@@ -327,14 +336,16 @@ export class MissionRegistry extends EventEmitter {
     const config = this.robotConfigs.get(robotId);
     if (!config) return;
     recordMissionCommandIntent(robotId, event, payload);
-    await this.runStore.recordCommandIntent(
-      {
-        robotId,
-        robotName: config.name,
-        mapId: config.mapId ?? null,
-      },
-      event,
-      payload
+    await this.inRobotOrder(robotId, () =>
+      this.runStore.recordCommandIntent(
+        {
+          robotId,
+          robotName: config.name,
+          mapId: config.mapId ?? null,
+        },
+        event,
+        payload
+      )
     );
   }
 
@@ -387,7 +398,12 @@ export class MissionRegistry extends EventEmitter {
     }
   }
 
-  async listMissionRuns(options: { robotId?: string; status?: string; limit?: number }) {
+  async listMissionRuns(options: {
+    orgId: string;
+    robotId?: string;
+    status?: string;
+    limit?: number;
+  }) {
     return this.runStore.listRuns(options);
   }
 
@@ -691,6 +707,13 @@ export class MissionRegistry extends EventEmitter {
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {
+    if (payloadText.length > MAX_MISSION_FRAME_CHARS) {
+      this.log.warn(
+        { robotId, length: payloadText.length },
+        'Dropped oversized mission bridge frame'
+      );
+      return;
+    }
     const parsed = parseGatewayEvent(payloadText);
     if (!parsed?.event || !isMissionStatusEvent(parsed.event)) {
       return;
@@ -711,34 +734,54 @@ export class MissionRegistry extends EventEmitter {
 
     updateMissionFromEvent(robotId, parsed.event, normalizedPayload);
 
-    if (parsed.event === 'ROBOT_STATUS_UPDATE') {
-      const syncDeps: Parameters<typeof syncRobotStatusUpdate>[0] = {
-        prisma: this.prisma,
-        log: this.log,
-      };
-      if (this.rememberNonEmergencyStatus) {
-        syncDeps.rememberNonEmergencyStatus = this.rememberNonEmergencyStatus;
-      }
-      const syncResult: SyncResult = await syncRobotStatusUpdate(syncDeps, robotId, parsed.payload);
-      if (!syncResult.ok) {
-        this.log.warn(
-          { robotId, reason: syncResult.reason, event: parsed.event },
-          'Dropped ROBOT_STATUS_UPDATE during mission registry sync'
+    await this.inRobotOrder(robotId, async () => {
+      if (parsed.event === 'ROBOT_STATUS_UPDATE') {
+        const syncDeps: Parameters<typeof syncRobotStatusUpdate>[0] = {
+          prisma: this.prisma,
+          log: this.log,
+        };
+        if (this.rememberNonEmergencyStatus) {
+          syncDeps.rememberNonEmergencyStatus = this.rememberNonEmergencyStatus;
+        }
+        const syncResult: SyncResult = await syncRobotStatusUpdate(
+          syncDeps,
+          robotId,
+          parsed.payload
         );
+        if (!syncResult.ok) {
+          this.log.warn(
+            { robotId, reason: syncResult.reason, event: parsed.event },
+            'Dropped ROBOT_STATUS_UPDATE during mission registry sync'
+          );
+        }
       }
-    }
 
-    const config = this.robotConfigs.get(robotId);
-    if (!config) return;
+      const config = this.robotConfigs.get(robotId);
+      if (!config) return;
 
-    await this.runStore.applyEvent(
-      {
-        robotId,
-        robotName: config.name,
-        mapId: config.mapId ?? null,
-      },
-      parsed.event,
-      normalizedPayload
+      await this.runStore.applyEvent(
+        {
+          robotId,
+          robotName: config.name,
+          mapId: config.mapId ?? null,
+        },
+        parsed.event,
+        normalizedPayload
+      );
+    });
+  }
+
+  // A robot's events arrive back to back and each write reads what the last one wrote: unordered,
+  // a pause and resume can land the wrong way round and a preview can be recorded twice.
+  private inRobotOrder(robotId: string, write: () => Promise<unknown>) {
+    const done = (this.pendingWrites.get(robotId) ?? Promise.resolve()).then(write);
+    this.pendingWrites.set(
+      robotId,
+      done.then(
+        () => undefined,
+        () => undefined
+      )
     );
+    return done;
   }
 }

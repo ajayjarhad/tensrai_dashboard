@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
+import { PERMISSIONS } from '@tensrai/shared';
 import {
   ArrowLeft,
   ChevronDown,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { MoveRobotControl } from '@/features/staff/components/MoveRobotControl';
 import { apiClient } from '@/lib/api';
 import { evictFromCache } from '@/lib/map';
 import { queryKeys } from '@/lib/query-keys';
@@ -20,6 +22,7 @@ import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/li
 import { useAuth } from '@/stores/auth';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import type { Robot, RobotMode } from '@/types/robot';
+import { AdminNav } from './AdminNav';
 
 type EditableRobot = Partial<Robot> & {
   id?: string;
@@ -108,7 +111,9 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 export function RobotManagement() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { isAdmin } = useAuth();
+  const { isAdmin, hasPermission, user } = useAuth();
+  const isStaff = hasPermission(PERMISSIONS.STAFF_CONSOLE);
+  const [addressStatusByIp, setAddressStatusByIp] = useState<Record<string, string>>({});
   const isAdminUser = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const [robots, setRobots] = useState<Robot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,6 +131,17 @@ export function RobotManagement() {
   const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
   const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
   const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
+
+  // The dashboard shows this list from the cache as soon as it opens, so it has to be right before
+  // anyone goes back. Without refetchType it would only be marked stale while the dashboard is closed.
+  const refreshDashboardData = useCallback(
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.robots.lists, refetchType: 'all' }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.missions.all }),
+      ]),
+    [queryClient]
+  );
 
   const loadRobots = useCallback(async (options?: { silent?: boolean }): Promise<Robot[]> => {
     const silent = options?.silent ?? false;
@@ -150,6 +166,19 @@ export function RobotManagement() {
     return [];
   }, []);
 
+  const loadAddressStatuses = useCallback(async () => {
+    try {
+      const res = await apiClient.get<{ data: { ip: string; status: string }[] }>(
+        'robots/addresses'
+      );
+      setAddressStatusByIp(
+        Object.fromEntries(res.data.map(address => [address.ip, address.status]))
+      );
+    } catch (err) {
+      console.error('Failed to load robot addresses', err);
+    }
+  }, []);
+
   const loadMaps = useCallback(async () => {
     try {
       const res = await apiClient.get<{ success: boolean; data: { id: string; name: string }[] }>(
@@ -167,16 +196,18 @@ export function RobotManagement() {
     if (isAdminUser) {
       loadRobots();
       loadMaps();
+      loadAddressStatuses();
     }
-  }, [isAdminUser, loadRobots, loadMaps]);
+  }, [isAdminUser, loadRobots, loadMaps, loadAddressStatuses]);
 
   useEffect(() => {
     if (!isAdminUser) return;
     const interval = setInterval(() => {
       loadRobots({ silent: true });
+      loadAddressStatuses();
     }, 30_000);
     return () => clearInterval(interval);
-  }, [isAdminUser, loadRobots]);
+  }, [isAdminUser, loadRobots, loadAddressStatuses]);
 
   useEffect(() => {
     if (!isAdminUser) return;
@@ -256,15 +287,17 @@ export function RobotManagement() {
       };
       if (form.id) {
         await apiClient.patch(`robots/${form.id}`, payload);
-        // Map assignment is managed via the active-map endpoint, not PATCH.
-        if (form.mapId) {
+        // Map assignment is managed via the active-map endpoint, not PATCH. That also pins the map,
+        // so saving an unrelated edit must not turn off auto-follow.
+        const savedMapId = robots.find(robot => robot.id === form.id)?.mapId ?? '';
+        if (form.mapId && form.mapId !== savedMapId) {
           await apiClient.post(`robots/${form.id}/active-map`, { mapId: form.mapId });
         }
       } else {
         await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
       }
       resetForm();
-      await loadRobots();
+      await Promise.all([loadRobots(), loadAddressStatuses(), refreshDashboardData()]);
       toast.success('Robot saved');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save robot';
@@ -317,8 +350,7 @@ export function RobotManagement() {
         evictFromCache(affectedMapId);
       }
 
-      await queryClient.invalidateQueries({ queryKey: queryKeys.robots.lists });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.missions.all });
+      await refreshDashboardData();
 
       const [nextRobots] = await Promise.all([loadRobots({ silent: true }), loadMaps()]);
       const refreshedRobot = nextRobots.find(robot => robot.id === robotId);
@@ -349,7 +381,7 @@ export function RobotManagement() {
     try {
       await apiClient.delete(`robots/${id}`, { json: {} });
       if (form.id === id) resetForm();
-      await loadRobots();
+      await Promise.all([loadRobots(), refreshDashboardData()]);
       toast.success('Robot deleted');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete robot';
@@ -437,14 +469,17 @@ export function RobotManagement() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => navigate({ to: '/' })}
-            className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Dashboard
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => navigate({ to: '/' })}
+              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Dashboard
+            </button>
+            <AdminNav />
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
@@ -482,7 +517,7 @@ export function RobotManagement() {
           </div>
         )}
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-          <div className="bg-card shadow overflow-hidden sm:rounded-md">
+          <div className="bg-card shadow overflow-x-auto sm:rounded-md">
             {loading ? (
               <div className="flex justify-center py-12">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
@@ -522,6 +557,16 @@ export function RobotManagement() {
                         {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
                         {robot.missionBridgePort ? ` / ${robot.missionBridgePort}` : ''}
                         {robot.emergencyBridgePort ? ` / ${robot.emergencyBridgePort}` : ''}
+                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'PENDING' && (
+                          <div className="text-xs text-muted-foreground">
+                            Waiting for approval. The dashboard won&apos;t connect until then.
+                          </div>
+                        )}
+                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'REJECTED' && (
+                          <div className="text-xs text-destructive">
+                            Address rejected. The dashboard won&apos;t connect to it.
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {robot.maps?.find(m => m.isActive)?.name ??
@@ -536,25 +581,35 @@ export function RobotManagement() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                         {getRobotDisplayStatusLabel(robot)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium space-x-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleEdit(robots.find(item => item.id === robot.id) ?? robot)
-                          }
-                          className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
-                        >
-                          <Save className="h-4 w-4 rotate-90" />
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(robot.id)}
-                          className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </button>
+                      <td className="px-4 py-3 text-sm font-medium">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleEdit(robots.find(item => item.id === robot.id) ?? robot)
+                            }
+                            className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
+                          >
+                            <Save className="h-4 w-4 rotate-90" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(robot.id)}
+                            className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </button>
+                          {isStaff && (
+                            <MoveRobotControl
+                              robotId={robot.id}
+                              robotName={robot.name}
+                              currentOrgId={user?.orgId}
+                              onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
+                            />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

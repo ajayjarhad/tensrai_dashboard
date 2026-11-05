@@ -1,18 +1,33 @@
 export const ROLE = {
   ADMIN: 'ADMIN',
   USER: 'USER',
+  STAFF: 'STAFF',
 } as const;
 
 export const ROLE_PERMISSIONS = {
   [ROLE.ADMIN]: [
+    'user:dashboard_view',
+    'user:robot_status_read',
+    'robot:control',
+    'robot:emergency_stop',
     'admin:user_management',
     'admin:system_config',
+  ],
+  [ROLE.USER]: [
     'user:dashboard_view',
     'user:robot_status_read',
     'robot:control',
     'robot:emergency_stop',
   ],
-  [ROLE.USER]: ['user:dashboard_view', 'user:robot_status_read'],
+  [ROLE.STAFF]: [
+    'user:dashboard_view',
+    'user:robot_status_read',
+    'robot:control',
+    'robot:emergency_stop',
+    'admin:user_management',
+    'admin:system_config',
+    'staff:console',
+  ],
 } as const;
 
 export type Role = (typeof ROLE)[keyof typeof ROLE];

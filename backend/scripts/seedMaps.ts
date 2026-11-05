@@ -3,11 +3,13 @@ import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { load } from 'js-yaml';
 import { generateMapAssets } from '../src/services/mapAssets.js';
+import { ensureDefaultOrg } from './defaultOrg.js';
 
 const prisma = new PrismaClient() as any;
 
 async function main() {
   console.log('Seeding database...');
+  const org = await ensureDefaultOrg(prisma);
 
   // Paths to assets
   const assetsDir = path.join(process.cwd(), '../frontend/public/assets');
@@ -80,7 +82,13 @@ async function main() {
   // Create Maps
   console.log('Creating maps...');
   const map1 = await prisma.map.upsert({
-    where: { name: 'Warehouse Floor 1' },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'map.yaml',
+        contentHash: map1Assets.contentHash,
+      },
+    },
     update: {
       image: map1Pgm,
       metadata: map1Metadata,
@@ -88,6 +96,7 @@ async function main() {
       ...map1Assets,
     },
     create: {
+      orgId: org.id,
       name: 'Warehouse Floor 1',
       filename: 'map.yaml',
       image: map1Pgm,
@@ -98,7 +107,13 @@ async function main() {
   });
 
   const map2 = await prisma.map.upsert({
-    where: { name: 'Warehouse Floor 2' },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'map2.yaml',
+        contentHash: map2Assets.contentHash,
+      },
+    },
     update: {
       image: map2Pgm,
       metadata: map2Metadata,
@@ -106,6 +121,7 @@ async function main() {
       ...map2Assets,
     },
     create: {
+      orgId: org.id,
       name: 'Warehouse Floor 2',
       filename: 'map2.yaml',
       image: map2Pgm,
@@ -115,7 +131,13 @@ async function main() {
     },
   });
   const map3 = await prisma.map.upsert({
-    where: { name: 'Gas Station' },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'gas_station_map.yaml',
+        contentHash: map3Assets.contentHash,
+      },
+    },
     update: {
       image: map3Pgm,
       metadata: map3Metadata,
@@ -123,6 +145,7 @@ async function main() {
       ...map3Assets,
     },
     create: {
+      orgId: org.id,
       name: 'Gas Station',
       filename: 'gas_station_map.yaml',
       image: map3Pgm,
@@ -159,7 +182,7 @@ async function main() {
 
   for (const robot of robots) {
     const created = await prisma.robot.upsert({
-      where: { name: robot.name },
+      where: { orgId_name: { orgId: org.id, name: robot.name } },
       update: {
         status: robot.status as any,
         mapId: robot.mapId,
@@ -169,6 +192,7 @@ async function main() {
         battery: robot.battery,
       },
       create: {
+        orgId: org.id,
         name: robot.name,
         status: robot.status as any,
         mapId: robot.mapId,
@@ -183,7 +207,13 @@ async function main() {
       await prisma.robotMap.upsert({
         where: { robotId_mapId: { robotId: created.id, mapId: robot.mapId } },
         update: { isActive: true, syncedAt: new Date() },
-        create: { robotId: created.id, mapId: robot.mapId, isActive: true, isPinned: false },
+        create: {
+          orgId: org.id,
+          robotId: created.id,
+          mapId: robot.mapId,
+          isActive: true,
+          isPinned: false,
+        },
       });
     }
   }

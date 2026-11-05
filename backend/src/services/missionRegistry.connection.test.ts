@@ -66,6 +66,9 @@ const createPrisma = (robots: TestRobot[]) =>
     missionRun: {
       findMany: async () => [],
     },
+    robotAddress: {
+      findMany: async () => robots.map(robot => ({ orgId: undefined, ip: robot.ipAddress })),
+    },
   }) as any;
 
 const createRegistry = (robots: TestRobot[], logger = createLogger()) => {
@@ -233,4 +236,74 @@ test('sends mission commands over a healthy mission bridge socket', async () => 
     readyState: 1,
     reconnectAttempt: 0,
   });
+});
+
+test('a robot’s events are stored in the order it sent them, however slow the writes', async () => {
+  const registry = new MissionRegistry(createPrisma([]) as any, createLogger() as any);
+  registries.push(registry);
+  (registry as any).robotConfigs.set('robot-order', { name: 'Ordered', mapId: null });
+  const relayed: string[] = [];
+  registry.addRobotEventListener('robot-order', message => {
+    relayed.push(JSON.parse(message).event);
+  });
+
+  const stored: string[] = [];
+  (registry as any).runStore.applyEvent = async (_meta: unknown, event: string) => {
+    if (event === 'WAYPOINT_ACK') await new Promise(resolve => setTimeout(resolve, 30));
+    stored.push(event);
+  };
+  (registry as any).runStore.recordCommandIntent = async (_meta: unknown, event: string) => {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    stored.push(event);
+  };
+
+  const send = (event: string) =>
+    (registry as any).handleSocketMessage('robot-order', JSON.stringify({ event, payload: {} }));
+  const writes = [
+    registry.recordCommandIntent('robot-order', 'SHOW_UP', {}),
+    send('MISSION_CONTROL_ACK'),
+    send('WAYPOINT_ACK'),
+    send('MISSION_COMPLETED'),
+  ];
+
+  // Dashboards hear immediately; only the writes wait their turn.
+  expect(relayed).toEqual(['MISSION_CONTROL_ACK', 'WAYPOINT_ACK', 'MISSION_COMPLETED']);
+  await Promise.all(writes);
+  expect(stored).toEqual(['SHOW_UP', 'MISSION_CONTROL_ACK', 'WAYPOINT_ACK', 'MISSION_COMPLETED']);
+});
+
+test('one failed write does not stop the writes after it', async () => {
+  const registry = new MissionRegistry(createPrisma([]) as any, createLogger() as any);
+  registries.push(registry);
+  (registry as any).robotConfigs.set('robot-fail', { name: 'Failing', mapId: null });
+  const stored: string[] = [];
+  (registry as any).runStore.applyEvent = async (_meta: unknown, event: string) => {
+    if (event === 'WAYPOINT_ACK') throw new Error('database went away');
+    stored.push(event);
+  };
+  const send = (event: string) =>
+    (registry as any).handleSocketMessage('robot-fail', JSON.stringify({ event, payload: {} }));
+
+  const failing = send('WAYPOINT_ACK');
+  const after = send('MISSION_COMPLETED');
+  await expect(failing).rejects.toThrow('database went away');
+  await after;
+  expect(stored).toEqual(['MISSION_COMPLETED']);
+});
+
+test('an oversized frame from a robot never reaches dashboards', async () => {
+  const logger = createLogger();
+  const registry = new MissionRegistry(createPrisma([]) as any, logger as any);
+  registries.push(registry);
+  const relayed: string[] = [];
+  registry.addRobotEventListener('robot-big', message => relayed.push(message));
+
+  const huge = JSON.stringify({
+    event: 'MISSION_CONTROL_ACK',
+    payload: { message: 'x'.repeat(2_000_000) },
+  });
+  await (registry as any).handleSocketMessage('robot-big', huge);
+
+  expect(relayed).toHaveLength(0);
+  expect(logger.entries.some(entry => entry.message.includes('oversized'))).toBe(true);
 });

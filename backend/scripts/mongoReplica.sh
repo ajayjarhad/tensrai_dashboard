@@ -12,10 +12,13 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Configuration
-MONGO_CONFIG="/usr/local/etc/mongod.conf"
-MONGO_LOG="/usr/local/var/log/mongodb/mongo.log"
-MONGO_DBPATH="/usr/local/var/mongodb"
+# Homebrew lives in /usr/local on Intel Macs and /opt/homebrew on Apple Silicon.
+BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /usr/local)"
+MONGO_CONFIG="$BREW_PREFIX/etc/mongod.conf"
+MONGO_LOG="$BREW_PREFIX/var/log/mongodb/mongo.log"
+MONGO_DBPATH="$BREW_PREFIX/var/mongodb"
 REPLICA_SET_NAME="rs0"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # Functions
 log_info() { echo -e "${GREEN}✓${NC} $1"; }
@@ -32,8 +35,8 @@ check_replica_mode() {
 
 create_mongo_config() {
   local config_file=$1
-  mkdir -p "$(dirname "$MONGO_LOG")"
-  
+  mkdir -p "$(dirname "$MONGO_LOG")" "$MONGO_DBPATH"
+
   cat > "$config_file" << EOF
 systemLog:
   destination: file
@@ -104,10 +107,53 @@ configure_permanent() {
   echo ""
 }
 
+refuse_docker_only_url() {
+  case "${DATABASE_URL:-}" in
+    *://mongo:*)
+      log_error "DATABASE_URL uses the host 'mongo', which only exists inside Docker."
+      echo "  To run on this machine: cp .env.local.example .env.local"
+      exit 1
+      ;;
+  esac
+}
+
+start_mongo_in_docker() {
+  if ! docker info > /dev/null 2>&1; then
+    log_error "MongoDB isn't installed and Docker isn't running."
+    echo "  Start Docker Desktop, or install MongoDB: brew install mongodb-community"
+    exit 1
+  fi
+
+  log_warn "MongoDB isn't installed here, using the Docker one..."
+  local output
+  if ! output=$(cd "$REPO_ROOT" && docker compose up -d mongo mongo-init 2>&1); then
+    log_error "Could not start MongoDB in Docker:"
+    echo "$output"
+    exit 1
+  fi
+  # Not `docker compose wait`: it errors once the setup container has already exited.
+  local state=""
+  for _ in {1..60}; do
+    state=$(cd "$REPO_ROOT" && docker compose ps -a --format '{{.State}} {{.ExitCode}}' mongo-init 2>/dev/null)
+    case "$state" in
+      exited*) break ;;
+    esac
+    sleep 1
+  done
+  if [ "$state" != "exited 0" ]; then
+    log_error "MongoDB started, but setting up its replica set failed."
+    echo "  See: docker compose logs mongo-init"
+    exit 1
+  fi
+}
+
 ensure_replica_mode() {
+  refuse_docker_only_url
   echo -e "${YELLOW}🔍 Checking MongoDB replica set...${NC}"
-  
-  if ! check_mongo_running; then
+
+  if ! command -v mongod > /dev/null 2>&1; then
+    start_mongo_in_docker
+  elif ! check_mongo_running; then
     log_warn "MongoDB not running, starting in replica set mode..."
     
     create_mongo_config "/tmp/mongod-replica.conf"

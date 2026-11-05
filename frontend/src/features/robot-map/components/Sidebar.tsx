@@ -1,10 +1,10 @@
 import { ChevronLeft } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { Robot } from '../../../types/robot';
-import { AdminMenu } from './Sidebar/AdminMenu';
 import { MissionActions } from './Sidebar/MissionActions';
 import { RobotDetails } from './Sidebar/RobotDetails';
 import { RobotList } from './Sidebar/RobotList';
+import { SidebarAccount } from './Sidebar/SidebarAccount';
 import { SidebarHeader } from './Sidebar/SidebarHeader';
 
 interface SidebarProps {
@@ -85,7 +85,7 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <AdminMenu isOpen={isOpen} onToggle={onToggle} />
+      <SidebarAccount isOpen={isOpen} />
     </div>
   );
 }

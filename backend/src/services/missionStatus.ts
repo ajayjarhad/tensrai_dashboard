@@ -110,7 +110,7 @@ export const setMissionState = (
 };
 
 const normalizeMissionId = (value: unknown): string | undefined => {
-  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const str = String(value).trim();
   return str.length ? str : undefined;
 };
@@ -121,7 +121,7 @@ const normalizeRequestId = (value: unknown): string | undefined => {
   return trimmed.length ? trimmed : undefined;
 };
 
-const normalizeRequestType = (value: unknown): string | undefined => {
+export const normalizeRequestType = (value: unknown): string | undefined => {
   if (!value) return undefined;
   const raw = String(value).trim().toUpperCase();
   if (raw === 'PAUSE_MISSION' || raw === 'PAUSE') return 'PAUSE';
@@ -281,7 +281,11 @@ export const recordMissionCommandIntent = (robotId: string, event: string, paylo
     return setMissionState(
       robotId,
       {
-        phase: 'start_pending',
+        // The robot refuses a second start, and that refusal must not read as a lost mission.
+        phase:
+          current.phase === 'running' || current.phase === 'paused'
+            ? current.phase
+            : 'start_pending',
         currentMissionId: missionId ?? current.currentMissionId,
         requestIdLast: requestId,
         lastEvent: event,
@@ -329,12 +333,10 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
     if (!shouldAcceptRequest(current, requestId, appliedAtMs)) return current;
     const message = typeof payload?.message === 'string' ? payload.message : current.message;
     const runId = normalizeRequestId(payload?.runId) ?? current.runId;
-    const startedAt =
-      typeof payload?.startedAt === 'string' && payload.startedAt.trim().length > 0
-        ? payload.startedAt
-        : current.startedAt;
+    const startedAt = timestampMs(payload?.startedAt) ? payload.startedAt : current.startedAt;
 
     if (ackStatus === 'success') {
+      if (!missionId && !current.currentMissionId) return current;
       return setMissionState(
         robotId,
         {
@@ -502,9 +504,16 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
       return current;
     }
 
-    const phase = missionPhaseFromRuntime(payload?.mission?.status) ?? current.phase;
+    const runtimePhase = missionPhaseFromRuntime(payload?.mission?.status);
     const missionId = normalizeMissionId(payload?.mission?.currentMissionId);
+    // A robot reports IDLE throughout a preview; the preview ends by expiry or by starting.
+    const keepPreview =
+      runtimePhase === 'idle' &&
+      !missionId &&
+      ['preview_pending', 'showing', 'start_pending'].includes(current.phase);
+    const phase = keepPreview ? current.phase : (runtimePhase ?? current.phase);
     const hasMissionId =
+      !keepPreview &&
       payload?.mission !== undefined &&
       payload?.mission !== null &&
       Object.hasOwn(payload.mission, 'currentMissionId');

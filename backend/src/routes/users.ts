@@ -1,10 +1,12 @@
-import { requireUser } from '../middleware/auth.js';
+import { requireActiveSession, requireAdmin } from '../middleware/auth.js';
 import {
   createUserWithTempPassword,
   deleteUser,
   getAllUsers,
   getUserById,
   resetPasswordWithTemp,
+  resetUserPassword,
+  ServiceError,
   updateUser,
 } from '../services/user.service.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
@@ -13,7 +15,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.post(
     '/users',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
       schema: {
         body: {
           type: 'object',
@@ -55,7 +57,8 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           fastify.prisma,
           userData,
           currentUser.id,
-          currentUser.role
+          currentUser.role,
+          request.orgId as string // set by requireActiveSession
         );
 
         return reply.code(201).send({
@@ -77,7 +80,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -90,7 +93,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
-        const users = await getAllUsers(fastify.prisma);
+        const users = await getAllUsers(request.db);
 
         return reply.send({
           success: true,
@@ -111,7 +114,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.get(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -125,7 +128,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         }
 
         const { id } = request.params;
-        const user = await getUserById(fastify.prisma, id);
+        const user = await getUserById(request.db, id);
 
         if (!user) {
           return reply.code(404).send({
@@ -153,7 +156,22 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.put(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
+      schema: {
+        // Anything else in the body is dropped, including nested writes Prisma would accept.
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            username: { type: 'string', minLength: 3, maxLength: 50 },
+            email: { type: 'string', format: 'email' },
+            role: { type: 'string', enum: ['ADMIN', 'USER'] },
+            displayName: { type: 'string', maxLength: 100 },
+            isActive: { type: 'boolean' },
+            mustResetPassword: { type: 'boolean' },
+          },
+        },
+      },
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -170,7 +188,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         const updateData = request.body;
 
         const updatedUser = await updateUser(
-          fastify.prisma,
+          request.db,
           id,
           updateData,
           currentUser.id,
@@ -183,11 +201,14 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: 'User updated successfully',
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to update user');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to update user',
+          error: 'Failed to update user',
         });
       }
     }
@@ -196,7 +217,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
   fastify.delete(
     '/users/:id',
     {
-      preHandler: [requireUser],
+      onRequest: [requireActiveSession, requireAdmin],
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -218,19 +239,56 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
-        await deleteUser(fastify.prisma, id, currentUser.id, currentUser.role);
+        await deleteUser(request.db, id, currentUser.id, currentUser.role);
 
         return reply.send({
           success: true,
           message: 'User deleted successfully',
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to delete user');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to delete user',
+          error: 'Failed to delete user',
         });
+      }
+    }
+  );
+
+  fastify.post(
+    '/users/:id/reset-password',
+    {
+      onRequest: [requireActiveSession, requireAdmin],
+    },
+    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+      try {
+        const currentUser = await request.getCurrentUser();
+
+        if (!currentUser) {
+          return reply.code(401).send({
+            success: false,
+            error: 'Authentication required',
+          });
+        }
+
+        const { id } = request.params;
+        const result = await resetUserPassword(
+          request.db,
+          id as string,
+          currentUser.id,
+          currentUser.role
+        );
+        return reply.send({ success: true, data: result });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
+        fastify.log.error(error, 'Failed to reset password');
+        return reply.code(500).send({ success: false, error: 'Failed to reset password' });
       }
     }
   );
@@ -240,7 +298,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     {
       config: {
         rateLimit: {
-          max: 3,
+          max: 10,
           timeWindow: '1 hour',
         },
       },
@@ -250,7 +308,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           required: ['tempPassword', 'newPassword', 'confirmPassword'],
           properties: {
             tempPassword: { type: 'string' },
-            newPassword: { type: 'string', minLength: 4, maxLength: 128 },
+            newPassword: { type: 'string', minLength: 8, maxLength: 128 },
             confirmPassword: { type: 'string' },
             displayName: { type: 'string', maxLength: 100 },
           },

@@ -7,8 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Organization {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+}
+
 model User {
   id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  orgId              String    @db.ObjectId
   username           String    @unique
   email              String    @unique
   passwordHash       String
@@ -25,6 +33,7 @@ model User {
   sessions Session[]
 
   @@index([role])
+  @@index([orgId])
 }
 
 model Account {
@@ -52,6 +61,8 @@ model Session {
   token      String   @unique @map("sessionToken")
   userId     String   @db.ObjectId
   expiresAt  DateTime
+  // The organization a STAFF user has entered; everyone else acts in User.orgId.
+  activeOrgId String? @db.ObjectId
   ipAddress  String?
   userAgent  String?
   createdAt  DateTime @default(now())
@@ -71,6 +82,7 @@ model Verification {
 
 model AuditLog {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId     String?  @db.ObjectId
   userId    String   @db.ObjectId
   role      String
   action    String
@@ -80,16 +92,19 @@ model AuditLog {
   @@index([userId])
   @@index([action])
   @@index([timestamp])
+  @@index([orgId, timestamp])
 }
 
 enum Role {
   ADMIN
   USER
+  STAFF
 }
 
 model Robot {
   id                  String    @id @default(auto()) @map("_id") @db.ObjectId
-  name                String    @unique
+  orgId               String    @db.ObjectId
+  name                String
   status              RobotMode @default(UNKNOWN)
   statusBeforeEmergency RobotMode?
   battery             Float?    // Battery percentage (0-100)
@@ -114,12 +129,16 @@ model Robot {
 
   missionRuns         MissionRun[]
   robotMaps           RobotMap[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
 }
 
 model Map {
   id                     String    @id @default(auto()) @map("_id") @db.ObjectId
-  name                   String    @unique
-  filename               String    @unique
+  orgId                  String    @db.ObjectId
+  name                   String
+  filename               String
   image                  Bytes     // Binary PGM data
   metadata               Json      // YAML metadata (resolution, origin)
   features               Json      // Location tags, missions
@@ -139,10 +158,15 @@ model Map {
   displayGenerationError String?
   robots                 Robot[]
   robotMaps              RobotMap[]
+
+  // Robots name their files independently, so only identical content under one filename is one map.
+  @@unique([orgId, filename, contentHash])
+  @@index([orgId])
 }
 
 model RobotMap {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId     String   @db.ObjectId
   robotId   String   @db.ObjectId
   mapId     String   @db.ObjectId
   isActive  Boolean  @default(false) // map currently shown / localized for this robot
@@ -156,6 +180,28 @@ model RobotMap {
   @@unique([robotId, mapId])
   @@index([robotId, isActive])
   @@index([mapId])
+}
+
+// Which organization may connect to a robot at this address. Robot bridges have no auth of their
+// own, so the backend only connects to an address its organization holds as APPROVED.
+model RobotAddress {
+  id            String             @id @default(auto()) @map("_id") @db.ObjectId
+  orgId         String             @db.ObjectId
+  ip            String
+  status        RobotAddressStatus @default(PENDING)
+  requestedById String?            @db.ObjectId
+  decidedById   String?            @db.ObjectId
+  createdAt     DateTime           @default(now())
+  decidedAt     DateTime?
+
+  @@unique([orgId, ip])
+  @@index([ip, status])
+}
+
+enum RobotAddressStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum RobotMode {
@@ -172,6 +218,7 @@ enum RobotMode {
 
 model MissionRun {
   id                  String           @id @default(auto()) @map("_id") @db.ObjectId
+  orgId               String           @db.ObjectId
   robotId             String           @db.ObjectId
   robot               Robot             @relation(fields: [robotId], references: [id], onDelete: Cascade)
   robotNameSnapshot   String
@@ -193,6 +240,7 @@ model MissionRun {
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
+  @@index([orgId, updatedAt])
   @@index([robotId, updatedAt])
   @@index([runId])
   @@index([status, updatedAt])

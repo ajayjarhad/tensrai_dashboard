@@ -8,7 +8,7 @@ export const LoginCredentialsSchema = z.object({
 export const FirstTimePasswordSetupSchema = z
   .object({
     tempPassword: z.string().min(1, 'Temporary password is required'),
-    newPassword: z.string().min(4, 'Password must be at least 4 characters'),
+    newPassword: z.string().min(8, 'Password must be at least 8 characters'),
     confirmPassword: z.string().min(1, 'Password confirmation is required'),
     displayName: z.string().optional(),
   })

@@ -1,12 +1,6 @@
 import { trace } from '@opentelemetry/api';
-import type { Prisma } from '@prisma/client';
 import { apiMetrics } from '../metrics/index.js';
-import type {
-  AppFastifyInstance,
-  AppFastifyReply,
-  AppFastifyRequest,
-  AuditEvent,
-} from '../types/app.js';
+import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 /**
  * Observability plugin for Fastify
@@ -18,34 +12,6 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
   } else {
     fastify.log.level = 'info';
   }
-
-  fastify.decorate('audit', async (event: AuditEvent) => {
-    try {
-      await fastify.prisma?.auditLog.create({
-        data: {
-          userId: event.userId,
-          role: event.role,
-          action: event.action,
-          timestamp: new Date(),
-          metadata: (event.metadata ?? null) as Prisma.InputJsonValue | null,
-        },
-      });
-
-      fastify.log.info(
-        {
-          userId: event.userId,
-          role: event.role,
-          action: event.action,
-          targetUserId: event.targetUserId,
-        },
-        'Audit event logged'
-      );
-    } catch (error) {
-      fastify.log.error(error, 'Failed to log audit event');
-    }
-  });
-
-  fastify.decorateRequest('audit', fastify.audit);
 
   fastify.addHook('onRequest', async (request: AppFastifyRequest) => {
     request.startTime = Date.now();

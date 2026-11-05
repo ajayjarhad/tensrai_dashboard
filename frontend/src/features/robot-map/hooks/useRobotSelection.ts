@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { Robot } from '@/types/robot';
+import { robotHasMap } from '../utils/mapSelection';
 
-export { robotHasMap } from '../utils/mapSelection';
+export { robotHasMap };
 
 interface RobotSelectionOptions {
   suspendAutoMapSync?: boolean;
@@ -12,6 +13,16 @@ interface RobotSelectionOptions {
 export function activeMapIdForRobot(robot: Robot | null | undefined): string | null {
   if (!robot) return null;
   return robot.maps?.find(map => map.isActive)?.id ?? robot.mapId ?? null;
+}
+
+// The map to show: the current one while some robot still has it, otherwise the first robot's active
+// map. A robot can leave at any time (moved to another organization, deleted), taking its map with it.
+export function availableMapId(robots: Robot[], currentMapId: string | null): string | null {
+  const stillThere = robots.some(
+    robot => robot.mapId === currentMapId || robotHasMap(robot, currentMapId)
+  );
+  if (currentMapId && stillThere) return currentMapId;
+  return activeMapIdForRobot(robots.find(robot => activeMapIdForRobot(robot)));
 }
 
 export function useRobotSelection(robots: Robot[], options: RobotSelectionOptions = {}) {
@@ -28,13 +39,15 @@ export function useRobotSelection(robots: Robot[], options: RobotSelectionOption
   // Initialize or recover active map when robots load or change
   useEffect(() => {
     if (options.suspendAutoMapSync) return;
-    if (activeMapId) return;
-    const firstWithMap = robots.find(robot => activeMapIdForRobot(robot));
-    const firstMapId = activeMapIdForRobot(firstWithMap);
-    if (firstMapId) {
-      setActiveMapId(firstMapId);
-    }
+    setActiveMapId(availableMapId(robots, activeMapId));
   }, [activeMapId, options.suspendAutoMapSync, robots]);
+
+  // A selected robot can leave too; its id would keep the telemetry and controls pointed at it.
+  useEffect(() => {
+    if (selectedRobotId && !robots.some(robot => robot.id === selectedRobotId)) {
+      setSelectedRobotId(null);
+    }
+  }, [robots, selectedRobotId]);
 
   // Keep active map in sync with the selected robot when its active map changes
   useEffect(() => {

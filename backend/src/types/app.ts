@@ -4,13 +4,20 @@ import type { PrismaClient, User as PrismaUser } from '@prisma/client';
 import type { Auth } from '../config/auth.js';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
 import type { MissionRegistry } from '../services/missionRegistry.js';
+import type { ScopedPrisma } from '../services/orgScope.js';
 
 export interface AuditEvent {
+  orgId?: string | null;
   userId: string;
   role: string;
   action: string;
   targetUserId?: string;
   metadata?: Record<string, unknown> | null;
+}
+
+export interface AppSession {
+  user: PrismaUser | null;
+  session: { id: string; token?: string; expiresAt: Date; activeOrgId?: string | null };
 }
 
 export interface AppFastifyReply {
@@ -33,7 +40,15 @@ export interface AppFastifyRequest {
   params: Record<string, string>;
   raw: IncomingMessage;
   startTime?: number;
-  getUserSession(): Promise<{ user: PrismaUser | null } | null>;
+  server: AppFastifyInstance;
+  // Set by requireActiveSession; db is a Prisma client confined to this organization.
+  orgId: string | null;
+  db: ScopedPrisma;
+  ws?: boolean;
+  getUserSession(): Promise<AppSession | null>;
+  // Reads the session again, ignoring this request's cached copy; for long-lived sockets.
+  readFreshSession(): Promise<AppSession | null>;
+  renewSessionIfStale(reply: AppFastifyReply): Promise<void>;
   getCurrentUser(): Promise<PrismaUser | null>;
   isAuthenticated(): Promise<boolean>;
   hasRole(role: string): Promise<boolean>;

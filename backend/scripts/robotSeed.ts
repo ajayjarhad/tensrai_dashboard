@@ -1,9 +1,11 @@
 import { PrismaClient } from '@prisma/client';
+import { ensureDefaultOrg } from './defaultOrg.js';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Start seeding robots...');
+  const org = await ensureDefaultOrg(prisma);
 
   const robots = [
     {
@@ -26,14 +28,14 @@ async function main() {
 
   for (const robot of robots) {
     const existingRobot = await prisma.robot.findUnique({
-      where: { name: robot.name },
+      where: { orgId_name: { orgId: org.id, name: robot.name } },
     });
 
     if (existingRobot) {
       console.log(`Robot already exists: ${robot.name}`);
     } else {
       await prisma.robot.create({
-        data: robot,
+        data: { ...robot, orgId: org.id },
       });
       console.log(`Created robot: ${robot.name}`);
     }

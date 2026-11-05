@@ -2,6 +2,10 @@ import type { Role } from '../constants/permissions';
 
 export interface User {
   id: string;
+  orgId: string;
+  orgName?: string | null;
+  // Differs from orgId only while a staff member is inside another organization.
+  homeOrgId?: string;
   username: string;
   email: string;
   role: Role;

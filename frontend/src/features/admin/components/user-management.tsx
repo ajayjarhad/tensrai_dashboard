@@ -1,7 +1,11 @@
 import { useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
 import { useAuth } from '@/stores/auth';
-import { useDeleteUser, useUpdateUser, useUsers } from '../hooks';
+import type { ResetUserPasswordResult } from '../api/resetUserPassword';
+import { useDeleteUser, useResetUserPassword, useUpdateUser, useUsers } from '../hooks';
+import { AdminNav } from './AdminNav';
+import { TemporaryPassword } from './TemporaryPassword';
 import { UserRow } from './UserRow';
 
 export function UserManagement() {
@@ -11,6 +15,19 @@ export function UserManagement() {
   const { data: users = [], isLoading, error } = useUsers();
   const deleteUserMutation = useDeleteUser();
   const updateUserMutation = useUpdateUser();
+  const resetPasswordMutation = useResetUserPassword();
+  const [issuedPassword, setIssuedPassword] = useState<ResetUserPasswordResult | null>(null);
+
+  const handleResetPassword = async (userId: string) => {
+    if (!confirm('Reset this password? They will be signed out and need the new one to sign in.')) {
+      return;
+    }
+    try {
+      setIssuedPassword(await resetPasswordMutation.mutateAsync(userId));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : 'Failed to reset password');
+    }
+  };
 
   const handleDeleteUser = async (userId: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
@@ -39,14 +56,17 @@ export function UserManagement() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => navigate({ to: '/' })}
-            className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Dashboard
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => navigate({ to: '/' })}
+              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Dashboard
+            </button>
+            <AdminNav />
+          </div>
           <button
             type="button"
             onClick={() => navigate({ to: '/admin/create-temporary-user' })}
@@ -58,15 +78,28 @@ export function UserManagement() {
         </div>
         <h1 className="text-3xl font-bold text-foreground">User Management</h1>
 
-        {(error || deleteUserMutation.error || updateUserMutation.error) && (
+        {(error ||
+          deleteUserMutation.error ||
+          updateUserMutation.error ||
+          resetPasswordMutation.error) && (
           <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded mb-4">
             {error?.message ||
               deleteUserMutation.error?.message ||
-              updateUserMutation.error?.message}
+              updateUserMutation.error?.message ||
+              resetPasswordMutation.error?.message}
           </div>
         )}
 
-        <div className="bg-card shadow overflow-hidden sm:rounded-md">
+        {issuedPassword && (
+          <TemporaryPassword
+            username={issuedPassword.username}
+            email={issuedPassword.email}
+            password={issuedPassword.tempPassword}
+            onDismiss={() => setIssuedPassword(null)}
+          />
+        )}
+
+        <div className="bg-card shadow overflow-x-auto sm:rounded-md">
           {isLoading ? (
             <div className="flex justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
@@ -102,6 +135,8 @@ export function UserManagement() {
                     currentUser={currentUser}
                     onDelete={handleDeleteUser}
                     onToggleStatus={handleToggleUserStatus}
+                    onResetPassword={handleResetPassword}
+                    resetPending={resetPasswordMutation.isPending}
                     deleteUserMutation={deleteUserMutation}
                     updateUserMutation={updateUserMutation}
                   />

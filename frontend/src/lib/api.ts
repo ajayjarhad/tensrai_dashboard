@@ -1,6 +1,7 @@
 import { getEnv } from '@tensrai/shared';
 import type { Options } from 'ky';
 import ky, { HTTPError } from 'ky';
+import { notifySessionRejected } from './navigation';
 
 const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1']);
 
@@ -84,6 +85,26 @@ export const resolveWsBaseUrl = () => {
   return parsed.toString().replace(/\/$/, '');
 };
 
+const ACCOUNT_BLOCKED_CODES = new Set(['ACCOUNT_DISABLED', 'NO_ORGANIZATION']);
+
+// Saved login state can outlive the session behind it. Without this the dashboard would keep
+// polling and show an empty fleet. /auth/ is exempt: a 401 there just means "not signed in".
+const handleRejectedSession = async (request: Request, response: Response) => {
+  if (new URL(request.url).pathname.includes('/auth/')) return;
+
+  if (response.status === 401) {
+    notifySessionRejected('lost');
+  } else if (response.status === 428) {
+    notifySessionRejected('password-setup');
+  } else if (response.status === 403) {
+    const body = (await response
+      .clone()
+      .json()
+      .catch(() => null)) as { code?: string } | null;
+    if (body?.code && ACCOUNT_BLOCKED_CODES.has(body.code)) notifySessionRejected('lost');
+  }
+};
+
 export const api = ky.create({
   prefixUrl: resolveApiHttpBase(),
   credentials: 'include',
@@ -94,6 +115,7 @@ export const api = ky.create({
     statusCodes: [408, 413, 429, 500, 502, 503, 504],
   },
   hooks: {
+    afterResponse: [(request, _options, response) => handleRejectedSession(request, response)],
     beforeError: [
       async error => {
         if (error instanceof HTTPError) {

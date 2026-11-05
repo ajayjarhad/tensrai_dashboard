@@ -28,20 +28,83 @@ bun install
 # Setup git hooks
 bun run prepare
 
-# Start development servers
+# Settings for running on this machine (Docker Compose ignores this file)
+cp .env.local.example .env.local
+
+# Start development servers: UI on http://localhost:5002, API on http://localhost:5055
 bun run dev
 ```
 
-### Seed baseline users
+`bun run dev` uses your local MongoDB if `mongod` is installed, otherwise it starts the one from
+`docker-compose.yml` (so Docker needs to be running). Each start also syncs the schema.
 
-Provision default admin/operator accounts for local testing:
+From the repo root, `bun run backend <script>` runs any backend script with these settings.
+
+### Default staff account
+
+The first login on any deployment is `admin@tensrai.com`, whose username is that address. Its first password is
+set once, by whoever looks after the repo:
+
+```bash
+bun run backend staff:default-password
+```
+
+That asks for a password (hidden) and writes only its bcrypt hash to
+`backend/scripts/defaultStaffPassword.hash`, which you commit. **This repo is public, so the hash is too.** Use
+a long random password, keep it in a password manager, and never reuse it.
+
+A deployment that has no staff at all creates the account when it starts, from that hash. There's nothing to set
+up on the server, but until someone signs in, anyone who knows the password can take the account, so:
+
+1. Sign in straight after deploying. You'll have to choose a new password, and the committed one stops working.
+2. If nobody signs in within 72 hours, the first password expires.
+
+To set or reset a password yourself, including after it expires, run one of these. Nothing you type is shown,
+and it signs the account out everywhere:
+
+```bash
+bun run backend staff:create
+```
+
+```bash
+docker compose exec backend sh -c 'cd backend && bunx tsx scripts/createStaff.ts'
+```
+
+Changing the committed hash only affects new deployments. Deleting the only staff account means the next start
+creates it again from the hash.
+
+If another user already has `admin@tensrai.com`, for example a demo admin from an older seed, the account isn't
+created and the seed tells you to run `staff:create`. That turns the existing user into staff, under its own
+username.
+
+To also seed demo accounts, set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`,
+`PASSWORD`). An account with no password set isn't created, and existing accounts are never changed.
+
+### Organizations (multi-tenancy)
+
+All customers share one deployment and database. Everything belongs to an organization, its admins control it, and the API only ever returns the signed-in user's organization.
+
+- **Org admins** manage their users and robots, including robot IP, ports and channels.
+- **Any member** of the organization that owns a robot can operate it: teleop, missions, e-stop, active map, map sync.
+- **Tensrai staff** use the Organizations screen: create organizations and first admins, approve robot addresses, enter an organization for support, move a robot between organizations. The API never grants this role:
+
+```bash
+bun run backend staff:create someone someone@tensrai.com                    # create a staff user, or promote an existing one
+bun run backend org:create "Acme Robotics" acme acme-admin admin@acme.com   # also possible from the screen
+```
+
+**Robot addresses.** Robot bridges have no auth, so whatever the backend connects to obeys it. An org admin can enter any address, but the backend won't connect to it until staff approve it for that organization. Then the address belongs to that organization until staff release it, even if the robot is deleted. Set `ROBOT_BLOCKED_SUBNETS` (comma-separated CIDRs, empty for none) to change which internal ranges are refused, for example to use a local simulator. `MAX_ROBOTS_PER_ORG` limits robots per organization (default 50).
+
+**Adding a new resource.** Give the model an `orgId` and query it through `request.db` in routes. A model with no `orgId` fails on its first query, and a test fails until it is either given one or listed as global in `backend/src/services/orgScope.ts`.
+
+**Deploying.** The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step: existing data moves to a "Default" organization and existing robot addresses are approved. Run them yourself when deploying another way. Usernames and emails are unique across all organizations; robot names are unique per organization. Within an organization, robots share a map record only when both the filename and the content match, so two robots can each keep a different `map.yaml`.
+
+**Tests that need a database** run separately, against a Mongo replica set with the schema pushed:
 
 ```bash
 cd backend
-bun run seed
+TEST_DATABASE_URL='mongodb://localhost:27017/tenancy_test?replicaSet=rs0' bun run test:integration
 ```
-
-Override the generated credentials by exporting `SEED_ADMIN_*` / `SEED_USER_*` env vars before running the command (see `backend/scripts/seed.ts`).
 
 ### Development Workflow
 
@@ -125,8 +188,8 @@ tensrai_dashboard/
 - `package.json` - Workspace scripts and dependencies
 
 ### Environment Setup
-- No separate environment files needed for basic setup
-- Use `.env.local` for development overrides
+- `.env` configures Docker Compose; `.env.local` overrides it when running on your machine
+- Start from `.env.local.example`, and change its port if 5055 is taken
 - Environment variables documented in each package
 
 ## 🎯 Scripts Overview

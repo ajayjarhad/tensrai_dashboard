@@ -70,7 +70,7 @@ type MissionState = {
 const clients = new Map<string, ReturnType<typeof createRobotMappingWsClient>>();
 
 const normalizeMissionId = (value: unknown) => {
-  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const str = String(value).trim();
   return str.length ? str : undefined;
 };
@@ -97,6 +97,9 @@ const parseTimestampMs = (value: unknown): number | undefined => {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
+
+const validTimestamp = (value: string | null | undefined) =>
+  parseTimestampMs(value) === undefined ? undefined : (value as string);
 
 const resolveEventTimestamp = (event: string, payload: unknown): number => {
   const p = payload as any;
@@ -162,9 +165,10 @@ const updateFromMissionStartAck = (
   const ackStatus = payload?.status;
   const message = payload?.message ?? current.message;
   const runId = normalizeRequestId(payload?.runId) ?? current.runId;
-  const startedAt = typeof payload?.startedAt === 'string' ? payload.startedAt : current.startedAt;
+  const startedAt = validTimestamp(payload?.startedAt) ?? current.startedAt;
 
   if (ackStatus === 'success') {
+    if (!missionId && !current.currentMissionId) return current;
     return setPhase(
       {
         ...base,
@@ -463,7 +467,8 @@ const recordIntent = (
         currentMissionId: missionId ?? current.currentMissionId,
         message: 'Starting… waiting for robot ack',
       },
-      'start_pending'
+      // The robot refuses a second start, and that refusal must not read as a lost mission.
+      current.phase === 'running' || current.phase === 'paused' ? current.phase : 'start_pending'
     );
   }
 

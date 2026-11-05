@@ -1,0 +1,13 @@
+# HTTPS and NODE_ENV=production on top of compose-verify.yml. run.sh creates the throwaway certificate.
+services:
+  backend:
+    environment:
+      NODE_ENV: production
+      FRONTEND_URL: https://127.0.0.1:18443
+      BASE_URL: https://127.0.0.1:18443
+  web:
+    ports: !override
+      - "127.0.0.1:18443:443"
+    volumes:
+      - ./tools/e2e/.out/tls/nginx-tls.conf:/etc/nginx/nginx.conf:ro
+      - ./tools/e2e/.out/tls:/certs:ro

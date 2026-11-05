@@ -6,6 +6,11 @@ import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import WebSocket from 'ws';
 import { websocketMetrics } from '../metrics/index.js';
+import {
+  requireActiveSession,
+  requireOwnedRobot,
+  stillHasRobotAccess,
+} from '../middleware/auth.js';
 import { buildMissionFailureAck, isMissionControlEvent } from '../services/missionStatus.js';
 import { RosRegistry } from '../services/rosRegistry.js';
 
@@ -77,6 +82,52 @@ const closeIfBacklogged = (socket: any, log: FastifyInstance['log'], fields: obj
     close.call(socket);
   } catch {}
   return true;
+};
+
+const SOCKET_ACCESS_RECHECK_MS = 30_000;
+
+// Access is decided at the upgrade, but these sockets stay open for hours: a disabled user, a
+// revoked session or a robot moved to another organization must not keep driving a robot.
+const closeWhenAccessEnds = (fastify: any, socket: any, request: any, robotId: string) => {
+  const timer = setInterval(async () => {
+    try {
+      if (await stillHasRobotAccess(request, robotId)) return;
+    } catch (err) {
+      // A database outage shouldn't cut an operator off from a robot they may need to stop.
+      fastify.log.warn({ robotId, err }, 'Could not re-check socket access');
+      return;
+    }
+    clearInterval(timer);
+    fastify.log.info({ robotId }, 'Closing dashboard websocket: access ended');
+    socket.close(4401, 'Access ended');
+  }, fastify.socketAccessRecheckMs ?? SOCKET_ACCESS_RECHECK_MS);
+  timer.unref?.();
+  socket.on('close', () => clearInterval(timer));
+};
+
+// Commands that change what a robot does get a record of who sent them. Teleop is left out: it's a
+// stream of several messages a second, not a decision.
+const auditRobotCommand = async (fastify: any, request: any, action: string, metadata: object) => {
+  const user = await request.getCurrentUser?.();
+  if (!user) return;
+  await fastify.audit?.({
+    orgId: request.orgId,
+    userId: user.id,
+    role: user.role,
+    action,
+    metadata,
+  });
+};
+
+// CORS doesn't cover sockets and the session cookie goes with any same-site page, including another
+// port on this host, so a page has to be this dashboard (or an allowed origin) to drive a robot.
+const refuseForeignOrigin = async (request: any, reply: any) => {
+  const origin: string | undefined = request.headers.origin;
+  if (!origin || request.server.isAllowedOrigin?.(origin)) return;
+  const host = request.headers['x-forwarded-host'] ?? request.headers.host;
+  if (URL.canParse(origin) && new URL(origin).host === host) return;
+  request.log.warn({ origin }, 'Refused a robot socket from another origin');
+  return reply.status(403).send({ success: false, error: 'Origin not allowed' });
 };
 
 const rosGateway = async (fastify: FastifyInstance) => {
@@ -184,6 +235,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
       );
       return;
     }
+
+    closeWhenAccessEnds(fastify, socket, request, robotId);
 
     const forward = (event: ForwardableChannelEvent) => {
       if (socket.readyState !== WebSocket.OPEN) return;
@@ -336,13 +389,23 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId', { websocket: true }, robotBridgeHandler);
-  fastify.get('/ws/robots/:robotId/telemetry/:label', { websocket: true }, robotBridgeHandler);
+  // The upgrade runs through normal routing, so a rejected hook answers the handshake with
+  // 401/403/404. The registries are keyed by robot id alone, so the robot must be the caller's.
+  const authedSocket = {
+    websocket: true,
+    onRequest: [refuseForeignOrigin, requireActiveSession, requireOwnedRobot('robotId')],
+  } as const;
 
-  fastify.get('/health/ros', async () => {
+  fastify.get('/ws/robots/:robotId', authedSocket, robotBridgeHandler);
+  fastify.get('/ws/robots/:robotId/telemetry/:label', authedSocket, robotBridgeHandler);
+
+  fastify.get('/health/ros', { onRequest: requireActiveSession }, async (request: any) => {
+    const robots = await request.db.robot.findMany({ select: { id: true } });
+    const owned = new Set<string>(robots.map((robot: { id: string }) => robot.id));
+    const missions: { robotId: string }[] = (fastify as any).missionRegistry?.getStatuses?.() ?? [];
     return {
-      robots: registry.getStatuses(),
-      missions: (fastify as any).missionRegistry?.getStatuses?.() ?? [],
+      robots: registry.getStatuses().filter((status: { id: string }) => owned.has(status.id)),
+      missions: missions.filter(status => owned.has(status.robotId)),
     };
   });
 
@@ -369,6 +432,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     }
 
     fastify.log.info({ robotId }, 'Dashboard client connected to mission websocket');
+    closeWhenAccessEnds(fastify, clientSocket, request, robotId);
 
     let closed = false;
 
@@ -436,6 +500,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
           event: parsed.event,
           payload: withMissionCommandId(parsed.payload, parsed.commandId),
         });
+        void auditRobotCommand(fastify, request, 'MISSION_COMMAND', {
+          robotId,
+          event: parsed.event,
+        });
         const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
         if (!sendResult.ok) {
           fastify.log.warn(
@@ -499,8 +567,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId/mapping', { websocket: true }, unifiedMappingHandler);
-  fastify.get('/ws/robots/:robotId/mapping/:label', { websocket: true }, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping', authedSocket, unifiedMappingHandler);
+  fastify.get('/ws/robots/:robotId/mapping/:label', authedSocket, unifiedMappingHandler);
 
   const emergencyProxyHandler = async (connection, request) => {
     const { robotId } = request.params as { robotId: string };
@@ -523,6 +591,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
       clientSocket.close();
       return;
     }
+
+    closeWhenAccessEnds(fastify, clientSocket, request, robotId);
 
     let closed = false;
 
@@ -609,6 +679,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
         return;
       }
 
+      void auditRobotCommand(fastify, request, 'SOFTWARE_EMERGENCY', {
+        robotId,
+        status: desiredStatus,
+      });
       const sendResult = emergencyRegistry.sendSoftwareEmergency(robotId, desiredStatus);
       if (!sendResult.ok) {
         safeClientSend(
@@ -636,8 +710,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
   };
 
-  fastify.get('/ws/robots/:robotId/emergency', { websocket: true }, emergencyProxyHandler);
-  fastify.get('/ws/robots/:robotId/emergency/:label', { websocket: true }, emergencyProxyHandler);
+  fastify.get('/ws/robots/:robotId/emergency', authedSocket, emergencyProxyHandler);
+  fastify.get('/ws/robots/:robotId/emergency/:label', authedSocket, emergencyProxyHandler);
 
   fastify.addHook('onClose', async () => {
     registry.stop();

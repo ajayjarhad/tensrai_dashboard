@@ -74,6 +74,7 @@ export class RosBridgeConnection extends EventEmitter {
 
     await new Promise<void>((resolve, reject) => {
       const ros = new ROSLIB.Ros({ url: this.options.url });
+      this.guardIncomingFrames(ros);
       let settled = false;
       const timeout = setTimeout(() => {
         if (settled) return;
@@ -230,6 +231,21 @@ export class RosBridgeConnection extends EventEmitter {
       connecting: this.connecting,
       socketReadyState: socket?.readyState ?? null,
       bufferedAmount: socket?.bufferedAmount ?? null,
+    };
+  }
+
+  // A robot decides what it sends, and roslib parses frames inside the socket's event listener,
+  // where an exception ends the process and every organization's robot connections with it.
+  private guardIncomingFrames(ros: ROSLIB.Ros) {
+    const socket = (ros as any).socket;
+    const handleFrame = socket?.onmessage;
+    if (!socket || typeof handleFrame !== 'function') return;
+    socket.onmessage = (frame: unknown) => {
+      try {
+        handleFrame.call(socket, frame);
+      } catch (error) {
+        this.emit('error', toReadableError(error, this.options.url));
+      }
     };
   }
 

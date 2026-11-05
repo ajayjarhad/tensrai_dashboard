@@ -11,7 +11,7 @@ const createFastifyStub = () => {
   const warnings: unknown[] = [];
   const stub: any = {
     log: { info() {}, warn: (f: unknown) => warnings.push(f), error() {}, debug() {} },
-    prisma: { robot: { findMany: async () => [] } },
+    prisma: { robot: { findMany: async () => [] }, robotAddress: { findMany: async () => [] } },
     decorate: (key: string, value: unknown) => {
       stub[key] = value;
     },

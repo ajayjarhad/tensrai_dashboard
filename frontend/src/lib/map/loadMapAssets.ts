@@ -1,4 +1,5 @@
 import type { MapYamlMetadata, ProcessedMapData } from '@tensrai/shared';
+import { useAuthStore } from '../../stores/auth';
 import { apiClient, resolveApiHttpBase } from '../api';
 import type { MapWorkerRequest, MapWorkerResponse } from './map.worker';
 import MapWorker from './map.worker?worker';
@@ -471,3 +472,8 @@ export function getCacheStats(): { size: number; keys: string[]; maxSize: number
 }
 
 export { loadMapAssets as default };
+
+// Decoded floor plans belong to one organization.
+useAuthStore.subscribe((state, previous) => {
+  if (state.user?.id !== previous.user?.id) clearMapAssetCache();
+});
