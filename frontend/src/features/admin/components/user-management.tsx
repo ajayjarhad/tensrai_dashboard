@@ -95,7 +95,7 @@ export function UserManagement() {
           />
         )}
 
-        <div className="bg-card shadow overflow-hidden sm:rounded-md">
+        <div className="bg-card shadow overflow-x-auto sm:rounded-md">
           {isLoading ? (
             <div className="flex justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />

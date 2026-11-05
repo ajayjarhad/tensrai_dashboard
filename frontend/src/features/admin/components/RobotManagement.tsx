@@ -513,7 +513,7 @@ export function RobotManagement() {
           </div>
         )}
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-          <div className="bg-card shadow overflow-hidden sm:rounded-md">
+          <div className="bg-card shadow overflow-x-auto sm:rounded-md">
             {loading ? (
               <div className="flex justify-center py-12">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
@@ -577,33 +577,35 @@ export function RobotManagement() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                         {getRobotDisplayStatusLabel(robot)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium space-x-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleEdit(robots.find(item => item.id === robot.id) ?? robot)
-                          }
-                          className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
-                        >
-                          <Save className="h-4 w-4 rotate-90" />
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(robot.id)}
-                          className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </button>
-                        {isStaff && (
-                          <MoveRobotControl
-                            robotId={robot.id}
-                            robotName={robot.name}
-                            currentOrgId={user?.orgId}
-                            onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
-                          />
-                        )}
+                      <td className="px-4 py-3 text-sm font-medium">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleEdit(robots.find(item => item.id === robot.id) ?? robot)
+                            }
+                            className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
+                          >
+                            <Save className="h-4 w-4 rotate-90" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(robot.id)}
+                            className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </button>
+                          {isStaff && (
+                            <MoveRobotControl
+                              robotId={robot.id}
+                              robotName={robot.name}
+                              currentOrgId={user?.orgId}
+                              onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
+                            />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
