@@ -1,0 +1,16 @@
+# Isolation overrides for verifying the real stack: its own project, volumes and network names,
+# nothing bound to the host except nginx on a spare local port.
+services:
+  mongo:
+    ports: !reset []
+  backend:
+    ports: !reset []
+    environment:
+      # The fake robot lives on the Docker network, which is blocked by default.
+      ROBOT_BLOCKED_SUBNETS: "127.0.0.0/8,169.254.0.0/16"
+  web:
+    ports: !override
+      - "127.0.0.1:18080:80"
+networks:
+  signoz-backend:
+    name: dashboard-e2e-signoz

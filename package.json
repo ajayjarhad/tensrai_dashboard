@@ -27,7 +27,8 @@
     "type-check:frontend": "cd frontend && bun run type-check",
     "type-check:backend": "cd backend && DATABASE_URL=\"${DATABASE_URL:-mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0}\" bun run generate && bun run type-check",
     "prepare": "husky install",
-    "health-check": "bun run type-check && bun run lint"
+    "health-check": "bun run type-check && bun run lint",
+    "e2e": "tools/e2e/run.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.6",
