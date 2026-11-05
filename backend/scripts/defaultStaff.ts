@@ -5,8 +5,8 @@ import { FirstTimePasswordSetupSchema } from '@tensrai/shared';
 
 // Sign-in is by username only, so the username is the address people expect to type.
 export const DEFAULT_STAFF = {
-  username: 'admin@tensrai.ai',
-  email: 'admin@tensrai.ai',
+  username: 'admin@tensrai.com',
+  email: 'admin@tensrai.com',
   displayName: 'Tensrai Admin',
   role: 'STAFF',
 } as const;

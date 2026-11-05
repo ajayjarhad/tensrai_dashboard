@@ -11,7 +11,7 @@ const url = process.env['TEST_DATABASE_URL'];
 
 const BACKEND = resolve(import.meta.dirname, '../..');
 const TSX = resolve(BACKEND, '../node_modules/.bin/tsx');
-const STAFF_EMAIL = 'admin@tensrai.ai';
+const STAFF_EMAIL = 'admin@tensrai.com';
 const HASH_FILE = join(mkdtempSync(join(tmpdir(), 'staff-hash-')), 'default.hash');
 
 if (url) {
@@ -45,7 +45,7 @@ if (url) {
   const clearStaff = async () => {
     rmSync(HASH_FILE, { force: true });
     await prisma.user.deleteMany({
-      where: { OR: [{ role: 'STAFF' }, { username: STAFF_EMAIL }] },
+      where: { OR: [{ role: 'STAFF' }, { username: STAFF_EMAIL }, { email: STAFF_EMAIL }] },
     });
   };
 
@@ -182,6 +182,34 @@ if (url) {
     expect(seed().status).toBe(0);
 
     expect(await defaultStaff()).toBeNull();
+  });
+
+  test('the demo admin’s default email leaves the default staff address free', async () => {
+    const username = `demo-admin-${Date.now()}`;
+    commitHashOf('Seeded-password-1');
+
+    const { status } = runScript('seed.ts', '', {
+      SEED_ADMIN_USERNAME: username,
+      SEED_ADMIN_PASSWORD: 'Demo-password-1',
+    });
+
+    expect(status).toBe(0);
+    expect(await defaultStaff()).toMatchObject({ role: 'STAFF', email: STAFF_EMAIL });
+    await prisma.user.deleteMany({ where: { username } });
+  });
+
+  test('an older account on that address blocks the default, and staff:create takes it over', async () => {
+    const username = `older-admin-${Date.now()}`;
+    const org = await prisma.organization.findFirstOrThrow();
+    await prisma.user.create({
+      data: { orgId: org.id, username, email: STAFF_EMAIL, role: 'ADMIN', passwordHash: '' },
+    });
+    commitHashOf('Seeded-password-1');
+
+    expect(seed().output).toContain('staff:create');
+    expect(await prisma.user.count({ where: { role: 'STAFF' } })).toBe(0);
+
+    expect(createDefaultStaff('Typed-password-1').output).toContain(`Sign in as ${username}`);
   });
 
   test('the committed password is replaced at first setup and cannot be kept', async () => {

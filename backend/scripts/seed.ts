@@ -34,7 +34,7 @@ const seedConfig = (
 
 const seedUsers = [
   seedConfig('ADMIN', {
-    email: 'admin@tensrai.com',
+    email: 'demo-admin@tensrai.com',
     username: 'admin',
     displayName: 'Admin',
     role: 'ADMIN',

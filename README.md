@@ -42,7 +42,7 @@ From the repo root, `bun run backend <script>` runs any backend script with thes
 
 ### Default staff account
 
-The first login on any deployment is `admin@tensrai.ai`, whose username is that address. Its first password is
+The first login on any deployment is `admin@tensrai.com`, whose username is that address. Its first password is
 set once, by whoever looks after the repo:
 
 ```bash
@@ -72,6 +72,10 @@ docker compose exec backend sh -c 'cd backend && bunx tsx scripts/createStaff.ts
 
 Changing the committed hash only affects new deployments. Deleting the only staff account means the next start
 creates it again from the hash.
+
+If another user already has `admin@tensrai.com`, for example a demo admin from an older seed, the account isn't
+created and the seed tells you to run `staff:create`. That turns the existing user into staff, under its own
+username.
 
 To also seed demo accounts, set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`,
 `PASSWORD`). An account with no password set isn't created, and existing accounts are never changed.
