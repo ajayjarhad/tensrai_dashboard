@@ -152,6 +152,7 @@ export class MissionRegistry extends EventEmitter {
   private connections = new Map<string, ActiveConnection>();
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
   private reconnectAttempts = new Map<string, number>();
+  private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
   private runStore: MissionRunStore;
@@ -335,14 +336,16 @@ export class MissionRegistry extends EventEmitter {
     const config = this.robotConfigs.get(robotId);
     if (!config) return;
     recordMissionCommandIntent(robotId, event, payload);
-    await this.runStore.recordCommandIntent(
-      {
-        robotId,
-        robotName: config.name,
-        mapId: config.mapId ?? null,
-      },
-      event,
-      payload
+    await this.inRobotOrder(robotId, () =>
+      this.runStore.recordCommandIntent(
+        {
+          robotId,
+          robotName: config.name,
+          mapId: config.mapId ?? null,
+        },
+        event,
+        payload
+      )
     );
   }
 
@@ -731,34 +734,54 @@ export class MissionRegistry extends EventEmitter {
 
     updateMissionFromEvent(robotId, parsed.event, normalizedPayload);
 
-    if (parsed.event === 'ROBOT_STATUS_UPDATE') {
-      const syncDeps: Parameters<typeof syncRobotStatusUpdate>[0] = {
-        prisma: this.prisma,
-        log: this.log,
-      };
-      if (this.rememberNonEmergencyStatus) {
-        syncDeps.rememberNonEmergencyStatus = this.rememberNonEmergencyStatus;
-      }
-      const syncResult: SyncResult = await syncRobotStatusUpdate(syncDeps, robotId, parsed.payload);
-      if (!syncResult.ok) {
-        this.log.warn(
-          { robotId, reason: syncResult.reason, event: parsed.event },
-          'Dropped ROBOT_STATUS_UPDATE during mission registry sync'
+    await this.inRobotOrder(robotId, async () => {
+      if (parsed.event === 'ROBOT_STATUS_UPDATE') {
+        const syncDeps: Parameters<typeof syncRobotStatusUpdate>[0] = {
+          prisma: this.prisma,
+          log: this.log,
+        };
+        if (this.rememberNonEmergencyStatus) {
+          syncDeps.rememberNonEmergencyStatus = this.rememberNonEmergencyStatus;
+        }
+        const syncResult: SyncResult = await syncRobotStatusUpdate(
+          syncDeps,
+          robotId,
+          parsed.payload
         );
+        if (!syncResult.ok) {
+          this.log.warn(
+            { robotId, reason: syncResult.reason, event: parsed.event },
+            'Dropped ROBOT_STATUS_UPDATE during mission registry sync'
+          );
+        }
       }
-    }
 
-    const config = this.robotConfigs.get(robotId);
-    if (!config) return;
+      const config = this.robotConfigs.get(robotId);
+      if (!config) return;
 
-    await this.runStore.applyEvent(
-      {
-        robotId,
-        robotName: config.name,
-        mapId: config.mapId ?? null,
-      },
-      parsed.event,
-      normalizedPayload
+      await this.runStore.applyEvent(
+        {
+          robotId,
+          robotName: config.name,
+          mapId: config.mapId ?? null,
+        },
+        parsed.event,
+        normalizedPayload
+      );
+    });
+  }
+
+  // A robot's events arrive back to back and each write reads what the last one wrote: unordered,
+  // a pause and resume can land the wrong way round and a preview can be recorded twice.
+  private inRobotOrder(robotId: string, write: () => Promise<unknown>) {
+    const done = (this.pendingWrites.get(robotId) ?? Promise.resolve()).then(write);
+    this.pendingWrites.set(
+      robotId,
+      done.then(
+        () => undefined,
+        () => undefined
+      )
     );
+    return done;
   }
 }

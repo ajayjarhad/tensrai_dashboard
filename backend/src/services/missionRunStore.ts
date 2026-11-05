@@ -1,4 +1,5 @@
 import type { MissionRunStatus, PrismaClient } from '@prisma/client';
+import { normalizeRequestType } from './missionStatus.js';
 
 const ACTIVE_STATUSES: MissionRunStatus[] = [
   'PREVIEW_PENDING',
@@ -13,7 +14,7 @@ const PREVIEW_EXPIRED_EVENT = 'SYSTEM_PREVIEW_EXPIRED';
 const PREVIEW_EXPIRED_MESSAGE = 'Mission preview expired without start confirmation';
 
 const normalizeMissionId = (value: unknown): string | undefined => {
-  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const text = String(value).trim();
   return text.length ? text : undefined;
 };
@@ -232,13 +233,11 @@ export class MissionRunStore {
         return null;
       }
 
-      const missionNameSnapshot = await this.resolveMissionName(meta.mapId, missionId);
       const data = {
         robotId: meta.robotId,
         robotNameSnapshot: meta.robotName,
         missionId,
-        missionNameSnapshot,
-        mapId: meta.mapId ?? undefined,
+        ...(await this.missionSnapshot(meta.robotId, missionId)),
         status: 'PREVIEW_PENDING' as MissionRunStatus,
         phase: 'PREVIEW_PENDING' as MissionRunStatus,
         requestIdLast: requestId,
@@ -322,22 +321,27 @@ export class MissionRunStore {
           current?.requestIdLast === requestId
             ? current
             : ((await this.findRunByRequest(meta.robotId, requestId)) ?? current);
-        const requestType = String(payload?.requestType ?? '').toUpperCase();
+        const requestType = normalizeRequestType(payload?.requestType);
         const isSuccess = payload?.status === 'success';
-        if (requestId && targetRun?.requestIdLast && requestId !== targetRun.requestIdLast) {
+        // Only a preview can be superseded by a newer request. Pause, resume and cancel aren't recorded
+        // as intents, so their ids never match the last one and must not be dropped for it.
+        if (
+          requestType === 'SHOW_UP' &&
+          requestId &&
+          targetRun?.requestIdLast &&
+          requestId !== targetRun.requestIdLast
+        ) {
           return null;
         }
         if (!targetRun && requestType !== 'SHOW_UP') return null;
 
         if (requestType === 'SHOW_UP') {
           const baseId = targetRun?.id;
-          const missionNameSnapshot = await this.resolveMissionName(meta.mapId, missionId);
           const data = {
             robotId: meta.robotId,
             robotNameSnapshot: meta.robotName,
             missionId,
-            missionNameSnapshot,
-            mapId: meta.mapId ?? undefined,
+            ...(await this.missionSnapshot(meta.robotId, missionId)),
             status: isSuccess ? 'SHOWING' : 'FAILED',
             phase: isSuccess ? 'SHOWING' : 'FAILED',
             requestIdLast: requestId,
@@ -386,24 +390,17 @@ export class MissionRunStore {
           });
         }
         if (requestType === 'CANCEL') {
-          const run = await prisma.missionRun.update({
+          // "Cancel requested" isn't the end: MISSION_COMPLETED follows within the robot's 3s
+          // watchdog. Closing the run here would let a status tick in that gap open a second one.
+          return prisma.missionRun.update({
             where: { id: targetRun.id },
             data: {
-              status: isSuccess ? 'CANCELLED' : targetRun.status,
-              phase: isSuccess ? 'CANCELLED' : targetRun.phase,
               requestIdLast: requestId,
-              endedAt: isSuccess ? appliedAt : targetRun.endedAt,
-              durationMs:
-                isSuccess && targetRun.startedAt
-                  ? Math.max(0, appliedAt.getTime() - new Date(targetRun.startedAt).getTime())
-                  : targetRun.durationMs,
               lastMessage: payload?.message ?? null,
               lastEvent: event,
               lastEventAt: appliedAt,
             },
           });
-          if (isSuccess) this.activeRunIdsByRobot.delete(meta.robotId);
-          return run;
         }
         return null;
       }
@@ -416,13 +413,41 @@ export class MissionRunStore {
         if (requestId && targetRun?.requestIdLast && requestId !== targetRun.requestIdLast) {
           return null;
         }
-        if (!targetRun) return null;
         const isSuccess = payload?.status === 'success';
+        if (!targetRun) {
+          // A preview that expired, or no preview at all, must not lose the run: the status
+          // tick that would otherwise create it can come after a short mission has finished.
+          if (!isSuccess || !missionId) return null;
+          const created = await prisma.missionRun.create({
+            data: {
+              orgId: await this.orgIdOf(meta.robotId),
+              robotId: meta.robotId,
+              robotNameSnapshot: meta.robotName,
+              missionId,
+              ...(await this.missionSnapshot(meta.robotId, missionId)),
+              runId,
+              status: 'RUNNING',
+              phase: 'RUNNING',
+              requestIdLast: requestId,
+              startedAt: new Date(timestampMs(payload?.startedAt) ?? appliedAt.getTime()),
+              waypointIndex: 0,
+              lastMessage: payload?.message ?? null,
+              lastEvent: event,
+              lastEventAt: appliedAt,
+            },
+          });
+          this.activeRunIdsByRobot.set(meta.robotId, created.id);
+          return created;
+        }
+        // "Mission already running" is a refusal of the second start, not news about the first.
+        const failedStatus = PREVIEW_STATUSES.includes(targetRun.status)
+          ? 'SHOWING'
+          : targetRun.status;
         return prisma.missionRun.update({
           where: { id: targetRun.id },
           data: {
-            status: isSuccess ? 'RUNNING' : 'SHOWING',
-            phase: isSuccess ? 'RUNNING' : 'SHOWING',
+            status: isSuccess ? 'RUNNING' : failedStatus,
+            phase: isSuccess ? 'RUNNING' : failedStatus,
             requestIdLast: requestId,
             runId: runId ?? targetRun.runId,
             startedAt: isSuccess
@@ -516,7 +541,8 @@ export class MissionRunStore {
             : undefined;
 
         if (runtimeStatus === 'IDLE' && !runtimeMissionId) {
-          if (current && ACTIVE_STATUSES.includes(current.status)) {
+          // A robot reports IDLE throughout a preview, so previews end by expiry, not on this tick.
+          if (current && ['RUNNING', 'PAUSED'].includes(current.status)) {
             const closed = await prisma.missionRun.update({
               where: { id: current.id },
               data: {
@@ -540,7 +566,6 @@ export class MissionRunStore {
         }
 
         if (!current && runtimeMissionId) {
-          const missionNameSnapshot = await this.resolveMissionName(meta.mapId, runtimeMissionId);
           const phase: MissionRunStatus = runtimeStatus === 'PAUSED' ? 'PAUSED' : 'RUNNING';
           const created = await prisma.missionRun.create({
             data: {
@@ -548,8 +573,7 @@ export class MissionRunStore {
               robotId: meta.robotId,
               robotNameSnapshot: meta.robotName,
               missionId: runtimeMissionId,
-              missionNameSnapshot,
-              mapId: meta.mapId ?? undefined,
+              ...(await this.missionSnapshot(meta.robotId, runtimeMissionId)),
               runId: runtimeRunId,
               status: phase,
               phase,
@@ -596,27 +620,30 @@ export class MissionRunStore {
     return null;
   }
 
-  private async resolveMissionName(
-    mapId: string | null | undefined,
-    missionId: string | undefined
-  ) {
-    if (!mapId || !missionId) return null;
-
+  // Read from the robot's maps at the time of the event: a map sync or auto-follow changes them
+  // without the registry's copy of the robot finding out. A robot's mission can be on any of its
+  // maps, and the robot loads that map to run it.
+  private async missionSnapshot(robotId: string, missionId: string | undefined) {
     try {
-      const prisma = this.prisma as any;
-      const map = await prisma.map.findUnique({
-        where: { id: mapId },
-        select: { features: true },
+      const rows = await (this.prisma as any).robotMap.findMany({
+        where: { robotId },
+        select: { mapId: true, isActive: true, map: { select: { features: true } } },
       });
-      const missions = Array.isArray(map?.features?.missions) ? map.features.missions : [];
-      const match = missions.find(
-        (mission: any) => String(mission?.id ?? mission?.missionId) === missionId
-      );
-      const name = typeof match?.name === 'string' ? match.name.trim() : '';
-      return name.length ? name : null;
+      const active = rows.find((row: any) => row.isActive);
+      for (const row of active ? [active, ...rows] : rows) {
+        const missions = row.map?.features?.missions;
+        const match = Array.isArray(missions)
+          ? missions.find((mission: any) => String(mission?.id ?? mission?.missionId) === missionId)
+          : undefined;
+        if (match) {
+          const name = typeof match.name === 'string' ? match.name.trim() : '';
+          return { mapId: row.mapId, missionNameSnapshot: name || null };
+        }
+      }
+      return { mapId: active?.mapId ?? undefined, missionNameSnapshot: null };
     } catch (error) {
-      this.log.warn({ mapId, missionId, error }, 'Failed to resolve mission name snapshot');
-      return null;
+      this.log.warn({ robotId, missionId, error }, 'Failed to resolve mission snapshot');
+      return { missionNameSnapshot: null };
     }
   }
 }
