@@ -23,11 +23,13 @@ if (url) {
   const { upsertMapFromResponse } = await import('./saveMapFromMapping.js');
   const { MissionRunStore } = await import('./missionRunStore.js');
   const { createUserWithTempPassword, getAllUsers } = await import('./user.service.js');
+  const { moveRobotToOrg } = await import('./org.service.js');
 
   const prisma = new PrismaClient({ datasourceUrl: url });
   const run = Date.now().toString(36);
   const orgA = await prisma.organization.create({ data: { name: `A-${run}`, slug: `a-${run}` } });
   const orgB = await prisma.organization.create({ data: { name: `B-${run}`, slug: `b-${run}` } });
+  const orgC = await prisma.organization.create({ data: { name: `C-${run}`, slug: `c-${run}` } });
   const dbA = scopedPrisma(prisma, orgA.id);
   const dbB = scopedPrisma(prisma, orgB.id);
 
@@ -105,6 +107,51 @@ if (url) {
     expect(await dbA.map.findUnique({ where: { id: mapsB[0]?.id ?? '' } })).toBeNull();
   });
 
+  test('robots in one organization keep separate maps under one filename and share identical ones', async () => {
+    const sync = (robotId: string, fill: number) =>
+      upsertMapFromResponse({ log: quietLog, prisma }, robotId, mapFiles(fill));
+    const robotNamed = (name: string) => prisma.robot.create({ data: { orgId: orgC.id, name } });
+    const activeFill = async (robotId: string) => {
+      const link = await prisma.robotMap.findFirst({
+        where: { robotId, isActive: true },
+        include: { map: { select: { image: true } } },
+      });
+      return link?.map.image.at(-1);
+    };
+
+    const first = await robotNamed('First');
+    const second = await robotNamed('Second');
+    await sync(first.id, 10);
+    await sync(second.id, 20);
+    expect(await prisma.map.count({ where: { orgId: orgC.id, filename: 'map.yaml' } })).toBe(2);
+    expect([await activeFill(first.id), await activeFill(second.id)]).toEqual([10, 20]);
+
+    const third = await robotNamed('Third');
+    await sync(third.id, 10);
+    expect(await prisma.map.count({ where: { orgId: orgC.id } })).toBe(2);
+    expect(await activeFill(third.id)).toBe(10);
+
+    const firstMap = await prisma.robotMap.findFirst({ where: { robotId: first.id } });
+    const thirdMap = await prisma.robotMap.findFirst({ where: { robotId: third.id } });
+    expect(thirdMap?.mapId).toBe(firstMap?.mapId ?? '');
+
+    await sync(first.id, 30);
+    expect(await prisma.map.count({ where: { orgId: orgC.id } })).toBe(3);
+    expect([await activeFill(first.id), await activeFill(third.id)]).toEqual([30, 10]);
+    expect(await prisma.robotMap.count({ where: { robotId: first.id } })).toBe(1);
+
+    await moveRobotToOrg(prisma, second.id, orgA.id);
+    const moved = await prisma.robotMap.findFirst({
+      where: { robotId: second.id },
+      include: { map: { select: { orgId: true } } },
+    });
+    expect(moved?.map.orgId).toBe(orgA.id);
+
+    await sync(robotB.id, 30);
+    await expect(moveRobotToOrg(prisma, first.id, orgB.id)).rejects.toMatchObject({ status: 409 });
+    expect((await prisma.robot.findUnique({ where: { id: first.id } }))?.orgId).toBe(orgC.id);
+  });
+
   test('mission runs are stamped with the robot’s organization and listed per organization', async () => {
     const store = new MissionRunStore(prisma, quietLog);
     const created = await store.recordCommandIntent(
@@ -122,14 +169,14 @@ if (url) {
   });
 
   test('removes the test organizations', async () => {
-    for (const orgId of [orgA.id, orgB.id]) {
+    for (const orgId of [orgA.id, orgB.id, orgC.id]) {
       await prisma.missionRun.deleteMany({ where: { orgId } });
       await prisma.map.deleteMany({ where: { orgId } });
       await prisma.robotMap.deleteMany({ where: { robot: { orgId } } });
       await prisma.robot.deleteMany({ where: { orgId } });
       await prisma.user.deleteMany({ where: { orgId } });
     }
-    await prisma.organization.deleteMany({ where: { id: { in: [orgA.id, orgB.id] } } });
+    await prisma.organization.deleteMany({ where: { id: { in: [orgA.id, orgB.id, orgC.id] } } });
     await prisma.$disconnect();
   });
 }

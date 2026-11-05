@@ -159,8 +159,8 @@ model Map {
   robots                 Robot[]
   robotMaps              RobotMap[]
 
-  @@unique([orgId, name])
-  @@unique([orgId, filename])
+  // Robots name their files independently, so only identical content under one filename is one map.
+  @@unique([orgId, filename, contentHash])
   @@index([orgId])
 }
 

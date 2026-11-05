@@ -82,7 +82,13 @@ async function main() {
   // Create Maps
   console.log('Creating maps...');
   const map1 = await prisma.map.upsert({
-    where: { orgId_name: { orgId: org.id, name: 'Warehouse Floor 1' } },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'map.yaml',
+        contentHash: map1Assets.contentHash,
+      },
+    },
     update: {
       image: map1Pgm,
       metadata: map1Metadata,
@@ -101,7 +107,13 @@ async function main() {
   });
 
   const map2 = await prisma.map.upsert({
-    where: { orgId_name: { orgId: org.id, name: 'Warehouse Floor 2' } },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'map2.yaml',
+        contentHash: map2Assets.contentHash,
+      },
+    },
     update: {
       image: map2Pgm,
       metadata: map2Metadata,
@@ -119,7 +131,13 @@ async function main() {
     },
   });
   const map3 = await prisma.map.upsert({
-    where: { orgId_name: { orgId: org.id, name: 'Gas Station' } },
+    where: {
+      orgId_filename_contentHash: {
+        orgId: org.id,
+        filename: 'gas_station_map.yaml',
+        contentHash: map3Assets.contentHash,
+      },
+    },
     update: {
       image: map3Pgm,
       metadata: map3Metadata,

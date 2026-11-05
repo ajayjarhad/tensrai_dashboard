@@ -90,6 +90,9 @@ const resolveMapSyncConnectTimeoutMs = (fastify: any) => {
 const looksLikeFilename = (value: unknown, ext: string) =>
   typeof value === 'string' && value.trim().toLowerCase().endsWith(ext) && !value.includes('\n');
 
+// Filenames come from the robot and are shown across the dashboard.
+const UNSAFE_MAP_FILENAME = /[/\\<>\p{Cc}]|\.\./u;
+
 const isBase64 = (value: string) => {
   if (!value || typeof value !== 'string') return false;
   const normalized = value.replace(/\s+/g, '');
@@ -154,14 +157,14 @@ const extractMapContent = (files: any, logger: any, robotId: string) => {
 };
 
 const parseMapMetadata = (yamlText: string, logger: any, robotId: string) => {
-  let metadata: any;
   try {
-    metadata = yaml.load(yamlText) ?? {};
+    const metadata = yaml.load(yamlText);
+    if (metadata && typeof metadata === 'object') return metadata as any;
+    logger.error({ robotId }, 'Map YAML is not a mapping');
   } catch (err) {
     logger.error({ robotId, err }, 'Failed to parse map YAML');
-    metadata = {};
   }
-  return metadata;
+  return null;
 };
 
 const normalizeFeatures = (features: any) => {
@@ -219,21 +222,56 @@ const hasFeaturePayload = (value: any) => value && Object.hasOwn(value, 'metadat
 
 const getFeaturePayload = (value: any) => value?.metadata_json ?? {};
 
-// Maps are unique per organization, so a filename only identifies a map within the
-// organization of the robot that synced it.
 const orgIdOfRobot = async (prisma: any, robotId: string): Promise<string> => {
   const robot = await prisma.robot.findUnique({ where: { id: robotId }, select: { orgId: true } });
   if (!robot?.orgId) throw new Error(`Robot ${robotId} has no organization`);
   return robot.orgId;
 };
 
-const mapKey = async (prisma: any, robotId: string, filename: string) => ({
-  orgId_filename: { orgId: await orgIdOfRobot(prisma, robotId), filename },
-});
+// Most robots sync a map.yaml, so robots share a record only when the content matches too. The
+// filename stays in the identity because robotStatusSync finds a robot's map by that filename.
+// ponytail: features live on the record, so robots sharing one share missions and the last sync
+// wins. Fork on differing features if robots on one floor ever need different missions.
+const findMapByContent = (prisma: any, orgId: string, filename: string, hashes: string[]) =>
+  prisma.map.findFirst({
+    where: { orgId, filename, contentHash: { in: hashes } },
+    select: { id: true, contentHash: true },
+  });
 
-// Link a map to a robot via the RobotMap join, refreshing syncedAt. Does not
-// touch isActive — active designation is centralized in designateActiveAfterSync.
-const linkMapToRobot = async (prisma: any, robotId: string, mapId: string) => {
+// A robot holds one map per filename, and syncing that filename again replaces it.
+const findLinkedMapId = async (prisma: any, robotId: string, filename: string) => {
+  const link = await prisma.robotMap.findFirst({
+    where: { robotId, map: { filename } },
+    select: { mapId: true },
+  });
+  return link?.mapId ?? null;
+};
+
+const isLinkedToAnotherRobot = async (prisma: any, mapId: string, robotId: string) =>
+  (await prisma.robotMap.count({ where: { mapId, robotId: { not: robotId } } })) > 0;
+
+// Link a map to a robot via the RobotMap join, refreshing syncedAt. A map replacing another takes
+// over its link, keeping the active and pinned state. Otherwise does not touch isActive — active
+// designation is centralized in designateActiveAfterSync.
+const linkMapToRobot = async (
+  prisma: any,
+  robotId: string,
+  mapId: string,
+  replacedMapId: string | null
+) => {
+  if (replacedMapId && replacedMapId !== mapId) {
+    // ponytail: a replaced map that no robot links to stays in the organization's list. Delete it
+    // here if those pile up.
+    await prisma.$transaction([
+      prisma.robotMap.update({
+        where: { robotId_mapId: { robotId, mapId: replacedMapId } },
+        data: { mapId, syncedAt: new Date() },
+      }),
+      prisma.robot.updateMany({ where: { id: robotId, mapId: replacedMapId }, data: { mapId } }),
+    ]);
+    return;
+  }
+
   await prisma.robotMap.upsert({
     where: { robotId_mapId: { robotId, mapId } },
     update: { syncedAt: new Date() },
@@ -273,6 +311,10 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
     logger.warn({ robotId, files }, 'MAP_DATA_RESPONSE missing map files');
     return null;
   }
+  if (looksLikeFilename(files.map_yaml, '.yaml') && UNSAFE_MAP_FILENAME.test(files.map_yaml)) {
+    logger.warn({ robotId, filename: files.map_yaml }, 'Refusing map with an unsafe filename');
+    return null;
+  }
 
   const { yamlText, pgmBytes, hasYamlContent, hasPgmContent } = extractMapContent(
     files,
@@ -289,8 +331,17 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
   }
 
   const metadata = parseMapMetadata(yamlText, logger, robotId);
+  if (!metadata) return null;
   const { features, filename, name } = getMapDetails(files);
   const generatedAssets = await generateMapAssets(pgmBytes, metadata);
+  // Not a readable image: storing it would replace a good floor with one nobody can display.
+  if (!generatedAssets.pixelWidth) {
+    logger.error(
+      { robotId, filename, error: generatedAssets.displayGenerationError },
+      'Refusing map with an unreadable image'
+    );
+    return null;
+  }
   if (generatedAssets.displayGenerationError) {
     logger.warn(
       {
@@ -305,27 +356,25 @@ const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
 
   try {
     const orgId = await orgIdOfRobot(prisma, robotId);
-    const map = await prisma.map.upsert({
-      where: { orgId_filename: { orgId, filename } },
-      update: {
-        name,
-        image: pgmBytes,
-        metadata,
-        features,
-        ...generatedAssets,
-      },
-      create: {
-        orgId,
-        name,
-        filename,
-        image: pgmBytes,
-        metadata,
-        features,
-        ...generatedAssets,
-      },
-    });
+    const linkedMapId = await findLinkedMapId(prisma, robotId, filename);
+    const sameContent = await findMapByContent(prisma, orgId, filename, [
+      generatedAssets.contentHash,
+    ]);
+    // Changed content updates the robot's own record, unless another robot still relies on it.
+    const ownMapId =
+      linkedMapId && !(await isLinkedToAnotherRobot(prisma, linkedMapId, robotId))
+        ? linkedMapId
+        : null;
+    const targetMapId = sameContent?.id ?? ownMapId;
 
-    await linkMapToRobot(prisma, robotId, map.id);
+    const content = { name, image: pgmBytes, metadata, features, ...generatedAssets };
+    // ponytail: robots first syncing one new map in the same instant race on the unique index. The
+    // loser's sync fails visibly and its next sync joins the winner's record.
+    const map = targetMapId
+      ? await prisma.map.update({ where: { id: targetMapId }, data: content })
+      : await prisma.map.create({ data: { orgId, filename, ...content } });
+
+    await linkMapToRobot(prisma, robotId, map.id, linkedMapId);
 
     logger.info({ robotId, mapId: map.id, filename }, 'Map upserted from mapping bridge');
     return map;
@@ -416,8 +465,10 @@ export const fetchMapViaMappingBridge = async (
     }
   >();
   let activityTimeout: NodeJS.Timeout | undefined;
+  let ended = false;
 
   const stop = (reason?: string) => {
+    ended = true;
     clearTimeout(connectTimeout);
     if (activityTimeout) clearTimeout(activityTimeout);
     try {
@@ -451,23 +502,16 @@ export const fetchMapViaMappingBridge = async (
     socket.send(JSON.stringify({ event, payload }));
   };
 
-  const linkExistingMapToRobot = async (filename: string) => {
-    const existing = await prisma.map.findUnique({
-      where: await mapKey(prisma, robotId, filename),
-      select: { id: true },
-    });
-    if (!existing) return;
-    await linkMapToRobot(prisma, robotId, existing.id);
-    await designateActiveAfterSync(prisma, robotId, existing.id);
+  // Always links: the record may be another robot's, which this robot has never been linked to.
+  const linkExistingMapToRobot = async (mapId: string, filename: string, isDefault: boolean) => {
+    await linkMapToRobot(prisma, robotId, mapId, await findLinkedMapId(prisma, robotId, filename));
+    if (isDefault) await designateActiveAfterSync(prisma, robotId, mapId);
   };
 
-  const updateExistingMapFeatures = async (filename: string, manifest: any) => {
+  const updateExistingMapFeatures = async (mapId: string, manifest: any) => {
     if (!hasFeaturePayload(manifest)) return false;
     const features = normalizeFeatures(getFeaturePayload(manifest));
-    await prisma.map.update({
-      where: await mapKey(prisma, robotId, filename),
-      data: { features },
-    });
+    await prisma.map.update({ where: { id: mapId }, data: { features } });
     return true;
   };
 
@@ -556,6 +600,7 @@ export const fetchMapViaMappingBridge = async (
   });
 
   socket.on('message', async (data, isBinary) => {
+    if (ended) return;
     resetActivityTimeout();
     const payload =
       !isBinary && typeof data === 'string'
@@ -580,20 +625,23 @@ export const fetchMapViaMappingBridge = async (
           markFailed('invalid map transfer manifest');
           return;
         }
-        const existing = await prisma.map.findUnique({
-          where: await mapKey(prisma, robotId, filename),
-          select: { id: true, contentHash: true },
-        });
         const expectedContentHash =
           manifest.contentHash ?? manifest.content_hash ?? manifest.map_content_hash;
-        if (
-          existing?.contentHash &&
-          (existing.contentHash === expectedContentHash || existing.contentHash === rawHash)
-        ) {
-          const featuresUpdated = await updateExistingMapFeatures(filename, manifest);
-          if (manifest.is_default ?? manifest.isDefault ?? true) {
-            await linkExistingMapToRobot(filename);
-          }
+        const existing = await findMapByContent(
+          prisma,
+          await orgIdOfRobot(prisma, robotId),
+          filename,
+          [expectedContentHash, rawHash].filter(Boolean)
+        );
+        // The sync can fail while that lookup runs; a late status here would read as still active.
+        if (ended) return;
+        if (existing) {
+          const featuresUpdated = await updateExistingMapFeatures(existing.id, manifest);
+          await linkExistingMapToRobot(
+            existing.id,
+            filename,
+            manifest.is_default ?? manifest.isDefault ?? true
+          );
           updateMapSyncStatus(robotId, {
             phase: 'skipped',
             mapId: existing.id,
@@ -699,7 +747,15 @@ export const fetchMapViaMappingBridge = async (
         return;
       }
 
-      if (parsed?.event === 'MAP_DATA_RESPONSE' && parsed?.payload?.files) {
+      if (
+        parsed?.event === 'ERROR' ||
+        (parsed?.event === 'MAP_DATA_RESPONSE' && !parsed?.payload?.files)
+      ) {
+        markFailed(String(parsed.payload?.error ?? parsed.payload?.message ?? 'No map data'));
+        return;
+      }
+
+      if (parsed?.event === 'MAP_DATA_RESPONSE') {
         logger.info({ robotId, targetUrl }, 'Received MAP_DATA_RESPONSE via mapping bridge');
         updateMapSyncStatus(robotId, {
           phase: 'processing',
@@ -708,9 +764,13 @@ export const fetchMapViaMappingBridge = async (
           lastError: undefined,
         });
         const storedMap = await upsertMapFromResponse(fastify, robotId, parsed.payload.files);
+        if (!storedMap) {
+          markFailed('Robot map files could not be read');
+          return;
+        }
         updateMapSyncStatus(robotId, {
           phase: 'complete',
-          mapId: storedMap?.id,
+          mapId: storedMap.id,
           percent: 100,
           lastError: undefined,
         });
