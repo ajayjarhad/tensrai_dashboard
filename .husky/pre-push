@@ -7,7 +7,9 @@ echo "🏗️  Running pre-push checks..."
 
 # Clean build to ensure everything compiles
 echo "🧹 Cleaning previous builds..."
-bun run clean:build
+# Not clean:build: a running `bun run dev` imports shared/dist, and deleting it stops the backend until
+# it's restarted. The shared build below rewrites that folder anyway (tsc --build --force).
+rm -rf frontend/dist backend/dist
 
 # Build all packages in correct order
 echo "📦 Building packages..."
