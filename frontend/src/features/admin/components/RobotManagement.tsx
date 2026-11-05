@@ -131,6 +131,17 @@ export function RobotManagement() {
   const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
   const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
 
+  // The dashboard shows this list from the cache as soon as it opens, so it has to be right before
+  // anyone goes back. Without refetchType it would only be marked stale while the dashboard is closed.
+  const refreshDashboardData = useCallback(
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.robots.lists, refetchType: 'all' }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.missions.all }),
+      ]),
+    [queryClient]
+  );
+
   const loadRobots = useCallback(async (options?: { silent?: boolean }): Promise<Robot[]> => {
     const silent = options?.silent ?? false;
     try {
@@ -285,7 +296,7 @@ export function RobotManagement() {
         await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
       }
       resetForm();
-      await Promise.all([loadRobots(), loadAddressStatuses()]);
+      await Promise.all([loadRobots(), loadAddressStatuses(), refreshDashboardData()]);
       toast.success('Robot saved');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save robot';
@@ -338,8 +349,7 @@ export function RobotManagement() {
         evictFromCache(affectedMapId);
       }
 
-      await queryClient.invalidateQueries({ queryKey: queryKeys.robots.lists });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.missions.all });
+      await refreshDashboardData();
 
       const [nextRobots] = await Promise.all([loadRobots({ silent: true }), loadMaps()]);
       const refreshedRobot = nextRobots.find(robot => robot.id === robotId);
@@ -370,7 +380,7 @@ export function RobotManagement() {
     try {
       await apiClient.delete(`robots/${id}`, { json: {} });
       if (form.id === id) resetForm();
-      await loadRobots();
+      await Promise.all([loadRobots(), refreshDashboardData()]);
       toast.success('Robot deleted');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete robot';
@@ -591,7 +601,7 @@ export function RobotManagement() {
                             robotId={robot.id}
                             robotName={robot.name}
                             currentOrgId={user?.orgId}
-                            onMoved={() => loadRobots()}
+                            onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
                           />
                         )}
                       </td>

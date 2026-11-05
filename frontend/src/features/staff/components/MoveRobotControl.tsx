@@ -7,7 +7,7 @@ interface MoveRobotControlProps {
   robotId: string;
   robotName: string;
   currentOrgId: string | undefined;
-  onMoved: () => void;
+  onMoved: () => Promise<unknown>;
 }
 
 export function MoveRobotControl({
@@ -23,8 +23,8 @@ export function MoveRobotControl({
     if (!org || !confirm(`Move ${robotName} with its maps and history to ${org.name}?`)) return;
     try {
       await moveRobot(robotId, orgId);
+      await onMoved();
       toast.success(`Moved to ${org.name}`);
-      onMoved();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not move the robot');
     }
