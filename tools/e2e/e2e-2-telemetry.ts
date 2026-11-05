@@ -38,6 +38,11 @@ check(
 );
 const nullRanges = laser?.data?.ranges?.filter((r: unknown) => r === null).length;
 note(`laser: ${laser?.data?.ranges?.length} points, ${nullRanges} null (rosbridge inf/NaN)`);
+check(
+  'the simulated lidar hits walls on the map',
+  laser?.data?.ranges?.some((r: unknown) => typeof r === 'number'),
+  nullRanges
+);
 check('amcl arrives', await tel.waitChannel('amcl'));
 const withScanPose = await tel.waitChannel('laser', d => d.scanPose);
 check(

@@ -83,9 +83,11 @@ const loadMapSets = (): MapSet[] => {
   });
 };
 
+const mainMapSet = (sets: MapSet[]) => sets.find(set => set.name === 'map') ?? sets[0];
+
 const handleMappingLegacy = (ws: Sock) => {
   const sets = loadMapSets();
-  const main = sets.find(set => set.name === 'map') ?? sets[0];
+  const main = mainMapSet(sets);
   if (!main || faults.mapFault === 'nofiles') {
     ws.send(
       JSON.stringify({
@@ -729,6 +731,48 @@ const publish = (topic: string, msg: unknown) => {
     if (ws.data.subs.has(topic)) ws.send(text);
   }
 };
+
+// What the lidar can see: the occupied cells of the robot's main map.
+const parseOccupancy = (set: MapSet | undefined) => {
+  if (!set) return null;
+  const resolution = Number(/resolution:\s*([\d.]+)/.exec(set.map_yaml_content)?.[1]);
+  const origin = /origin:\s*\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/.exec(set.map_yaml_content);
+  const pgm = Buffer.from(set.map_pgm_content, 'base64');
+  const header = /^P5\s+(?:#.*\s+)*(\d+)\s+(\d+)\s+\d+\s/.exec(pgm.toString('latin1', 0, 256));
+  if (!resolution || !origin || !header) return null;
+  return {
+    resolution,
+    originX: Number(origin[1]),
+    originY: Number(origin[2]),
+    width: Number(header[1]),
+    height: Number(header[2]),
+    cells: pgm.subarray(header[0].length),
+  };
+};
+const occupancy = parseOccupancy(mainMapSet(loadMapSets()));
+
+const OCCUPIED_BELOW = 100; // Map cells are 0 occupied, 205 unknown, 254 free.
+const SENSOR_FORWARD_M = 0.1; // Matches the base_scan transform on /tf_static_ui.
+const NOISE_M = 0.02;
+
+// One beam, walked in steps small enough not to slip through a wall one cell thick. A beam that hits
+// nothing returns null: rosbridge encodes a real scan's inf that way.
+const rangeAlong = (fromX: number, fromY: number, angle: number, min: number, max: number) => {
+  if (!occupancy) return null;
+  const { cells, width, height, resolution, originX, originY } = occupancy;
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  for (let range = min; range <= max; range += resolution / 3) {
+    const column = Math.floor((fromX + range * dx - originX) / resolution);
+    const row = height - 1 - Math.floor((fromY + range * dy - originY) / resolution);
+    if (column < 0 || row < 0 || column >= width || row >= height) return null;
+    if ((cells[row * width + column] ?? 255) < OCCUPIED_BELOW) {
+      return range + (Math.random() - 0.5) * NOISE_M;
+    }
+  }
+  return null;
+};
+
 const laserMessage = (header: unknown) => {
   const count = 360;
   const base = {
@@ -755,14 +799,22 @@ const laserMessage = (header: unknown) => {
       return { header };
     case 'strings':
       return { ...base, ranges: new Array(count).fill('x') };
-    default:
-      // rosbridge encodes inf and NaN as null, so real scans contain them.
+    default: {
+      const sensorX = pose.x + SENSOR_FORWARD_M * Math.cos(pose.yaw);
+      const sensorY = pose.y + SENSOR_FORWARD_M * Math.sin(pose.yaw);
       return {
         ...base,
         ranges: Array.from({ length: count }, (_, i) =>
-          i % 17 === 0 ? null : 2 + Math.sin(i / 10)
+          rangeAlong(
+            sensorX,
+            sensorY,
+            pose.yaw + base.angle_min + i * base.angle_increment,
+            base.range_min,
+            base.range_max
+          )
         ),
       };
+    }
   }
 };
 const planPoses = (header: unknown) =>
