@@ -28,17 +28,26 @@ bun install
 # Setup git hooks
 bun run prepare
 
-# Start development servers
+# Settings for running on this machine (Docker Compose ignores this file)
+cp .env.local.example .env.local
+
+# Start development servers: UI on http://localhost:5002, API on http://localhost:5055
 bun run dev
 ```
+
+`bun run dev` uses your local MongoDB if `mongod` is installed, otherwise it starts the one from
+`docker-compose.yml` (so Docker needs to be running). Each start also syncs the schema and creates any
+missing seed users.
+
+From the repo root, `bun run backend <script>` runs any backend script with these settings, for example
+`bun run backend staff:create someone someone@tensrai.com` for a staff login.
 
 ### Seed baseline users
 
 Provision default admin/operator accounts for local testing:
 
 ```bash
-cd backend
-bun run seed
+bun run backend seed
 ```
 
 Set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`, `PASSWORD`) before running the command; without a password the account is created with the default `pass`, which the script warns about. The seed only creates accounts that are missing, so it is safe to run on every start and never resets an existing user's password.
@@ -52,9 +61,8 @@ All customers share one deployment and database. Everything belongs to an organi
 - **Tensrai staff** use the Organizations screen: create organizations and first admins, approve robot addresses, enter an organization for support, move a robot between organizations. The API never grants this role:
 
 ```bash
-cd backend
-bun run staff:create someone someone@tensrai.com                    # create a staff user, or promote an existing one
-bun run org:create "Acme Robotics" acme acme-admin admin@acme.com   # also possible from the screen
+bun run backend staff:create someone someone@tensrai.com                    # create a staff user, or promote an existing one
+bun run backend org:create "Acme Robotics" acme acme-admin admin@acme.com   # also possible from the screen
 ```
 
 **Robot addresses.** Robot bridges have no auth, so whatever the backend connects to obeys it. An org admin can enter any address, but the backend won't connect to it until staff approve it for that organization. Then the address belongs to that organization until staff release it, even if the robot is deleted. Set `ROBOT_BLOCKED_SUBNETS` (comma-separated CIDRs, empty for none) to change which internal ranges are refused, for example to use a local simulator. `MAX_ROBOTS_PER_ORG` limits robots per organization (default 50).
@@ -152,8 +160,8 @@ tensrai_dashboard/
 - `package.json` - Workspace scripts and dependencies
 
 ### Environment Setup
-- No separate environment files needed for basic setup
-- Use `.env.local` for development overrides
+- `.env` configures Docker Compose; `.env.local` overrides it when running on your machine
+- Start from `.env.local.example`, and change its port if 5055 is taken
 - Environment variables documented in each package
 
 ## 🎯 Scripts Overview

@@ -7,6 +7,7 @@
   "scripts": {
     "predev": "bun run --cwd ../shared build",
     "dev": "./scripts/mongoReplica.sh && bun --watch src/index.ts",
+    "db:prepare": "./scripts/mongoReplica.sh && prisma db push --skip-generate && tsx scripts/backfillOrg.ts && (tsx scripts/seed.ts || echo 'Seeding skipped')",
     "build": "tsc -p tsconfig.build.json",
     "prestart": "bun run --cwd ../shared build",
     "start": "./scripts/mongoReplica.sh && node dist/index.js",
