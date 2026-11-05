@@ -7,7 +7,7 @@
   "scripts": {
     "predev": "bun run --cwd ../shared build",
     "dev": "./scripts/mongoReplica.sh && bun --watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "prestart": "bun run --cwd ../shared build",
     "start": "./scripts/mongoReplica.sh && node dist/index.js",
     "generate": "DATABASE_URL=\"${DATABASE_URL:-mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0}\" prisma generate",
@@ -18,13 +18,15 @@
     "backfill:map-assets": "./scripts/mongoReplica.sh && tsx scripts/backfillMapAssets.ts",
     "backfill:org": "./scripts/mongoReplica.sh && tsx scripts/backfillOrg.ts",
     "org:create": "./scripts/mongoReplica.sh && tsx scripts/createOrg.ts",
+    "staff:create": "./scripts/mongoReplica.sh && tsx scripts/createStaff.ts",
     "dev:with-seed": "npm run seed:all && bun --watch src/index.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format .",
     "format:write": "biome format --write .",
     "type-check": "tsc --noEmit",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "bun test src",
+    "test:integration": "bun test integration"
   },
   "keywords": [
     "robotics",

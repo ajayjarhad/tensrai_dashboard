@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
-import { Cpu, LogOut, MoreVertical, Users } from 'lucide-react';
+import { PERMISSIONS } from '@tensrai/shared';
+import { Building2, Cpu, LogOut, MoreVertical, Users } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/stores/auth';
 
@@ -10,7 +11,8 @@ interface AdminMenuProps {
 
 export function AdminMenu({ isOpen, onToggle }: AdminMenuProps) {
   const navigate = useNavigate();
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, hasPermission, logout } = useAuth();
+  const isStaff = hasPermission(PERMISSIONS.STAFF_CONSOLE);
   const isUserAdmin = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const [showMenu, setShowMenu] = useState(false);
 
@@ -67,6 +69,19 @@ export function AdminMenu({ isOpen, onToggle }: AdminMenuProps) {
                       <Cpu className="h-4 w-4" />
                       Manage Robots
                     </button>
+                    {isStaff && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMenu(false);
+                          navigate({ to: '/staff' });
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
+                      >
+                        <Building2 className="h-4 w-4" />
+                        Organizations
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

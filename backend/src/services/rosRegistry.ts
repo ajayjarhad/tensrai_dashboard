@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { withApprovedAddress } from './robotAddress.js';
 import { RosRobotManager } from './rosRobotManager.js';
 
 const DEFAULT_PORT = Number(process.env['ROS_BRIDGE_PORT'] ?? 9090);
@@ -145,7 +146,7 @@ export class RosRegistry {
   }
 
   async reloadFromDb() {
-    const robots = await this.prisma.robot.findMany();
+    const robots = await withApprovedAddress(this.prisma, await this.prisma.robot.findMany());
     const desiredIds = new Set();
 
     for (const robot of robots) {

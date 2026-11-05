@@ -1,8 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
 
-// Models that carry an orgId. RobotMap has none: it is only reached through a robot the
-// route has already proven belongs to the caller (requireOwnedRobot).
-const TENANT_MODELS = new Set(['User', 'Robot', 'Map', 'MissionRun']);
+// Everything belongs to an organization unless it is listed here, so a new model without an orgId
+// fails on its first query rather than leaking. orgScope.test.ts holds every model to this rule.
+// Only top-level queries are intercepted: nested `include` and nested writes are not scoped.
+export const GLOBAL_MODELS = new Set(['Organization', 'Account', 'Session', 'Verification']);
 
 const FILTERED_OPERATIONS = new Set([
   'findFirst',
@@ -27,7 +28,7 @@ const assertNoOrgChange = (data: unknown, orgId: string) => {
 };
 
 export const scopeArgs = (model: string, operation: string, args: any, orgId: string) => {
-  if (!TENANT_MODELS.has(model)) return args;
+  if (GLOBAL_MODELS.has(model)) return args;
 
   if (FILTERED_OPERATIONS.has(operation)) {
     assertNoOrgChange(args?.data, orgId);

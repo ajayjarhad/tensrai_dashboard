@@ -1,6 +1,7 @@
 import { URL } from 'node:url';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import fp from 'fastify-plugin';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
@@ -72,6 +73,10 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
 
     return false;
   };
+  fastify.decorate('isAllowedOrigin', isAllowedOrigin);
+
+  // Off by default: only routes that opt in through config.rateLimit are limited.
+  await fastify.register(rateLimit, { global: false });
 
   await fastify.register(cors, {
     origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
@@ -146,7 +151,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
     security: {
       helmet: 'enabled',
       cors: 'enabled',
-      rateLimit: 'disabled',
+      rateLimit: 'auth routes',
       timestamp: new Date().toISOString(),
     },
   }));

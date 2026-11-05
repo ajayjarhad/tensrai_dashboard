@@ -15,7 +15,10 @@ const SOCKET_PATHS = [
 ];
 
 const app = createTestApp();
-app.decorate('prisma', { robot: fakeRobotModel([{ id: 'r1', orgId: ORG_A }]) });
+app.decorate('prisma', {
+  robot: fakeRobotModel([{ id: 'r1', orgId: ORG_A }]),
+  robotAddress: { findMany: async () => [] },
+});
 await app.register(rosGateway);
 await app.listen({ port: 0, host: '127.0.0.1' });
 const { port } = app.server.address();

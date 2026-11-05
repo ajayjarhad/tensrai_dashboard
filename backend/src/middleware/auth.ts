@@ -1,4 +1,5 @@
-import type { AppFastifyReply, AppFastifyRequest } from '../types/app.js';
+import { trace } from '@opentelemetry/api';
+import type { AppFastifyReply, AppFastifyRequest, AppSession } from '../types/app.js';
 import { type Permission, ROLE, ROLE_PERMISSIONS } from '../types/shared-shim.js';
 import { AuthTracer } from '../utils/tracing.js';
 
@@ -49,15 +50,25 @@ export const requireUser = async (request: AppFastifyRequest, reply: AppFastifyR
   });
 };
 
+// Staff act in the organization they entered; everyone else acts in their own.
+export const actingOrgId = (session: AppSession): string | null => {
+  const user = session.user;
+  if (!user) return null;
+  return user.role === ROLE.STAFF
+    ? (session.session?.activeOrgId ?? user.orgId)
+    : (user.orgId ?? null);
+};
+
 // Session gate for hot read paths (polled REST routes, websocket upgrades). Unlike
 // requireUser it writes no audit row, so polling cannot turn into a DB write per request.
 export const requireActiveSession = async (
   request: AppFastifyRequest,
   reply: AppFastifyReply
 ): Promise<AppFastifyReply | undefined> => {
-  const user = await request.getCurrentUser();
+  const session = await request.getUserSession();
+  const user = session?.user;
 
-  if (!user) {
+  if (!session || !user) {
     return reply.code(401).send({
       error: 'Authentication required',
       code: 'AUTH_REQUIRED',
@@ -79,14 +90,35 @@ export const requireActiveSession = async (
     });
   }
 
-  if (!user.orgId) {
+  const orgId = actingOrgId(session);
+  if (!orgId) {
     return reply.code(403).send({
       error: 'Account is not part of an organization',
       code: 'NO_ORGANIZATION',
     });
   }
 
-  request.orgId = user.orgId;
+  request.orgId = orgId;
+  trace.getActiveSpan()?.setAttribute('org.id', orgId);
+  // A websocket upgrade cannot set a cookie, and an open dashboard keeps polling REST anyway.
+  if (!request.ws) await request.renewSessionIfStale(reply);
+  return undefined;
+};
+
+export const requireStaff = async (
+  request: AppFastifyRequest,
+  reply: AppFastifyReply
+): Promise<AppFastifyReply | undefined> => {
+  const rejected = await requireActiveSession(request, reply);
+  if (rejected) return rejected;
+
+  const user = await request.getCurrentUser();
+  if (user?.role !== ROLE.STAFF) {
+    return reply.code(403).send({
+      error: 'Staff access required',
+      code: 'INSUFFICIENT_PERMISSIONS',
+    });
+  }
   return undefined;
 };
 
@@ -106,6 +138,10 @@ export const requireOwnedRobot =
     }
 
     if (!robot) {
+      request.server.log.warn(
+        { robotId: request.params?.[param], orgId: request.orgId, url: request.url },
+        'Denied access to a robot outside the organization'
+      );
       return reply.code(404).send({
         success: false,
         error: 'Robot not found',
@@ -115,10 +151,30 @@ export const requireOwnedRobot =
     return undefined;
   };
 
+// The same decision as requireActiveSession + requireOwnedRobot, made again for a socket that is
+// already open: a disabled user, a revoked session or a moved robot must not keep its access.
+export const stillHasRobotAccess = async (
+  request: AppFastifyRequest,
+  robotId: string
+): Promise<boolean> => {
+  const session = await request.readFreshSession();
+  const user = session?.user;
+  if (!session || !user?.isActive || user.mustResetPassword) return false;
+
+  const orgId = actingOrgId(session);
+  if (!orgId) return false;
+
+  const robot = await request.server.prisma.robot.findFirst({
+    where: { id: robotId, orgId },
+    select: { id: true },
+  });
+  return Boolean(robot);
+};
+
 export const requireAdmin = async (request: AppFastifyRequest, reply: AppFastifyReply) => {
   const user = await request.getCurrentUser();
 
-  if (!user || user.role !== ROLE.ADMIN) {
+  if (!user || (user.role !== ROLE.ADMIN && user.role !== ROLE.STAFF)) {
     await request.audit?.({
       userId: user?.id || 'unknown',
       role: user?.role || 'unknown',
@@ -142,6 +198,7 @@ export const requireAdmin = async (request: AppFastifyRequest, reply: AppFastify
   }
 
   await request.audit?.({
+    orgId: request.orgId,
     userId: user.id,
     role: user.role,
     action: 'ADMIN_ACCESS',
@@ -244,7 +301,7 @@ export const logRole = async (request: AppFastifyRequest) => {
 
 export const isAdmin = async (request: AppFastifyRequest): Promise<boolean> => {
   const user = await request.getCurrentUser();
-  return user?.role === ROLE.ADMIN;
+  return user?.role === ROLE.ADMIN || user?.role === ROLE.STAFF;
 };
 
 export const isAuthenticated = async (request: AppFastifyRequest): Promise<boolean> => {

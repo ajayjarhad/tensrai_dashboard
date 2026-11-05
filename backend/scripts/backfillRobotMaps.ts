@@ -14,7 +14,13 @@ async function main() {
       // Idempotent: only seed the active row on first creation; never clobber an
       // existing assignment's isActive/isPinned if the feature is already live.
       update: {},
-      create: { robotId: robot.id, mapId: robot.mapId, isActive: true, isPinned: false },
+      create: {
+        orgId: robot.orgId,
+        robotId: robot.id,
+        mapId: robot.mapId,
+        isActive: true,
+        isPinned: false,
+      },
     });
     upserted += 1;
   }

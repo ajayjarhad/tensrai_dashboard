@@ -61,6 +61,8 @@ model Session {
   token      String   @unique @map("sessionToken")
   userId     String   @db.ObjectId
   expiresAt  DateTime
+  // The organization a STAFF user has entered; everyone else acts in User.orgId.
+  activeOrgId String? @db.ObjectId
   ipAddress  String?
   userAgent  String?
   createdAt  DateTime @default(now())
@@ -80,6 +82,7 @@ model Verification {
 
 model AuditLog {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId     String?  @db.ObjectId
   userId    String   @db.ObjectId
   role      String
   action    String
@@ -89,11 +92,13 @@ model AuditLog {
   @@index([userId])
   @@index([action])
   @@index([timestamp])
+  @@index([orgId, timestamp])
 }
 
 enum Role {
   ADMIN
   USER
+  STAFF
 }
 
 model Robot {
@@ -161,6 +166,7 @@ model Map {
 
 model RobotMap {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId     String   @db.ObjectId
   robotId   String   @db.ObjectId
   mapId     String   @db.ObjectId
   isActive  Boolean  @default(false) // map currently shown / localized for this robot
@@ -174,6 +180,28 @@ model RobotMap {
   @@unique([robotId, mapId])
   @@index([robotId, isActive])
   @@index([mapId])
+}
+
+// Which organization may connect to a robot at this address. Robot bridges have no auth of their
+// own, so the backend only connects to an address its organization holds as APPROVED.
+model RobotAddress {
+  id            String             @id @default(auto()) @map("_id") @db.ObjectId
+  orgId         String             @db.ObjectId
+  ip            String
+  status        RobotAddressStatus @default(PENDING)
+  requestedById String?            @db.ObjectId
+  decidedById   String?            @db.ObjectId
+  createdAt     DateTime           @default(now())
+  decidedAt     DateTime?
+
+  @@unique([orgId, ip])
+  @@index([ip, status])
+}
+
+enum RobotAddressStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum RobotMode {

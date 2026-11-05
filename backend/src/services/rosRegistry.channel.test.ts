@@ -16,6 +16,7 @@ const createLogger = () =>
 
 const createPrisma = () =>
   ({
+    robotAddress: { findMany: async () => [{ ip: '127.0.0.1' }] },
     robot: {
       findMany: async () => [
         {

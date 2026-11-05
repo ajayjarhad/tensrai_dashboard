@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
+import { PERMISSIONS } from '@tensrai/shared';
 import {
   ArrowLeft,
   ChevronDown,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { MoveRobotControl } from '@/features/staff/components/MoveRobotControl';
 import { apiClient } from '@/lib/api';
 import { evictFromCache } from '@/lib/map';
 import { queryKeys } from '@/lib/query-keys';
@@ -108,7 +110,9 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 export function RobotManagement() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { isAdmin } = useAuth();
+  const { isAdmin, hasPermission, user } = useAuth();
+  const isStaff = hasPermission(PERMISSIONS.STAFF_CONSOLE);
+  const [addressStatusByIp, setAddressStatusByIp] = useState<Record<string, string>>({});
   const isAdminUser = typeof isAdmin === 'function' ? isAdmin() : Boolean(isAdmin);
   const [robots, setRobots] = useState<Robot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -150,6 +154,19 @@ export function RobotManagement() {
     return [];
   }, []);
 
+  const loadAddressStatuses = useCallback(async () => {
+    try {
+      const res = await apiClient.get<{ data: { ip: string; status: string }[] }>(
+        'robots/addresses'
+      );
+      setAddressStatusByIp(
+        Object.fromEntries(res.data.map(address => [address.ip, address.status]))
+      );
+    } catch (err) {
+      console.error('Failed to load robot addresses', err);
+    }
+  }, []);
+
   const loadMaps = useCallback(async () => {
     try {
       const res = await apiClient.get<{ success: boolean; data: { id: string; name: string }[] }>(
@@ -167,16 +184,18 @@ export function RobotManagement() {
     if (isAdminUser) {
       loadRobots();
       loadMaps();
+      loadAddressStatuses();
     }
-  }, [isAdminUser, loadRobots, loadMaps]);
+  }, [isAdminUser, loadRobots, loadMaps, loadAddressStatuses]);
 
   useEffect(() => {
     if (!isAdminUser) return;
     const interval = setInterval(() => {
       loadRobots({ silent: true });
+      loadAddressStatuses();
     }, 30_000);
     return () => clearInterval(interval);
-  }, [isAdminUser, loadRobots]);
+  }, [isAdminUser, loadRobots, loadAddressStatuses]);
 
   useEffect(() => {
     if (!isAdminUser) return;
@@ -264,7 +283,7 @@ export function RobotManagement() {
         await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
       }
       resetForm();
-      await loadRobots();
+      await Promise.all([loadRobots(), loadAddressStatuses()]);
       toast.success('Robot saved');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save robot';
@@ -522,6 +541,16 @@ export function RobotManagement() {
                         {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
                         {robot.missionBridgePort ? ` / ${robot.missionBridgePort}` : ''}
                         {robot.emergencyBridgePort ? ` / ${robot.emergencyBridgePort}` : ''}
+                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'PENDING' && (
+                          <div className="text-xs text-muted-foreground">
+                            Waiting for approval. The dashboard won&apos;t connect until then.
+                          </div>
+                        )}
+                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'REJECTED' && (
+                          <div className="text-xs text-destructive">
+                            Address rejected. The dashboard won&apos;t connect to it.
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
                         {robot.maps?.find(m => m.isActive)?.name ??
@@ -555,6 +584,14 @@ export function RobotManagement() {
                           <Trash2 className="h-4 w-4" />
                           Delete
                         </button>
+                        {isStaff && (
+                          <MoveRobotControl
+                            robotId={robot.id}
+                            robotName={robot.name}
+                            currentOrgId={user?.orgId}
+                            onMoved={() => loadRobots()}
+                          />
+                        )}
                       </td>
                     </tr>
                   ))}

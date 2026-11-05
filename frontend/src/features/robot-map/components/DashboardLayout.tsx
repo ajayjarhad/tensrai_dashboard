@@ -18,7 +18,7 @@ export function DashboardLayout({
   emergencyHeader,
 }: DashboardLayoutProps) {
   return (
-    <div className="flex flex-col h-screen w-full overflow-hidden bg-background relative">
+    <div className="flex flex-col h-full w-full overflow-hidden bg-background relative">
       <EmergencyHeader className="flex-shrink-0 z-20 relative" {...emergencyHeader} />
       <div className="flex flex-1 overflow-hidden relative w-full">
         <div className="flex-1 relative min-w-0">

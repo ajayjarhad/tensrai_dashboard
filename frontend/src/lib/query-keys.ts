@@ -32,6 +32,12 @@ const session = {
   current: [AUTH, 'session', 'current'] as const,
 };
 
+// Query keys for the staff screens
+const staff = {
+  orgs: ['staff', 'orgs'] as const,
+  addresses: ['staff', 'addresses'] as const,
+};
+
 // Export all query keys
 export const queryKeys = {
   robotMap: {
@@ -44,6 +50,7 @@ export const queryKeys = {
   auth: {
     session,
   },
+  staff,
   robots: robots,
   missions: missions,
   users: users,

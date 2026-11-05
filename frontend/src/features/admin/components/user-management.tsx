@@ -1,7 +1,10 @@
 import { useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
 import { useAuth } from '@/stores/auth';
-import { useDeleteUser, useUpdateUser, useUsers } from '../hooks';
+import type { ResetUserPasswordResult } from '../api/resetUserPassword';
+import { useDeleteUser, useResetUserPassword, useUpdateUser, useUsers } from '../hooks';
+import { TemporaryPassword } from './TemporaryPassword';
 import { UserRow } from './UserRow';
 
 export function UserManagement() {
@@ -11,6 +14,19 @@ export function UserManagement() {
   const { data: users = [], isLoading, error } = useUsers();
   const deleteUserMutation = useDeleteUser();
   const updateUserMutation = useUpdateUser();
+  const resetPasswordMutation = useResetUserPassword();
+  const [issuedPassword, setIssuedPassword] = useState<ResetUserPasswordResult | null>(null);
+
+  const handleResetPassword = async (userId: string) => {
+    if (!confirm('Reset this password? They will be signed out and need the new one to sign in.')) {
+      return;
+    }
+    try {
+      setIssuedPassword(await resetPasswordMutation.mutateAsync(userId));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : 'Failed to reset password');
+    }
+  };
 
   const handleDeleteUser = async (userId: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
@@ -58,12 +74,25 @@ export function UserManagement() {
         </div>
         <h1 className="text-3xl font-bold text-foreground">User Management</h1>
 
-        {(error || deleteUserMutation.error || updateUserMutation.error) && (
+        {(error ||
+          deleteUserMutation.error ||
+          updateUserMutation.error ||
+          resetPasswordMutation.error) && (
           <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded mb-4">
             {error?.message ||
               deleteUserMutation.error?.message ||
-              updateUserMutation.error?.message}
+              updateUserMutation.error?.message ||
+              resetPasswordMutation.error?.message}
           </div>
+        )}
+
+        {issuedPassword && (
+          <TemporaryPassword
+            username={issuedPassword.username}
+            email={issuedPassword.email}
+            password={issuedPassword.tempPassword}
+            onDismiss={() => setIssuedPassword(null)}
+          />
         )}
 
         <div className="bg-card shadow overflow-hidden sm:rounded-md">
@@ -102,6 +131,8 @@ export function UserManagement() {
                     currentUser={currentUser}
                     onDelete={handleDeleteUser}
                     onToggleStatus={handleToggleUserStatus}
+                    onResetPassword={handleResetPassword}
+                    resetPending={resetPasswordMutation.isPending}
                     deleteUserMutation={deleteUserMutation}
                     updateUserMutation={updateUserMutation}
                   />

@@ -16,7 +16,7 @@ const sendBinaryAsset = (
   }
   reply.header('Content-Type', contentType);
   reply.header('Content-Length', String(bytes.length));
-  reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+  reply.header('Cache-Control', 'private, max-age=31536000, immutable');
   return reply.send(bytes);
 };
 
@@ -329,7 +329,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
         if (map.contentHash) {
           reply.header('ETag', `"${map.contentHash}"`);
         }
-        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        reply.header('Cache-Control', 'private, max-age=31536000, immutable');
         return reply.send(map.image);
       } catch (error) {
         databaseMetrics.queryDuration.record(Date.now() - startTime, {

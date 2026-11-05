@@ -2,6 +2,7 @@ import type { PrismaClient, RobotMode } from '@prisma/client';
 import WebSocket from 'ws';
 import { emergencyMetrics } from '../metrics/index.js';
 import { deriveRobotModeFromMissionState } from './missionStatus.js';
+import { withApprovedAddress } from './robotAddress.js';
 
 type RobotEmergencyConnectionStatus =
   | 'unconfigured'
@@ -179,16 +180,20 @@ export class EmergencyRegistry {
   }
 
   async reloadFromDb() {
-    const robots = await this.prisma.robot.findMany({
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        statusBeforeEmergency: true,
-        ipAddress: true,
-        emergencyBridgePort: true,
-      },
-    });
+    const robots = await withApprovedAddress(
+      this.prisma,
+      await this.prisma.robot.findMany({
+        select: {
+          id: true,
+          orgId: true,
+          name: true,
+          status: true,
+          statusBeforeEmergency: true,
+          ipAddress: true,
+          emergencyBridgePort: true,
+        },
+      })
+    );
 
     const desiredIds = new Set<string>();
 

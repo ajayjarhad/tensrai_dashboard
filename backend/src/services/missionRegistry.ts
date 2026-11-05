@@ -8,6 +8,7 @@ import {
   recordMissionCommandIntent,
   updateMissionFromEvent,
 } from './missionStatus.js';
+import { withApprovedAddress } from './robotAddress.js';
 import { type SyncResult, syncRobotStatusUpdate } from './robotStatusSync.js';
 
 type MissionConnectionStatus =
@@ -208,16 +209,20 @@ export class MissionRegistry extends EventEmitter {
         hydrateMissionStateFromPersistedRun(run.robotId, run);
       }
 
-      const robots = await this.prisma.robot.findMany({
-        select: {
-          id: true,
-          name: true,
-          ipAddress: true,
-          mapId: true,
-          missionBridgePort: true,
-          mappingBridgePort: true,
-        },
-      });
+      const robots = await withApprovedAddress(
+        this.prisma,
+        await this.prisma.robot.findMany({
+          select: {
+            id: true,
+            orgId: true,
+            name: true,
+            ipAddress: true,
+            mapId: true,
+            missionBridgePort: true,
+            mappingBridgePort: true,
+          },
+        })
+      );
 
       this.log.info({ robotCount: robots.length }, 'Mission registry robot configs loaded');
       const desiredIds = new Set<string>();

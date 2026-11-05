@@ -189,7 +189,13 @@ async function main() {
       await prisma.robotMap.upsert({
         where: { robotId_mapId: { robotId: created.id, mapId: robot.mapId } },
         update: { isActive: true, syncedAt: new Date() },
-        create: { robotId: created.id, mapId: robot.mapId, isActive: true, isPinned: false },
+        create: {
+          orgId: org.id,
+          robotId: created.id,
+          mapId: robot.mapId,
+          isActive: true,
+          isPinned: false,
+        },
       });
     }
   }

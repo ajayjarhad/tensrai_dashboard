@@ -1,12 +1,29 @@
 import { expect, test } from 'bun:test';
-import { scopeArgs, scopedPrisma } from './orgScope.js';
+import { Prisma } from '@prisma/client';
+import { GLOBAL_MODELS, scopeArgs, scopedPrisma } from './orgScope.js';
 
 const ORG = 'org-a';
 
-test('leaves models without an orgId untouched', () => {
-  const args = { where: { robotId: 'r1' } };
-  expect(scopeArgs('RobotMap', 'updateMany', args, ORG)).toBe(args);
-  expect(scopeArgs('AuditLog', 'create', args, ORG)).toBe(args);
+test('every model either belongs to an organization or is explicitly global', () => {
+  const unowned = Prisma.dmmf.datamodel.models
+    .filter(model => !GLOBAL_MODELS.has(model.name))
+    .filter(model => !model.fields.some(field => field.name === 'orgId'))
+    .map(model => model.name);
+  expect(unowned).toEqual([]);
+});
+
+test('leaves global models untouched', () => {
+  const args = { where: { token: 't' } };
+  expect(scopeArgs('Session', 'deleteMany', args, ORG)).toBe(args);
+  expect(scopeArgs('Organization', 'findMany', args, ORG)).toBe(args);
+});
+
+test('scopes a model nobody has listed, so a new model cannot slip through', () => {
+  expect(scopeArgs('SomeFutureModel', 'findMany', {}, ORG)).toEqual({ where: { orgId: ORG } });
+  expect(scopeArgs('RobotMap', 'updateMany', { where: { robotId: 'r1' }, data: {} }, ORG)).toEqual({
+    where: { robotId: 'r1', orgId: ORG },
+    data: {},
+  });
 });
 
 test('confines reads and writes of tenant models to the organization', () => {

@@ -4,6 +4,13 @@ import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
 import { requireActiveSession, requireAdmin, requireOwnedRobot } from '../middleware/auth.js';
 import { getMissionState } from '../services/missionStatus.js';
 import {
+  isAddressApproved,
+  maxRobotsPerOrg,
+  parseRobotAddress,
+  reloadRobotConnections,
+  requestRobotAddress,
+} from '../services/robotAddress.js';
+import {
   fetchMapViaMappingBridge,
   getMapSyncStatus,
   isMapSyncActive,
@@ -23,7 +30,7 @@ const RobotModeSchema = z.enum([
 ]);
 
 const CreateRobotSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1).max(100),
   status: RobotModeSchema.optional(),
   mapId: z.string().optional(),
   x: z.number().optional(),
@@ -49,6 +56,7 @@ const CreateRobotSchema = z.object({
 });
 
 const UpdateRobotSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
   status: RobotModeSchema.optional(),
   battery: z.number().min(0).max(100).optional(),
   // Map assignment is managed via POST /robots/:id/active-map and map-sync, not PATCH.
@@ -77,6 +85,16 @@ const UpdateRobotSchema = z.object({
 const ActiveMapSchema = z.object({
   mapId: z.string().min(1),
 });
+
+const requestAddressFor = async (server: any, request: any, ip: string) => {
+  const user = await request.getCurrentUser();
+  return requestRobotAddress(server.prisma, {
+    orgId: request.orgId,
+    ip,
+    requestedById: user.id,
+    isStaff: user.role === 'STAFF',
+  });
+};
 
 const robotMapInclude = {
   robotMaps: {
@@ -153,6 +171,15 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       span.end();
       throw error;
     }
+  });
+
+  // The organization's robot addresses and whether each is approved. Separate from GET /robots,
+  // which is polled and shouldn't pay for this; only the admin screen needs it.
+  server.get('/robots/addresses', async (request: any) => {
+    const addresses = await request.db.robotAddress.findMany({
+      select: { ip: true, status: true },
+    });
+    return { success: true, data: addresses };
   });
 
   // Get single robot
@@ -265,6 +292,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         where: { id },
         select: {
           id: true,
+          orgId: true,
           name: true,
           ipAddress: true,
           mappingBridgePort: true,
@@ -279,6 +307,12 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         return reply
           .status(400)
           .send({ success: false, error: 'Robot mapping bridge is not configured' });
+      }
+
+      if (!(await isAddressApproved(server.prisma, robot))) {
+        return reply
+          .status(409)
+          .send({ success: false, error: 'Robot address is waiting for approval' });
       }
 
       const current = getMapSyncStatus(id);
@@ -308,6 +342,22 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
       const { name, mapId, channels, ...data } = result.data;
       const prisma = request.db as any;
 
+      if (data.ipAddress) {
+        const parsed = parseRobotAddress(data.ipAddress);
+        if ('error' in parsed) {
+          return reply.status(400).send({ success: false, error: parsed.error });
+        }
+        data.ipAddress = parsed.ip;
+      }
+
+      if ((await prisma.robot.count()) >= maxRobotsPerOrg()) {
+        return reply.status(409).send({
+          success: false,
+          error: 'This organization has reached its robot limit',
+          code: 'ROBOT_LIMIT_REACHED',
+        });
+      }
+
       try {
         if (
           mapId &&
@@ -332,12 +382,13 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
             create: { robotId: robot.id, mapId, isActive: true, isPinned: false },
           });
         }
-        (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
+        const addressStatus = robot.ipAddress
+          ? await requestAddressFor(server, request, robot.ipAddress)
+          : null;
+        reloadRobotConnections(server);
         // Try to fetch and store map in the background (fire and forget)
         fetchMapViaMappingBridge(server, robot).catch(() => {});
-        return { success: true, data: robot };
+        return { success: true, data: { ...robot, addressStatus } };
       } catch (error: any) {
         if (error.code === 'P2002') {
           return reply
@@ -370,6 +421,19 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         });
         span.end();
         return reply.status(400).send({ success: false, error: result.error });
+      }
+
+      if (result.data.ipAddress) {
+        const parsed = parseRobotAddress(result.data.ipAddress);
+        if ('error' in parsed) {
+          span.setAttributes({
+            'robot.update.success': false,
+            'robot.update.reason': 'invalid_address',
+          });
+          span.end();
+          return reply.status(400).send({ success: false, error: parsed.error });
+        }
+        result.data.ipAddress = parsed.ip;
       }
 
       const prisma = request.db as any;
@@ -426,11 +490,12 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         });
         span.end();
 
-        (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
+        const addressStatus = robot.ipAddress
+          ? await requestAddressFor(server, request, robot.ipAddress)
+          : null;
+        reloadRobotConnections(server);
         fetchMapViaMappingBridge(server, robot).catch(() => {});
-        return { success: true, data: robot };
+        return { success: true, data: { ...robot, addressStatus } };
       } catch (error: any) {
         databaseMetrics.queryDuration.record(Date.now() - startTime, {
           'db.operation': 'update',
@@ -446,6 +511,13 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         if (error.code === 'P2025') {
           span.end();
           return reply.status(404).send({ success: false, error: 'Robot not found' });
+        }
+
+        if (error.code === 'P2002') {
+          span.end();
+          return reply
+            .status(409)
+            .send({ success: false, error: 'Robot with this name already exists' });
         }
 
         span.recordException(error);
@@ -466,9 +538,7 @@ const robotRoutes: any = async (server: AppFastifyInstance) => {
         await prisma.robot.delete({
           where: { id },
         });
-        (server as any).rosRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).emergencyRegistry?.reloadFromDb?.().catch(() => {});
-        (server as any).missionRegistry?.reloadFromDb?.().catch(() => {});
+        reloadRobotConnections(server);
         return { success: true, message: 'Robot deleted successfully' };
       } catch (error: any) {
         if (error.code === 'P2025') {

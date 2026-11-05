@@ -4,6 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import yaml from 'js-yaml';
 import WebSocket from 'ws';
 import { generateMapAssets } from './mapAssets.js';
+import { isAddressApproved } from './robotAddress.js';
 
 const MAP_TRANSFER_ACTIVITY_TIMEOUT_MS = 45_000;
 const DEFAULT_MAP_SYNC_CONNECT_TIMEOUT_MS = 15_000;
@@ -202,6 +203,11 @@ const normalizeFeatures = (features: any) => {
   };
 };
 
+// A robot decides what it sends, and any organization can point a robot at its own server. These
+// bound what one transfer can make this process hold, since every customer shares it.
+const MAX_MAP_TRANSFER_BYTES = 64 * 1024 * 1024;
+const MAX_MAP_IMAGE_BYTES = 256 * 1024 * 1024;
+
 const getMapDetails = (files: any) => {
   const features = normalizeFeatures(files.metadata_json ?? {});
   const filename = looksLikeFilename(files.map_yaml, '.yaml') ? files.map_yaml : 'map.yaml';
@@ -231,7 +237,13 @@ const linkMapToRobot = async (prisma: any, robotId: string, mapId: string) => {
   await prisma.robotMap.upsert({
     where: { robotId_mapId: { robotId, mapId } },
     update: { syncedAt: new Date() },
-    create: { robotId, mapId, isActive: false, isPinned: false },
+    create: {
+      orgId: await orgIdOfRobot(prisma, robotId),
+      robotId,
+      mapId,
+      isActive: false,
+      isPinned: false,
+    },
   });
 };
 
@@ -348,13 +360,22 @@ export const upsertMapFromResponse = async (fastify: any, robotId: string, files
 // Connects to the mapping bridge, requests map data, and upserts it.
 export const fetchMapViaMappingBridge = async (
   fastify: any,
-  robot: { id: string; ipAddress?: string | null; mappingBridgePort?: number | null }
+  robot: {
+    id: string;
+    orgId?: string;
+    ipAddress?: string | null;
+    mappingBridgePort?: number | null;
+  }
 ) => {
   const logger = fastify.log;
   const prisma = fastify.prisma as any;
   const robotId = robot.id;
   if (!robot.ipAddress || !robot.mappingBridgePort) {
     logger.warn({ robotId }, 'Cannot fetch map: mapping bridge not configured');
+    return;
+  }
+  if (!(await isAddressApproved(prisma, robot))) {
+    logger.info({ robotId }, 'Cannot fetch map: robot address is not approved');
     return;
   }
 
@@ -470,7 +491,9 @@ export const fetchMapViaMappingBridge = async (
 
     try {
       const gzipBytes = Buffer.concat(transfer.chunks);
-      const pgmBytes = gunzipSync(gzipBytes);
+      const pgmBytes = gunzipSync(gzipBytes, {
+        maxOutputLength: fastify?.maxMapImageBytes ?? MAX_MAP_IMAGE_BYTES,
+      });
       const actualHash = createHash('sha256').update(pgmBytes).digest('hex');
       if (actualHash !== manifest.sha256) {
         throw new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actualHash}`);
@@ -632,6 +655,11 @@ export const fetchMapViaMappingBridge = async (
         }
         if (!transfer.receivedChunks.has(chunkIndex)) {
           const chunk = Buffer.from(String(chunkPayload.data ?? ''), 'base64');
+          if (transfer.bytesReceived + chunk.length > MAX_MAP_TRANSFER_BYTES) {
+            sendEvent('MAP_TRANSFER_ERROR', { transferId, message: 'map transfer too large' });
+            markFailed('map-transfer-too-large');
+            return;
+          }
           transfer.chunks[chunkIndex] = chunk;
           transfer.receivedChunks.add(chunkIndex);
           transfer.bytesReceived += chunk.length;

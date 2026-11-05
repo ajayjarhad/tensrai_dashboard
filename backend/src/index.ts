@@ -2,8 +2,10 @@
 import './otel';
 
 import fastify from 'fastify';
+import auditPlugin from './plugins/audit.js';
 import authPlugin from './plugins/auth.js';
 import databasePlugin from './plugins/database.js';
+import { appErrorHandler } from './plugins/errorHandler.js';
 import observabilityPlugin from './plugins/observability.js';
 import securityPlugin from './plugins/security.js';
 import tenantPlugin from './plugins/tenant.js';
@@ -11,6 +13,7 @@ import mapRoutes from './routes/maps.js';
 import missionRunRoutes from './routes/missionRuns.js';
 import robotRoutes from './routes/robots.js';
 import rosGateway from './routes/rosGateway.js';
+import staffRoutes from './routes/staff.js';
 import userRoutes from './routes/users.js';
 import { EmergencyRegistry } from './services/emergencyRegistry.js';
 import { MissionRegistry } from './services/missionRegistry.js';
@@ -22,6 +25,9 @@ const createFastify = fastify as unknown as FastifyFactory;
 
 const server = createFastify({
   disableRequestLogging: true,
+  // nginx runs on the private Docker network; without this every client looks like nginx to the
+  // rate limiter. Public addresses aren't trusted, so a direct client can't spoof the header.
+  trustProxy: 'loopback,uniquelocal',
   logger: {
     level: process.env['LOG_LEVEL'] ?? 'warn',
     transport: {
@@ -65,6 +71,7 @@ const formatStartupError = (error: unknown) =>
 
 const registerPlugins = async () => {
   await server.register(databasePlugin);
+  await server.register(auditPlugin);
   const emergencyRegistry = new EmergencyRegistry(server.prisma, server.log);
   server.decorate('emergencyRegistry', emergencyRegistry);
   const missionRegistry = new MissionRegistry(server.prisma, server.log, {
@@ -95,6 +102,7 @@ const registerPlugins = async () => {
   await server.register(robotRoutes, { prefix: '/api' });
   await server.register(missionRunRoutes, { prefix: '/api' });
   await server.register(mapRoutes, { prefix: '/api' });
+  await server.register(staffRoutes, { prefix: '/api' });
 
   server.log.info('All plugins and routes registered successfully');
 };
@@ -138,24 +146,7 @@ server.get('/api', async () => ({
   },
 }));
 
-server.setErrorHandler((error: Error, request: AppFastifyRequest, reply: AppFastifyReply) => {
-  server.log.error(
-    {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : undefined,
-      url: request.url,
-      method: request.method,
-    },
-    'Unhandled error'
-  );
-
-  reply.status(500).send({
-    success: false,
-    error: 'Internal server error',
-    code: 'INTERNAL_ERROR',
-    timestamp: new Date().toISOString(),
-  });
-});
+server.setErrorHandler(appErrorHandler);
 
 server.setNotFoundHandler((request: AppFastifyRequest, reply: AppFastifyReply) => {
   reply.status(404).send({

@@ -45,18 +45,30 @@ Set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`, `PASSWO
 
 ### Organizations (multi-tenancy)
 
-All customers share one deployment and database; every user, robot, map and mission run belongs to one organization, and the API only ever returns the signed-in user's organization.
+All customers share one deployment and database. Everything belongs to an organization, its admins control it, and the API only ever returns the signed-in user's organization.
+
+- **Org admins** manage their users and robots, including robot IP, ports and channels.
+- **Any member** of the organization that owns a robot can operate it: teleop, missions, e-stop, active map, map sync.
+- **Tensrai staff** use the Organizations screen: create organizations and first admins, approve robot addresses, enter an organization for support, move a robot between organizations. The API never grants this role:
 
 ```bash
 cd backend
-bun run org:create "Acme Robotics" acme acme-admin admin@acme.com   # org + its first admin (prints a temporary password)
-bun run backfill:org                                                  # one-off: assigns pre-existing data to the "Default" org
+bun run staff:create someone someone@tensrai.com                    # create a staff user, or promote an existing one
+bun run org:create "Acme Robotics" acme acme-admin admin@acme.com   # also possible from the screen
 ```
 
-- The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step. Run them yourself when deploying another way: the old global unique indexes on robot name and map filename have to be replaced by the per-organization ones.
-- Usernames and emails stay unique across all organizations. Robot and map names are unique per organization.
-- Robots are created by an organization's admin in its own dashboard; there is no cross-organization admin.
-- Isolation tests that need a database run when `TEST_DATABASE_URL` points at a Mongo replica set: `TEST_DATABASE_URL=mongodb://localhost:27017/tenancy_test?replicaSet=rs0 bun test` (from `backend/`).
+**Robot addresses.** Robot bridges have no auth, so whatever the backend connects to obeys it. An org admin can enter any address, but the backend won't connect to it until staff approve it for that organization. Then the address belongs to that organization until staff release it, even if the robot is deleted. Set `ROBOT_BLOCKED_SUBNETS` (comma-separated CIDRs, empty for none) to change which internal ranges are refused, for example to use a local simulator. `MAX_ROBOTS_PER_ORG` limits robots per organization (default 50).
+
+**Adding a new resource.** Give the model an `orgId` and query it through `request.db` in routes. A model with no `orgId` fails on its first query, and a test fails until it is either given one or listed as global in `backend/src/services/orgScope.ts`.
+
+**Deploying.** The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step: existing data moves to a "Default" organization and existing robot addresses are approved. Run them yourself when deploying another way. Usernames and emails are unique across all organizations; robot names are unique per organization. Within an organization, robots share a map record only when both the filename and the content match, so two robots can each keep a different `map.yaml`.
+
+**Tests that need a database** run separately, against a Mongo replica set with the schema pushed:
+
+```bash
+cd backend
+TEST_DATABASE_URL='mongodb://localhost:27017/tenancy_test?replicaSet=rs0' bun run test:integration
+```
 
 ### Development Workflow
 

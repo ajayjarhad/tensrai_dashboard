@@ -1,8 +1,9 @@
 import { expect, test } from 'bun:test';
 
 // Runs against a real Mongo replica set with the current schema pushed:
-//   TEST_DATABASE_URL='mongodb://localhost:27117/tenancy_test?replicaSet=rs0&directConnection=true' bun test
-// Without it the suite registers no tests, so a plain `bun test` stays database-free.
+//   TEST_DATABASE_URL='mongodb://localhost:27117/tenancy_test?replicaSet=rs0&directConnection=true' bun test integration
+// Run these on their own: bun test shares one process, and they change settings other tests read.
+// Without the variable they register no tests, so a plain `bun test src` stays database-free.
 const url = process.env['TEST_DATABASE_URL'];
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} } as any;

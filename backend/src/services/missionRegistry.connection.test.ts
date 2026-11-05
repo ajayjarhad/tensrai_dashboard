@@ -66,6 +66,9 @@ const createPrisma = (robots: TestRobot[]) =>
     missionRun: {
       findMany: async () => [],
     },
+    robotAddress: {
+      findMany: async () => robots.map(robot => ({ orgId: undefined, ip: robot.ipAddress })),
+    },
   }) as any;
 
 const createRegistry = (robots: TestRobot[], logger = createLogger()) => {

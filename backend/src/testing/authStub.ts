@@ -20,11 +20,15 @@ export const TEST_USERS = {
   noOrg: { ...baseUser, id: 'u-no-org', role: 'USER', orgId: null },
   otherOrgUser: { ...baseUser, id: 'u-other', role: 'USER', orgId: ORG_B },
   otherOrgAdmin: { ...baseUser, id: 'u-other-admin', role: 'ADMIN', orgId: ORG_B },
+  staff: { ...baseUser, id: 'u-staff', role: 'STAFF', orgId: ORG_B },
 } as const;
 
 type TestUserKey = keyof typeof TEST_USERS;
 
 export const asUser = (key: TestUserKey) => ({ 'x-test-user': key });
+
+// A staff member who has entered an organization.
+export const asStaffIn = (orgId: string) => ({ ...asUser('staff'), 'x-test-active-org': orgId });
 
 // Same cast as index.ts: fastify's default export has no call signature under NodeNext.
 const createFastify = fastify as unknown as () => any;
@@ -35,9 +39,28 @@ const createFastify = fastify as unknown as () => any;
 // where a test needs ownership to matter.
 export const createTestApp = () => {
   const app = createFastify();
-  app.decorateRequest('getCurrentUser', async function (this: any) {
-    return TEST_USERS[this.headers['x-test-user'] as TestUserKey] ?? null;
+  const readSession = (request: any) => {
+    const user = TEST_USERS[request.headers['x-test-user'] as TestUserKey];
+    return user
+      ? {
+          user,
+          session: {
+            id: `session-${user.id}`,
+            activeOrgId: request.headers['x-test-active-org'] ?? null,
+          },
+        }
+      : null;
+  };
+  app.decorateRequest('getUserSession', async function (this: any) {
+    return readSession(this);
   });
+  app.decorateRequest('readFreshSession', async function (this: any) {
+    return readSession(this);
+  });
+  app.decorateRequest('getCurrentUser', async function (this: any) {
+    return readSession(this)?.user ?? null;
+  });
+  app.decorateRequest('renewSessionIfStale', async () => {});
   app.decorateRequest('orgId', null);
   app.decorateRequest('db', {
     getter(this: any) {
@@ -58,4 +81,5 @@ export const fakeRobotModel = (rows: FakeRobot[]) => ({
   findUnique: async ({ where }: { where: { id: string } }) =>
     rows.find(row => row.id === where.id) ?? null,
   findMany: async () => rows,
+  count: async () => rows.length,
 });

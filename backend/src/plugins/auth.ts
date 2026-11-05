@@ -4,8 +4,9 @@ import { trace } from '@opentelemetry/api';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
 import fp from 'fastify-plugin';
-import { auth } from '../config/auth.js';
+import { auth, SESSION_TTL_SECONDS, SESSION_UPDATE_AGE_SECONDS } from '../config/auth.js';
 import { authMetrics } from '../metrics/index.js';
+import { actingOrgId } from '../middleware/auth.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const toFetchHeaders = (headers: IncomingHttpHeaders) => {
@@ -116,13 +117,17 @@ const hasTemporaryCredentials = (user: PrismaAuthUser) =>
 
 const credentialsAreMissing = (username: string, password: string) => !username || !password;
 
-const ensureActiveUser = (user: PrismaAuthUser | null): RouteResult<PrismaAuthUser> => {
-  if (!user) {
-    return err(createRouteError(400, 'INVALID_CREDENTIALS', 'Invalid username or password'));
-  }
+// The same answer for every failure, so sign-in can't reveal which usernames exist in any
+// organization, or which of them are disabled.
+const INVALID_CREDENTIALS = 'Invalid username or password';
 
-  if (!user.isActive) {
-    return err(createRouteError(403, 'ACCOUNT_INACTIVE', 'Account is inactive'));
+// Compared against when there is no real hash to check, so a missing user takes as long to answer
+// as a wrong password. Same cost as the hashes in user.service.ts.
+const TIMING_EQUALIZER_HASH = '$2b$12$5tRXLrqRoSl0odYRXR/5e.2joDLjH9dT623tKEW1ILlNkBQQ.MIDe';
+
+const ensureActiveUser = (user: PrismaAuthUser | null): RouteResult<PrismaAuthUser> => {
+  if (!user || !user.isActive) {
+    return err(createRouteError(400, 'INVALID_CREDENTIALS', INVALID_CREDENTIALS));
   }
 
   return ok(user);
@@ -145,12 +150,12 @@ const handleTemporaryPassword = async (
   }
 
   if (temporaryPasswordHasExpired(user)) {
-    return createErrorResponse('temporary', 'Temporary password has expired');
+    return createErrorResponse('temporary', INVALID_CREDENTIALS);
   }
 
   const isValidTempPassword = await bcrypt.compare(password, user.tempPasswordHash ?? '');
   if (!isValidTempPassword) {
-    return createErrorResponse('temporary', 'Invalid temporary password');
+    return createErrorResponse('temporary', INVALID_CREDENTIALS);
   }
 
   return {
@@ -166,15 +171,12 @@ const handlePrimaryPassword = async (
   password: string
 ): Promise<AuthResult> => {
   if (!user.passwordHash) {
-    return createErrorResponse(
-      'password',
-      'Account setup incomplete. Please contact administrator.'
-    );
+    return createErrorResponse('password', INVALID_CREDENTIALS);
   }
 
   const isValidPassword = await bcrypt.compare(password, user.passwordHash);
   if (!isValidPassword) {
-    return createErrorResponse('password', 'Invalid password');
+    return createErrorResponse('password', INVALID_CREDENTIALS);
   }
 
   return {
@@ -202,8 +204,8 @@ export async function authenticateUserWithPrisma(
 
     const validatedUser = ensureActiveUser(user);
     if (!validatedUser.ok) {
-      const { error } = validatedUser;
-      return createErrorResponse('password', error.body.error);
+      await bcrypt.compare(password, TIMING_EQUALIZER_HASH);
+      return createErrorResponse('password', INVALID_CREDENTIALS);
     }
 
     const temporaryResult = await handleTemporaryPassword(validatedUser.value, password);
@@ -367,6 +369,7 @@ const buildEnhancedUser = (
 ) => ({
   id: authenticatedUser.id,
   orgId: sessionUser.orgId,
+  homeOrgId: sessionUser.orgId,
   orgName,
   username: sessionUser.username,
   email: sessionUser.email,
@@ -511,44 +514,45 @@ const extractSessionToken = (headers: IncomingHttpHeaders): string | null => {
   return parsedCookies['better-auth.session_token'] ?? parsedCookies['session-token'] ?? null;
 };
 
-const fetchSessionFromDatabase = async (fastify: AppFastifyInstance, token: string) => {
-  try {
-    const sessionRecord = await fastify.prisma.session.findUnique({
-      where: { token },
-      include: {
-        user: {
-          select: {
-            id: true,
-            orgId: true,
-            username: true,
-            email: true,
-            role: true,
-            displayName: true,
-            isActive: true,
-            mustResetPassword: true,
-          },
+const querySession = async (fastify: AppFastifyInstance, token: string) => {
+  const sessionRecord = await fastify.prisma.session.findUnique({
+    where: { token },
+    include: {
+      user: {
+        select: {
+          id: true,
+          orgId: true,
+          username: true,
+          email: true,
+          role: true,
+          displayName: true,
+          isActive: true,
+          mustResetPassword: true,
         },
       },
-    });
+    },
+  });
 
-    if (!sessionRecord) {
-      return null;
-    }
+  if (!sessionRecord || sessionRecord.expiresAt < new Date()) {
+    return null;
+  }
 
-    if (sessionRecord.expiresAt < new Date()) {
-      return null;
-    }
+  return {
+    session: {
+      id: sessionRecord.id,
+      token: sessionRecord.token,
+      expiresAt: sessionRecord.expiresAt,
+      activeOrgId: sessionRecord.activeOrgId,
+      createdAt: sessionRecord.createdAt,
+      updatedAt: sessionRecord.updatedAt,
+    },
+    user: sessionRecord.user,
+  };
+};
 
-    return {
-      session: {
-        id: sessionRecord.id,
-        token: sessionRecord.token,
-        expiresAt: sessionRecord.expiresAt,
-        createdAt: sessionRecord.createdAt,
-        updatedAt: sessionRecord.updatedAt,
-      },
-      user: sessionRecord.user,
-    };
+const fetchSessionFromDatabase = async (fastify: AppFastifyInstance, token: string) => {
+  try {
+    return await querySession(fastify, token);
   } catch (error) {
     fastify.log.error(error, 'Failed to fetch session from database');
     return null;
@@ -574,11 +578,11 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
 
   // Custom auth service now handled directly in routes
 
-  fastify.decorateRequest('getUserSession', async function (this: AppFastifyRequest) {
+  const lookupSession = async (request: AppFastifyRequest) => {
     try {
       const authInstance = getAuthInstance();
       const session = await authInstance.api.getSession({
-        headers: toFetchHeaders(this.headers),
+        headers: toFetchHeaders(request.headers),
       });
 
       if (session?.user) {
@@ -588,13 +592,49 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       fastify.log.debug({ error }, 'Primary session lookup failed, attempting database fallback');
     }
 
-    const token = extractSessionToken(this.headers);
+    const token = extractSessionToken(request.headers);
     if (!token) {
       return null;
     }
 
     return fetchSessionFromDatabase(fastify, token);
+  };
+
+  // One lookup per request, however many guards and handlers ask for the session.
+  fastify.decorateRequest('sessionLookup', null);
+  fastify.decorateRequest('getUserSession', function (this: any) {
+    this.sessionLookup ??= lookupSession(this);
+    return this.sessionLookup;
   });
+
+  // Throws if the database is unreachable, so a socket isn't dropped over a brief outage.
+  fastify.decorateRequest('readFreshSession', async function (this: AppFastifyRequest) {
+    const token = extractSessionToken(this.headers);
+    return token ? querySession(fastify, token) : null;
+  });
+
+  // Sliding expiry: a session in use stays alive, one left alone expires after the full TTL.
+  fastify.decorateRequest(
+    'renewSessionIfStale',
+    async function (this: AppFastifyRequest, reply: AppFastifyReply) {
+      const session = (await this.getUserSession())?.session;
+      if (!session?.token || !(session.expiresAt instanceof Date)) return;
+
+      const renewedAt = session.expiresAt.getTime() - SESSION_TTL_SECONDS * 1000;
+      if (Date.now() - renewedAt < SESSION_UPDATE_AGE_SECONDS * 1000) return;
+
+      const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
+      try {
+        await fastify.prisma.session.updateMany({
+          where: { token: session.token },
+          data: { expiresAt },
+        });
+        setSessionCookie(reply, { sessionToken: session.token, expiresAt });
+      } catch (error) {
+        fastify.log.error(error, 'Failed to renew session');
+      }
+    }
+  );
 
   fastify.decorateRequest('getCurrentUser', async function (this: AppFastifyRequest) {
     const session = await this.getUserSession();
@@ -689,13 +729,23 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       }
 
       // Allow-list: the Better Auth user also carries credential fields such as tempPasswordHash.
-      const { id, orgId, username, email, role, displayName, isActive, mustResetPassword } =
-        session.user;
+      const {
+        id,
+        orgId: homeOrgId,
+        username,
+        email,
+        role,
+        displayName,
+        isActive,
+        mustResetPassword,
+      } = session.user;
+      const orgId = actingOrgId(session);
       return reply.send({
         success: true,
         user: {
           id,
           orgId,
+          homeOrgId,
           orgName: await fetchOrgName(fastify.prisma, orgId),
           username,
           email,
@@ -727,7 +777,12 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       await fastify.prisma.session.deleteMany({ where: { token } });
     }
     if (user && typeof fastify.audit === 'function') {
-      await fastify.audit({ userId: user.id, role: user.role, action: 'LOGOUT' });
+      await fastify.audit({
+        orgId: user.orgId,
+        userId: user.id,
+        role: user.role,
+        action: 'LOGOUT',
+      });
     }
 
     clearSessionCookie(reply);
@@ -735,155 +790,173 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
   });
 
   // Custom sign-in route that handles both regular and temporary passwords
-  fastify.post('/api/auth/sign-in', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
-    const tracer = trace.getTracer('auth-plugin');
-    const span = tracer.startSpan('auth.sign-in', {
-      attributes: {
-        'auth.method': 'password',
-        'auth.flow': 'custom-signin',
+  const signInRateLimit = {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '15 minutes',
+        // After body parsing, so one attacker can't lock everyone out of an account from elsewhere.
+        hook: 'preHandler',
+        keyGenerator: (request: AppFastifyRequest) =>
+          `${request.ip}|${String(request.body?.username ?? '').toLowerCase()}`,
       },
-    });
+    },
+  };
 
-    try {
-      applyCorsHeaders(request, reply);
-
-      const credentialsResult = extractCredentials(request.body);
-      if (!credentialsResult.ok) {
-        span.setAttributes({
-          'auth.success': false,
-          'auth.reason': 'missing_credentials',
-        });
-        span.end();
-        return reply.status(credentialsResult.error.status).send(credentialsResult.error.body);
-      }
-
-      const prismaResult = ensurePrisma(fastify);
-      if (!prismaResult.ok) {
-        span.setAttributes({
-          'auth.success': false,
-          'auth.reason': 'database_error',
-        });
-        span.end();
-        return reply.status(prismaResult.error.status).send(prismaResult.error.body);
-      }
-
-      const { username, password } = credentialsResult.value;
-
-      // Record login attempt
-      authMetrics.loginAttempts.add(1, {
-        'auth.username': username,
+  fastify.post(
+    '/api/auth/sign-in',
+    signInRateLimit,
+    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+      const tracer = trace.getTracer('auth-plugin');
+      const span = tracer.startSpan('auth.sign-in', {
+        attributes: {
+          'auth.method': 'password',
+          'auth.flow': 'custom-signin',
+        },
       });
 
-      const authResult = await authenticateUserWithPrisma(prismaResult.value, username, password);
+      try {
+        applyCorsHeaders(request, reply);
 
-      if (!authResult.success) {
-        // Record failed login
-        authMetrics.loginFailures.add(1, {
+        const credentialsResult = extractCredentials(request.body);
+        if (!credentialsResult.ok) {
+          span.setAttributes({
+            'auth.success': false,
+            'auth.reason': 'missing_credentials',
+          });
+          span.end();
+          return reply.status(credentialsResult.error.status).send(credentialsResult.error.body);
+        }
+
+        const prismaResult = ensurePrisma(fastify);
+        if (!prismaResult.ok) {
+          span.setAttributes({
+            'auth.success': false,
+            'auth.reason': 'database_error',
+          });
+          span.end();
+          return reply.status(prismaResult.error.status).send(prismaResult.error.body);
+        }
+
+        const { username, password } = credentialsResult.value;
+
+        // Record login attempt
+        authMetrics.loginAttempts.add(1, {
           'auth.username': username,
-          'auth.reason': 'invalid_credentials',
-          'auth.method': authResult.authMethod,
         });
 
-        span.setAttributes({
-          'auth.success': false,
-          'auth.reason': authResult.error,
-          'auth.method': authResult.authMethod,
-        });
-        span.end();
+        const authResult = await authenticateUserWithPrisma(prismaResult.value, username, password);
 
-        return reply.status(400).send({
-          success: false,
-          error: authResult.error,
-          code: 'INVALID_CREDENTIALS',
-          requiresPasswordSetup: false,
-        });
-      }
+        if (!authResult.success) {
+          // Record failed login
+          authMetrics.loginFailures.add(1, {
+            'auth.username': username,
+            'auth.reason': 'invalid_credentials',
+            'auth.method': authResult.authMethod,
+          });
 
-      const finalResult = await finalizeAuthentication(
-        fastify,
-        request,
-        reply,
-        prismaResult.value,
-        authResult,
-        getAuthInstance
-      );
+          span.setAttributes({
+            'auth.success': false,
+            'auth.reason': authResult.error,
+            'auth.method': authResult.authMethod,
+          });
+          span.end();
 
-      if (!finalResult.ok) {
-        authMetrics.loginFailures.add(1, {
-          'auth.username': username,
-          'auth.reason': 'session_creation_failed',
-        });
+          return reply.status(400).send({
+            success: false,
+            error: authResult.error,
+            code: 'INVALID_CREDENTIALS',
+            requiresPasswordSetup: false,
+          });
+        }
 
-        span.setAttributes({
-          'auth.success': false,
-          'auth.reason': 'session_creation_failed',
-        });
-        span.end();
-
-        return reply.status(finalResult.error.status).send(finalResult.error.body);
-      }
-
-      // Record successful login
-      authMetrics.loginSuccess.add(1, {
-        'auth.username': username,
-        'auth.method': authResult.authMethod,
-        'user.role': finalResult.value.user.role,
-      });
-
-      // Create audit log entry (guard in case observability plugin is disabled)
-      if (typeof (fastify as any).audit === 'function') {
-        await fastify.audit({
-          userId: finalResult.value.user.id,
-          role: finalResult.value.user.role,
-          action: 'LOGIN',
-          metadata: {
-            authMethod: authResult.authMethod,
-            ip: request.ip,
-            userAgent: request.headers['user-agent'],
-          },
-        });
-      } else {
-        fastify.log.warn(
-          { userId: finalResult.value.user.id, action: 'LOGIN' },
-          'Audit logger not available; skipping audit event'
+        const finalResult = await finalizeAuthentication(
+          fastify,
+          request,
+          reply,
+          prismaResult.value,
+          authResult,
+          getAuthInstance
         );
+
+        if (!finalResult.ok) {
+          authMetrics.loginFailures.add(1, {
+            'auth.username': username,
+            'auth.reason': 'session_creation_failed',
+          });
+
+          span.setAttributes({
+            'auth.success': false,
+            'auth.reason': 'session_creation_failed',
+          });
+          span.end();
+
+          return reply.status(finalResult.error.status).send(finalResult.error.body);
+        }
+
+        // Record successful login
+        authMetrics.loginSuccess.add(1, {
+          'auth.username': username,
+          'auth.method': authResult.authMethod,
+          'user.role': finalResult.value.user.role,
+        });
+
+        // Create audit log entry (guard in case observability plugin is disabled)
+        if (typeof (fastify as any).audit === 'function') {
+          await fastify.audit({
+            orgId: finalResult.value.user.orgId,
+            userId: finalResult.value.user.id,
+            role: finalResult.value.user.role,
+            action: 'LOGIN',
+            metadata: {
+              authMethod: authResult.authMethod,
+              ip: request.ip,
+              userAgent: request.headers['user-agent'],
+            },
+          });
+        } else {
+          fastify.log.warn(
+            { userId: finalResult.value.user.id, action: 'LOGIN' },
+            'Audit logger not available; skipping audit event'
+          );
+        }
+
+        span.setAttributes({
+          'auth.success': true,
+          'auth.method': authResult.authMethod,
+          'user.id': finalResult.value.user.id,
+          'user.role': finalResult.value.user.role,
+        });
+        span.end();
+
+        return reply.send({
+          success: true,
+          user: finalResult.value.user,
+          session: finalResult.value.session,
+          authMethod: finalResult.value.authMethod,
+          requiresPasswordSetup: finalResult.value.requiresPasswordSetup,
+        });
+      } catch (error) {
+        authMetrics.loginFailures.add(1, {
+          'auth.reason': 'system_error',
+        });
+
+        span.recordException(error as Error);
+        span.setAttributes({
+          'auth.success': false,
+          'auth.reason': 'system_error',
+        });
+        span.end();
+
+        fastify.log.error(error, 'Custom authentication error');
+        return reply.status(500).send({
+          success: false,
+          error: 'Authentication service error',
+          code: 'AUTH_ERROR',
+        });
       }
-
-      span.setAttributes({
-        'auth.success': true,
-        'auth.method': authResult.authMethod,
-        'user.id': finalResult.value.user.id,
-        'user.role': finalResult.value.user.role,
-      });
-      span.end();
-
-      return reply.send({
-        success: true,
-        user: finalResult.value.user,
-        session: finalResult.value.session,
-        authMethod: finalResult.value.authMethod,
-        requiresPasswordSetup: finalResult.value.requiresPasswordSetup,
-      });
-    } catch (error) {
-      authMetrics.loginFailures.add(1, {
-        'auth.reason': 'system_error',
-      });
-
-      span.recordException(error as Error);
-      span.setAttributes({
-        'auth.success': false,
-        'auth.reason': 'system_error',
-      });
-      span.end();
-
-      fastify.log.error(error, 'Custom authentication error');
-      return reply.status(500).send({
-        success: false,
-        error: 'Authentication service error',
-        code: 'AUTH_ERROR',
-      });
     }
-  });
+  );
 
   // Register auth routes with CORS (excluding sign-in which we handle separately)
   fastify.route({

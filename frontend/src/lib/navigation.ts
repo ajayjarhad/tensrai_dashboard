@@ -9,6 +9,20 @@ export interface NavigationService {
 
 let navigationService: NavigationService | null = null;
 
+// 'lost': this browser's session no longer works. 'password-setup': it works, but a new password
+// has to be set first. Registered by the auth store, which the API client can't import directly.
+export type SessionRejection = 'lost' | 'password-setup';
+
+let sessionRejectedHandler: ((rejection: SessionRejection) => void) | null = null;
+
+export const setSessionRejectedHandler = (handler: (rejection: SessionRejection) => void) => {
+  sessionRejectedHandler = handler;
+};
+
+export const notifySessionRejected = (rejection: SessionRejection) => {
+  sessionRejectedHandler?.(rejection);
+};
+
 export const setNavigationService = (service: NavigationService) => {
   navigationService = service;
 };

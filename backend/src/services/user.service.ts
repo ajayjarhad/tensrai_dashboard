@@ -3,6 +3,19 @@ import bcrypt from 'bcryptjs';
 import { generateTemporaryPassword } from '../utils/password-generator.js';
 import { AuthTracer } from '../utils/tracing.js';
 
+const TEMP_PASSWORD_TTL_MS = 72 * 60 * 60 * 1000;
+
+// An expected failure whose message is safe to show the caller.
+export class ServiceError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ServiceError';
+  }
+}
+
 export interface CreateUserInput {
   username: string;
   email: string;
@@ -11,7 +24,7 @@ export interface CreateUserInput {
   tempPassword?: string;
 }
 
-interface CreateUserResponse {
+export interface CreateUserResponse {
   user: Pick<User, 'id' | 'username' | 'email' | 'role' | 'displayName'>;
   tempPassword: string;
 }
@@ -29,6 +42,7 @@ export interface ResetPasswordInput {
 async function logAuditEvent(
   prisma: PrismaClient,
   event: {
+    orgId?: string;
     userId: string;
     role: string;
     action: string;
@@ -39,6 +53,7 @@ async function logAuditEvent(
   try {
     await prisma.auditLog.create({
       data: {
+        orgId: event.orgId ?? null,
         userId: event.userId,
         role: event.role,
         action: event.action,
@@ -80,7 +95,7 @@ export async function createUserWithTempPassword(
   }
 
   const tempPasswordHash = await bcrypt.hash(tempPassword, 12);
-  const tempPasswordExpiry = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  const tempPasswordExpiry = new Date(Date.now() + TEMP_PASSWORD_TTL_MS);
 
   const user = await prisma.user.create({
     data: {
@@ -98,6 +113,7 @@ export async function createUserWithTempPassword(
   });
 
   await logAuditEvent(prisma, {
+    orgId,
     userId: adminUserId,
     role: adminRole,
     action: 'TEMP_PASSWORD_CREATED',
@@ -140,8 +156,8 @@ export async function resetPasswordWithTemp(
     throw new Error('Passwords do not match');
   }
 
-  if (resetData.newPassword.length < 4) {
-    throw new Error('Password must be at least 4 characters long');
+  if (resetData.newPassword.length < 8) {
+    throw new Error('Password must be at least 8 characters long');
   }
 
   const user = await prisma.user.findUnique({
@@ -251,8 +267,18 @@ export async function getAllUsers(prisma: PrismaClient): Promise<Partial<User>[]
   return users;
 }
 
+// Scoped client: a user in another organization, or a malformed id, is simply not found.
+const findManageableUser = async (prisma: PrismaClient, userId: string, actorRole: string) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
+  if (!user) throw new ServiceError(404, 'User not found');
+  if (user.role === 'STAFF' && actorRole !== 'STAFF') {
+    throw new ServiceError(403, 'Staff accounts cannot be changed here');
+  }
+  return user;
+};
+
 /**
- * Update user (admin only)
+ * Update user (admin only). updateData is already allow-listed by the route's schema.
  */
 export async function updateUser(
   prisma: PrismaClient,
@@ -261,31 +287,35 @@ export async function updateUser(
   adminUserId: string,
   adminRole: string
 ): Promise<Partial<User>> {
-  const currentUser = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  });
+  const currentUser = await findManageableUser(prisma, userId, adminRole);
 
-  const user = await prisma.user.update({
-    where: { id: userId },
-    data: {
-      ...updateData,
-      updatedAt: new Date(),
-    },
-    select: {
-      id: true,
-      username: true,
-      email: true,
-      role: true,
-      displayName: true,
-      mustResetPassword: true,
-      isActive: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
+  const user = await prisma.user
+    .update({
+      where: { id: userId },
+      data: {
+        ...updateData,
+        updatedAt: new Date(),
+      },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        role: true,
+        displayName: true,
+        mustResetPassword: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    })
+    .catch((error: { code?: string }) => {
+      if (error.code === 'P2002') {
+        throw new ServiceError(409, 'A user with this username or email already exists');
+      }
+      throw error;
+    });
 
-  if (updateData.role && currentUser && updateData.role !== currentUser.role) {
+  if (updateData.role && updateData.role !== currentUser.role) {
     await logAuditEvent(prisma, {
       userId: adminUserId,
       role: adminRole,
@@ -310,13 +340,7 @@ export async function deleteUser(
   adminUserId: string,
   adminRole: string
 ): Promise<void> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-  });
-
-  if (!user) {
-    throw new Error('User not found');
-  }
+  const user = await findManageableUser(prisma, userId, adminRole);
 
   await prisma.user.delete({
     where: { id: userId },
@@ -332,4 +356,39 @@ export async function deleteUser(
       deletedUsername: user.username,
     },
   });
+}
+
+/**
+ * Issue a new temporary password (admin only). The old password and any open sessions stop working.
+ */
+export async function resetUserPassword(
+  prisma: PrismaClient,
+  userId: string,
+  adminUserId: string,
+  adminRole: string
+): Promise<{ username: string; email: string; tempPassword: string }> {
+  const user = await findManageableUser(prisma, userId, adminRole);
+
+  const tempPassword = generateTemporaryPassword();
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      tempPasswordHash: await bcrypt.hash(tempPassword, 12),
+      tempPasswordExpiry: new Date(Date.now() + TEMP_PASSWORD_TTL_MS),
+      mustResetPassword: true,
+      passwordHash: '',
+      updatedAt: new Date(),
+    },
+  });
+  await prisma.session.deleteMany({ where: { userId } });
+
+  await logAuditEvent(prisma, {
+    userId: adminUserId,
+    role: adminRole,
+    action: 'TEMP_PASSWORD_RESET',
+    targetUserId: user.id,
+    metadata: { targetUsername: user.username },
+  });
+
+  return { username: user.username, email: user.email, tempPassword };
 }

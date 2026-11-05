@@ -5,6 +5,8 @@ import {
   getAllUsers,
   getUserById,
   resetPasswordWithTemp,
+  resetUserPassword,
+  ServiceError,
   updateUser,
 } from '../services/user.service.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
@@ -56,7 +58,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           userData,
           currentUser.id,
           currentUser.role,
-          currentUser.orgId
+          request.orgId as string // set by requireActiveSession
         );
 
         return reply.code(201).send({
@@ -155,6 +157,21 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     '/users/:id',
     {
       onRequest: [requireActiveSession, requireAdmin],
+      schema: {
+        // Anything else in the body is dropped, including nested writes Prisma would accept.
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            username: { type: 'string', minLength: 3, maxLength: 50 },
+            email: { type: 'string', format: 'email' },
+            role: { type: 'string', enum: ['ADMIN', 'USER'] },
+            displayName: { type: 'string', maxLength: 100 },
+            isActive: { type: 'boolean' },
+            mustResetPassword: { type: 'boolean' },
+          },
+        },
+      },
     },
     async (request: AppFastifyRequest, reply: AppFastifyReply) => {
       try {
@@ -184,11 +201,14 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: 'User updated successfully',
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to update user');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to update user',
+          error: 'Failed to update user',
         });
       }
     }
@@ -226,12 +246,49 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: 'User deleted successfully',
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to delete user');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to delete user',
+          error: 'Failed to delete user',
         });
+      }
+    }
+  );
+
+  fastify.post(
+    '/users/:id/reset-password',
+    {
+      onRequest: [requireActiveSession, requireAdmin],
+    },
+    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+      try {
+        const currentUser = await request.getCurrentUser();
+
+        if (!currentUser) {
+          return reply.code(401).send({
+            success: false,
+            error: 'Authentication required',
+          });
+        }
+
+        const { id } = request.params;
+        const result = await resetUserPassword(
+          request.db,
+          id as string,
+          currentUser.id,
+          currentUser.role
+        );
+        return reply.send({ success: true, data: result });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
+        fastify.log.error(error, 'Failed to reset password');
+        return reply.code(500).send({ success: false, error: 'Failed to reset password' });
       }
     }
   );
@@ -241,7 +298,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     {
       config: {
         rateLimit: {
-          max: 3,
+          max: 10,
           timeWindow: '1 hour',
         },
       },
@@ -251,7 +308,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           required: ['tempPassword', 'newPassword', 'confirmPassword'],
           properties: {
             tempPassword: { type: 'string' },
-            newPassword: { type: 'string', minLength: 4, maxLength: 128 },
+            newPassword: { type: 'string', minLength: 8, maxLength: 128 },
             confirmPassword: { type: 'string' },
             displayName: { type: 'string', maxLength: 100 },
           },

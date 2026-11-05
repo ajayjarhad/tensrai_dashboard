@@ -6,6 +6,9 @@ const baseUrl = process.env['BASE_URL'] || 'http://localhost:5001';
 const frontendUrl = process.env['FRONTEND_URL'] || 'http://localhost:5000';
 const nodeEnv = process.env['NODE_ENV'] ?? 'development';
 
+export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 5;
+export const SESSION_UPDATE_AGE_SECONDS = 60 * 60 * 12;
+
 // We'll initialize auth with a lazy database adapter that gets the Prisma client at runtime
 let authInstance: ReturnType<typeof betterAuth> | null = null;
 
@@ -18,8 +21,15 @@ export const auth = (prisma: PrismaClient) => {
       }),
 
       session: {
-        expiresIn: 60 * 60 * 24 * 5, // 5 days
-        updateAge: 60 * 60 * 12, // Update every 12 hours
+        expiresIn: SESSION_TTL_SECONDS,
+        updateAge: SESSION_UPDATE_AGE_SECONDS,
+        additionalFields: {
+          activeOrgId: {
+            type: 'string',
+            required: false,
+            input: false,
+          },
+        },
         cookieCache: {
           enabled: true,
           maxAge: 60 * 60 * 24 * 5, // 5 days

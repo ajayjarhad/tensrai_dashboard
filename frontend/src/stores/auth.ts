@@ -6,11 +6,12 @@ import type {
   User,
 } from '@tensrai/shared';
 import { ROLE_PERMISSIONS } from '@tensrai/shared';
+import { HTTPError } from 'ky';
 import React from 'react';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { apiClient } from '@/lib/api';
-import { navigateAfterLogin, navigateToLogin } from '@/lib/navigation';
+import { navigateAfterLogin, navigateToLogin, setSessionRejectedHandler } from '@/lib/navigation';
 import { queryClient } from '@/lib/query-client';
 
 // Check if localStorage is available
@@ -208,7 +209,7 @@ export const useAuthStore = create<AuthStore>()(
 
             isAdmin: () => {
               const { user } = get();
-              return user?.role === 'ADMIN' && user.isActive;
+              return (user?.role === 'ADMIN' || user?.role === 'STAFF') && user.isActive;
             },
 
             checkIsAuthenticated: () => {
@@ -388,7 +389,7 @@ export const useAuthStore = create<AuthStore>()(
 
           isAdmin: () => {
             const { user } = get();
-            return user?.role === 'ADMIN' && user.isActive;
+            return (user?.role === 'ADMIN' || user?.role === 'STAFF') && user.isActive;
           },
 
           checkIsAuthenticated: () => {
@@ -405,6 +406,50 @@ useAuthStore.subscribe((state, previous) => {
   if (state.user?.id !== previous.user?.id) queryClient.clear();
 });
 
+const clearSignedInState = () => {
+  useAuthStore.setState({
+    user: null,
+    isAuthenticated: false,
+    session: null,
+    isLoading: false,
+    error: null,
+  });
+};
+
+setSessionRejectedHandler(rejection => {
+  const { isAuthenticated, user } = useAuthStore.getState();
+  if (!isAuthenticated || !user) return;
+
+  if (rejection === 'lost') {
+    clearSignedInState();
+    navigateToLogin();
+    return;
+  }
+
+  // Update the saved user first: the setup page sends anyone who doesn't need it back here.
+  const needsSetup = { ...user, mustResetPassword: true };
+  useAuthStore.setState({ user: needsSetup });
+  navigateAfterLogin(needsSetup);
+});
+
+// Saved login state only says who was signed in last time. Check it against the server once on
+// load, which also picks up changes such as a new organization name or role. Only a definite "no
+// session" signs out: a network problem must not end the session of someone watching a robot.
+export const revalidateSession = async () => {
+  try {
+    const response = await apiClient.get<any>('auth/session');
+    if (response?.user && response?.session) {
+      useAuthStore.setState({
+        user: response.user as User,
+        session: response.session,
+        isAuthenticated: true,
+      });
+    }
+  } catch (error) {
+    if (error instanceof HTTPError && error.response.status === 401) clearSignedInState();
+  }
+};
+
 const getPersistApi = (): PersistApi | undefined => {
   return (useAuthStore as typeof useAuthStore & { persist?: PersistApi }).persist;
 };
@@ -412,7 +457,6 @@ const getPersistApi = (): PersistApi | undefined => {
 export const useAuth = (): UseAuthReturn => {
   const store = useAuthStore();
   const [hasHydrated, setHasHydrated] = React.useState(false);
-  const [hasCheckedAuth, setHasCheckedAuth] = React.useState(false);
 
   // Handle Zustand persistence hydration
   React.useEffect(() => {
@@ -427,7 +471,6 @@ export const useAuth = (): UseAuthReturn => {
 
     const unsubHydrate = persistApi.onHydrate(() => {
       setHasHydrated(false);
-      setHasCheckedAuth(false);
     });
 
     const unsubFinishHydration = persistApi.onFinishHydration(() => {
@@ -439,14 +482,6 @@ export const useAuth = (): UseAuthReturn => {
       unsubFinishHydration();
     };
   }, []);
-
-  // Check authentication on mount - handle page refreshes (only run once)
-  React.useEffect(() => {
-    if (hasHydrated && !hasCheckedAuth && !store.isAuthenticated && !store.isLoading) {
-      setHasCheckedAuth(true);
-      store.checkAuth();
-    }
-  }, [hasHydrated, hasCheckedAuth, store.isAuthenticated, store.isLoading, store.checkAuth]);
 
   return {
     ...store,

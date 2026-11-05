@@ -1,10 +1,11 @@
 import { expect, test } from 'bun:test';
 import cors from '@fastify/cors';
-import { asUser, createTestApp, fakeRobotModel, ORG_A } from '../testing/authStub.js';
+import { asStaffIn, asUser, createTestApp, fakeRobotModel, ORG_A } from '../testing/authStub.js';
 
 const { default: mapRoutes } = await import('./maps.js');
 const { default: missionRunRoutes } = await import('./missionRuns.js');
 const { default: robotRoutes } = await import('./robots.js');
+const { default: staffRoutes } = await import('./staff.js');
 const { default: userRoutes } = await import('./users.js');
 
 // first-time-setup is how a user with a temporary password gets a usable one, so it must
@@ -13,10 +14,35 @@ const SELF_GUARDED = '/api/auth/first-time-setup';
 
 type RouteInfo = { method: string; url: string };
 
+const userUpdates: any[] = [];
+
 const prisma = {
-  robot: fakeRobotModel([{ id: 'r1', orgId: ORG_A }]),
+  robot: {
+    ...fakeRobotModel([{ id: 'r1', orgId: ORG_A }]),
+    create: async ({ data }: any) => ({ id: 'new-robot', orgId: ORG_A, ...data }),
+    groupBy: async () => [],
+  },
   map: { findMany: async () => [], findUnique: async () => null },
-  user: { findMany: async () => [], findUnique: async () => null },
+  user: {
+    findMany: async () => [],
+    groupBy: async () => [],
+    findUnique: async ({ where }: any) => {
+      if (where.id === 'colleague') return { id: 'colleague', role: 'USER', username: 'colleague' };
+      if (where.id === 'staff-member') return { id: 'staff-member', role: 'STAFF' };
+      return null;
+    },
+    update: async ({ where, data }: any) => {
+      userUpdates.push(data);
+      return { id: where.id, ...data };
+    },
+  },
+  auditLog: { create: async () => ({}) },
+  organization: { findMany: async () => [] },
+  robotAddress: {
+    groupBy: async () => [],
+    findMany: async () => [],
+    upsert: async () => ({ id: 'a1', status: 'PENDING' }),
+  },
 };
 
 const buildApp = async () => {
@@ -31,7 +57,7 @@ const buildApp = async () => {
   });
   app.decorate('prisma', prisma);
   await app.register(cors, { origin: true, credentials: true });
-  for (const plugin of [robotRoutes, mapRoutes, missionRunRoutes, userRoutes]) {
+  for (const plugin of [robotRoutes, mapRoutes, missionRunRoutes, userRoutes, staffRoutes]) {
     await app.register(plugin, { prefix: '/api' });
   }
   await app.ready();
@@ -47,7 +73,7 @@ const call = ({ method, url }: RouteInfo, headers: Record<string, string> = {}) 
     headers,
     // Valid for first-time-setup's schema so the sweep reaches its own session check.
     ...(['POST', 'PUT', 'PATCH'].includes(method) && {
-      payload: { tempPassword: 'x', newPassword: 'xxxx', confirmPassword: 'x' },
+      payload: { tempPassword: 'x', newPassword: 'xxxxxxxx', confirmPassword: 'x' },
     }),
   });
 
@@ -93,7 +119,7 @@ test('a regular user can read robots, maps and mission runs', async () => {
 
 test('user management is admin only', async () => {
   const userRoutesOnly = routes.filter(route => route.url.startsWith('/api/users'));
-  expect(userRoutesOnly.length).toBe(5);
+  expect(userRoutesOnly.length).toBe(6);
 
   for (const route of userRoutesOnly) {
     const res = await call(route, asUser('user'));
@@ -123,7 +149,7 @@ test('a user without an organization is turned away', async () => {
 });
 
 test('every robot route answers 404 for a robot of another organization', async () => {
-  const robotIdRoutes = routes.filter(route => route.url.includes('/robots/:id'));
+  const robotIdRoutes = routes.filter(route => route.url.startsWith('/api/robots/:id'));
   expect(robotIdRoutes.length).toBeGreaterThanOrEqual(9);
 
   for (const route of robotIdRoutes) {
@@ -169,4 +195,138 @@ test('a robot cannot be created on a map the organization does not have', async 
   });
   expect(res.statusCode).toBe(404);
   expect(res.json().error).toBe('Map not found');
+});
+
+test('every staff route refuses anyone who is not staff', async () => {
+  const staffOnly = routes.filter(route => route.url.startsWith('/api/staff'));
+  expect(staffOnly.length).toBeGreaterThanOrEqual(10);
+
+  for (const route of staffOnly) {
+    for (const who of ['admin', 'user'] as const) {
+      const res = await call(route, asUser(who));
+      expect([who, route.method, route.url, res.statusCode]).toEqual([
+        who,
+        route.method,
+        route.url,
+        403,
+      ]);
+    }
+  }
+  expect((await call({ method: 'GET', url: '/api/staff/orgs' }, asUser('staff'))).statusCode).toBe(
+    200
+  );
+});
+
+test('staff act in the organization they entered, and nowhere else', async () => {
+  const robot = { method: 'GET', url: '/api/robots/r1' };
+  expect((await call(robot, asUser('staff'))).statusCode).toBe(404);
+  expect((await call(robot, asStaffIn(ORG_A))).statusCode).toBe(200);
+});
+
+test('a plain member can operate a robot their organization owns', async () => {
+  for (const [method, url] of [
+    ['GET', '/api/robots/r1'],
+    ['GET', '/api/robots/r1/maps'],
+    ['GET', '/api/robots/r1/current-mission'],
+    ['GET', '/api/robots/r1/map-sync'],
+    ['GET', '/api/robots/addresses'],
+  ] as const) {
+    const res = await call({ method, url }, asUser('user'));
+    expect([method, url, res.statusCode]).toEqual([method, url, 200]);
+  }
+});
+
+const createRobot = (payload: object) =>
+  app.inject({ method: 'POST', url: '/api/robots', headers: asUser('admin'), payload });
+
+test('an org admin sets any public address, which then waits for approval', async () => {
+  const res = await createRobot({ name: 'New', ipAddress: '100.124.198.30', bridgePort: 9090 });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().data).toMatchObject({ ipAddress: '100.124.198.30', addressStatus: 'PENDING' });
+});
+
+test('robot addresses are normalized, and internal ones and hostnames are refused', async () => {
+  const mapped = await createRobot({ name: 'Alias', ipAddress: '::ffff:100.124.198.30' });
+  expect(mapped.json().data.ipAddress).toBe('100.124.198.30');
+
+  for (const ipAddress of [
+    'mongo',
+    'robot.example.com',
+    '127.0.0.1',
+    '169.254.169.254',
+    '172.18.0.3',
+    '::1',
+  ]) {
+    const res = await createRobot({ name: 'Bad', ipAddress });
+    expect([ipAddress, res.statusCode]).toEqual([ipAddress, 400]);
+  }
+});
+
+test('an organization cannot exceed its robot limit', async () => {
+  process.env['MAX_ROBOTS_PER_ORG'] = '1';
+  try {
+    const res = await createRobot({ name: 'One too many' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('ROBOT_LIMIT_REACHED');
+  } finally {
+    delete process.env['MAX_ROBOTS_PER_ORG'];
+  }
+});
+
+test('updating a user only ever writes the allowed fields', async () => {
+  userUpdates.length = 0;
+  const res = await app.inject({
+    method: 'PUT',
+    url: '/api/users/colleague',
+    headers: asUser('admin'),
+    payload: {
+      displayName: 'Renamed',
+      orgId: 'another-org',
+      passwordHash: 'attacker-chosen',
+      sessions: { create: { token: 'impersonation' } },
+    },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(Object.keys(userUpdates[0]).sort()).toEqual(['displayName', 'updatedAt']);
+});
+
+test('staff cannot be promoted to through the API, or changed by an org admin', async () => {
+  const promote = await app.inject({
+    method: 'PUT',
+    url: '/api/users/colleague',
+    headers: asUser('admin'),
+    payload: { role: 'STAFF' },
+  });
+  expect(promote.statusCode).toBe(400);
+
+  for (const [method, url, payload] of [
+    ['PUT', '/api/users/staff-member', { displayName: 'x' }],
+    ['DELETE', '/api/users/staff-member', undefined],
+    ['POST', '/api/users/staff-member/reset-password', undefined],
+  ] as const) {
+    const res = await app.inject({
+      method,
+      url,
+      headers: asUser('admin'),
+      ...(payload && { payload }),
+    });
+    expect([method, url, res.statusCode]).toEqual([method, url, 403]);
+  }
+});
+
+test('an unknown user is a 404 with no database detail in the response', async () => {
+  for (const [method, url, payload] of [
+    ['PUT', '/api/users/nobody', { displayName: 'x' }],
+    ['DELETE', '/api/users/nobody', undefined],
+    ['POST', '/api/users/nobody/reset-password', undefined],
+  ] as const) {
+    const res = await app.inject({
+      method,
+      url,
+      headers: asUser('admin'),
+      ...(payload && { payload }),
+    });
+    expect([method, url, res.statusCode]).toEqual([method, url, 404]);
+    expect(res.body).not.toMatch(/prisma|invocation/i);
+  }
 });

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createServer, type Socket } from 'node:net';
+import { gzipSync } from 'node:zlib';
 import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { asUser, createTestApp, ORG_A as ORG } from '../testing/authStub.js';
@@ -134,6 +135,7 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
         return { count };
       },
     },
+    robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
     $transaction: async (ops: any[]) => Promise.all(ops),
   };
 
@@ -262,7 +264,12 @@ test('updates map features from an unchanged manifest without downloading chunks
 
   await fetchMapViaMappingBridge(
     { log: createLogger(), prisma },
-    { id: 'robot-metadata-refresh', ipAddress: '127.0.0.1', mappingBridgePort: server.port }
+    {
+      id: 'robot-metadata-refresh',
+      orgId: ORG,
+      ipAddress: '127.0.0.1',
+      mappingBridgePort: server.port,
+    }
   );
 
   await waitFor(() => server.messages.includes('MAP_SKIP'));
@@ -312,10 +319,12 @@ test('reuses the active map sync status instead of opening a duplicate socket', 
     robot: {
       update: async () => ({}),
     },
+    robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
   const fastify = { log: createLogger(), prisma };
   const robot = {
     id: 'robot-duplicate-sync',
+    orgId: ORG,
     ipAddress: '127.0.0.1',
     mappingBridgePort: server.port,
   };
@@ -333,6 +342,61 @@ test('reuses the active map sync status instead of opening a duplicate socket', 
   });
 });
 
+test('refuses a map that decompresses to more than the limit', async () => {
+  const server = await startMappingServer((socket, parsed) => {
+    const transferId = 'bomb';
+    if (parsed.event === 'GET_MAP_DATA') {
+      socket.send(
+        JSON.stringify({
+          event: 'MAP_MANIFEST',
+          payload: {
+            transferId,
+            name: 'bomb',
+            map_yaml: 'bomb.yaml',
+            map_pgm: 'bomb.pgm',
+            sha256: 'unchecked',
+            total_chunks: 1,
+            gzip_size: 1024,
+          },
+        })
+      );
+    }
+    if (parsed.event === 'MAP_SEND_CHUNKS') {
+      const data = gzipSync(Buffer.alloc(100_000)).toString('base64');
+      socket.send(JSON.stringify({ event: 'MAP_CHUNK', payload: { transferId, index: 0, data } }));
+      socket.send(JSON.stringify({ event: 'MAP_TRANSFER_COMPLETE', payload: { transferId } }));
+    }
+  });
+  const { prisma, maps } = createFakePrisma({ robots: [{ id: 'robot-bomb', orgId: ORG }] });
+
+  await fetchMapViaMappingBridge(
+    { log: createLogger(), prisma, maxMapImageBytes: 1_000 },
+    { id: 'robot-bomb', orgId: ORG, ipAddress: '127.0.0.1', mappingBridgePort: server.port }
+  );
+
+  await waitFor(() => getMapSyncStatus('robot-bomb').phase === 'failed');
+  expect(maps).toHaveLength(0);
+});
+
+test('never connects to a robot whose address is not approved', async () => {
+  const server = await startMappingServer();
+  const prisma = { robotAddress: { findFirst: async () => null } };
+
+  const status = await fetchMapViaMappingBridge(
+    { log: createLogger(), prisma },
+    {
+      id: 'robot-unapproved',
+      orgId: ORG,
+      ipAddress: '127.0.0.1',
+      mappingBridgePort: server.port,
+    }
+  );
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  expect(status).toBeUndefined();
+  expect(server.clients.size).toBe(0);
+});
+
 test('fails a map sync that cannot complete the websocket handshake', async () => {
   const server = await startStalledTcpServer();
   const prisma = {
@@ -342,11 +406,13 @@ test('fails a map sync that cannot complete the websocket handshake', async () =
     robot: {
       update: async () => ({}),
     },
+    robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
   const fastify = { log: createLogger(), prisma, mapSyncConnectTimeoutMs: 50 };
 
   await fetchMapViaMappingBridge(fastify, {
     id: 'robot-stalled-connect',
+    orgId: ORG,
     ipAddress: '127.0.0.1',
     mappingBridgePort: server.port,
   });

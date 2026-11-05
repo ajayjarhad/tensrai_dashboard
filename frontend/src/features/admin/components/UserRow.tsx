@@ -1,12 +1,14 @@
 import type { UseMutationResult } from '@tanstack/react-query';
-import type { User } from '@tensrai/shared';
-import { Trash2 } from 'lucide-react';
+import { ROLE, type User } from '@tensrai/shared';
+import { KeyRound, Trash2 } from 'lucide-react';
 
 interface UserRowProps {
   user: User;
   currentUser: User | null;
   onDelete: (userId: string) => void;
   onToggleStatus: (userId: string, isActive: boolean) => void;
+  onResetPassword: (userId: string) => void;
+  resetPending: boolean;
   deleteUserMutation: UseMutationResult<void, Error, string>;
   updateUserMutation: UseMutationResult<
     void,
@@ -20,9 +22,13 @@ export function UserRow({
   currentUser,
   onDelete,
   onToggleStatus,
+  onResetPassword,
+  resetPending,
   deleteUserMutation,
   updateUserMutation,
 }: UserRowProps) {
+  const canManage = user.role !== ROLE.STAFF || currentUser?.role === ROLE.STAFF;
+
   return (
     <tr key={user.id}>
       <td className="px-6 py-4 whitespace-nowrap">
@@ -61,8 +67,21 @@ export function UserRow({
       <td className="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground">
         {new Date(user.createdAt).toLocaleDateString()}
       </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-        {user.id !== currentUser?.id && (
+      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-3">
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => onResetPassword(user.id)}
+            disabled={resetPending}
+            className={`text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1 ${
+              resetPending ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            <KeyRound className="h-4 w-4" />
+            Reset password
+          </button>
+        )}
+        {canManage && user.id !== currentUser?.id && (
           <button
             type="button"
             onClick={() => onDelete(user.id)}
