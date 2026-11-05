@@ -22,7 +22,15 @@ type TeleopPanelProps = {
 
 const MAX_LINEAR = 0.333333; // fixed linear m/s
 const MAX_ANGULAR = 0.333333; // fixed angular rad/s
-const LOOP_MS = 100; // 10 Hz command rate
+const parseTeleopRateHz = () => {
+  const raw = Number(import.meta.env['VITE_ROS_TELEOP_RATE_HZ'] ?? 10);
+  if (!Number.isFinite(raw)) return 10;
+  // Keep the heartbeat below the backend 750 ms watchdog while avoiding extra traffic.
+  return Math.min(10, Math.max(2, raw));
+};
+
+const TELEOP_RATE_HZ = parseTeleopRateHz();
+const LOOP_MS = Math.round(1000 / TELEOP_RATE_HZ);
 const DEADZONE = 0.05; // pointer deadzone for small jitters
 const KNOB_SIZE = 56; // px (tailwind h-14)
 const POINTER_GAIN = 1.8; // amplifies drag so knob reaches edge quickly
@@ -74,6 +82,7 @@ export function TeleopPanel({
 
   const velocityRef = useRef(vector);
   velocityRef.current = vector;
+  const lastSentVelocityRef = useRef<{ linear: number; angular: number } | null>(null);
 
   const clampOffset = useCallback((x: number, y: number, allowed: number) => {
     if (allowed <= 0) return { x: 0, y: 0 };
@@ -83,9 +92,38 @@ export function TeleopPanel({
     return { x: x * scale, y: y * scale };
   }, []);
 
-  const sendZero = useCallback(() => {
-    sendTeleop(robotId, zeroCommand);
-  }, [robotId, sendTeleop]);
+  const sendVelocity = useCallback(
+    (linear: number, angular: number, options?: { force?: boolean }) => {
+      const last = lastSentVelocityRef.current;
+      const isZero = linear === 0 && angular === 0;
+      const lastWasZero = !last || (last.linear === 0 && last.angular === 0);
+
+      if (!options?.force && isZero && lastWasZero) return;
+
+      sendTeleop(robotId, {
+        linear: { x: linear, y: 0, z: 0 },
+        angular: { x: 0, y: 0, z: angular },
+      });
+      lastSentVelocityRef.current = { linear, angular };
+    },
+    [robotId, sendTeleop]
+  );
+
+  const sendZero = useCallback(
+    (options?: { force?: boolean }) => {
+      if (options?.force) {
+        sendTeleop(robotId, zeroCommand);
+        lastSentVelocityRef.current = { linear: 0, angular: 0 };
+        return;
+      }
+      sendVelocity(0, 0);
+    },
+    [robotId, sendTeleop, sendVelocity]
+  );
+
+  const markTeleopSessionClosed = useCallback(() => {
+    lastSentVelocityRef.current = null;
+  }, []);
 
   const stopAndReset = useCallback(() => {
     pointerIdRef.current = null;
@@ -99,23 +137,21 @@ export function TeleopPanel({
     touchDirectionCountsRef.current.left = 0;
     touchDirectionCountsRef.current.right = 0;
     setPressedDirections(createEmptyDirectionState());
-    sendZero();
+    sendZero({ force: true });
   }, [sendZero]);
 
   // Continuous send loop
   useEffect(() => {
     const loop = setInterval(() => {
       const { linear, angular } = velocityRef.current;
-      sendTeleop(robotId, {
-        linear: { x: linear, y: 0, z: 0 },
-        angular: { x: 0, y: 0, z: angular },
-      });
+      sendVelocity(linear, angular);
     }, LOOP_MS);
     return () => {
       clearInterval(loop);
-      sendZero();
+      sendZero({ force: true });
+      markTeleopSessionClosed();
     };
-  }, [robotId, sendTeleop, sendZero]);
+  }, [markTeleopSessionClosed, sendVelocity, sendZero]);
 
   // Safety: stop on tab blur/visibility change
   useEffect(() => {
@@ -259,7 +295,16 @@ export function TeleopPanel({
 
   useEffect(() => {
     stopAndReset();
-  }, [controlMode, stopAndReset]);
+  }, [stopAndReset]);
+
+  const selectControlMode = useCallback(
+    (nextMode: ControlMode) => {
+      if (nextMode === controlMode) return;
+      stopAndReset();
+      setControlMode(nextMode);
+    },
+    [controlMode, stopAndReset]
+  );
 
   // Pointer (touch/mouse) handling
   useEffect(() => {
@@ -385,14 +430,14 @@ export function TeleopPanel({
           <button
             type="button"
             className={tabButtonClass(controlMode === 'joystick')}
-            onClick={() => setControlMode('joystick')}
+            onClick={() => selectControlMode('joystick')}
           >
             Joystick
           </button>
           <button
             type="button"
             className={tabButtonClass(controlMode === 'arrows')}
-            onClick={() => setControlMode('arrows')}
+            onClick={() => selectControlMode('arrows')}
           >
             Arrow Keys
           </button>

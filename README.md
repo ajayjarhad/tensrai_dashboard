@@ -182,6 +182,32 @@ PORT=3001          # Backend port
 FRONTEND_URL=http://localhost:5173
 ```
 
+### Cloud Teleop Latency Tuning
+
+For AWS-hosted dashboard teleop over weak mobile robot-site networks, keep movement commands
+publishable and reduce competing traffic instead of dropping teleop commands.
+
+Frontend command cadence is a build-time value:
+
+```bash
+VITE_ROS_TELEOP_RATE_HZ=4  # baked image default; use 4-5 for weak mobile links
+```
+
+Backend telemetry throttles are runtime values:
+
+```bash
+ROS_LASER_RATE_HZ=1
+ROS_MAX_LASER_POINTS=120
+ROS_ODOM_RATE_HZ=4
+ROS_SCAN_POSE_RATE_HZ=4
+ROS_AMCL_RATE_HZ=2
+ROS_TELEOP_STALE_WARN_MS=1000
+```
+
+When diagnosing a bad session, inspect `ROS bridge command received/published` logs. High
+`ageMs` means the command was already stale when AWS received it; low `ageMs` with delayed robot
+motion points to the AWS-to-site ROS bridge/mobile-network leg.
+
 ## 📈 Observability (OpenTelemetry + SigNoz)
 
 Run the bundled SigNoz stack and stream backend traces via OTLP:

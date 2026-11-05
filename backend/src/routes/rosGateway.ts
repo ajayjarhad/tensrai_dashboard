@@ -47,11 +47,36 @@ const ROS_COMMAND_LOG_INTERVAL_MS = (() => {
   if (!Number.isFinite(raw) || raw < 0) return 2000;
   return raw;
 })();
+const ROS_TELEOP_STALE_WARN_MS = (() => {
+  const raw = Number(process.env['ROS_TELEOP_STALE_WARN_MS'] ?? 1000);
+  if (!Number.isFinite(raw) || raw <= 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(raw);
+})();
 
 type ForwardableChannelEvent = {
   channel: string;
   data: unknown;
   __serializedMessage?: string;
+};
+
+// A dashboard tab that stops reading lets unsent frames pile up in our heap
+// (this is what OOM-killed the backend). Bun's ws shim only starts counting
+// bufferedAmount once its 16 MiB native backlog is full, and the counter never
+// drains back to zero afterwards, so any sizeable value means the client fell
+// hopelessly behind at some point: close it and let it reconnect (clients
+// auto-reconnect and get a fresh snapshot on attach).
+const HARD_CLOSE_BYTES = 4 * 1024 * 1024;
+
+const closeIfBacklogged = (socket: any, log: FastifyInstance['log'], fields: object) => {
+  const buffered = typeof socket.bufferedAmount === 'number' ? socket.bufferedAmount : 0;
+  if (buffered <= HARD_CLOSE_BYTES) return false;
+  const close = socket.terminate ?? socket.close;
+  if (typeof close !== 'function') return false;
+  log.warn({ ...fields, buffered }, 'Closing slow dashboard websocket client');
+  try {
+    close.call(socket);
+  } catch {}
+  return true;
 };
 
 const rosGateway = async (fastify: FastifyInstance) => {
@@ -161,6 +186,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
     }
 
     const forward = (event: ForwardableChannelEvent) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (closeIfBacklogged(socket, fastify.log, { robotId, channel: event.channel })) return;
       try {
         let message = event.__serializedMessage;
         if (!message) {
@@ -213,12 +240,21 @@ const rosGateway = async (fastify: FastifyInstance) => {
       });
 
       if (parsed.type === 'command') {
-        logRosCommand('info', 'received', {
+        const commandAgeMs =
+          typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null;
+        const commandLogLevel =
+          parsed.channel === 'teleop' &&
+          typeof commandAgeMs === 'number' &&
+          commandAgeMs >= ROS_TELEOP_STALE_WARN_MS
+            ? 'warn'
+            : 'info';
+        logRosCommand(commandLogLevel, 'received', {
           robotId,
           channel: parsed.channel,
           commandId: parsed.commandId ?? null,
           sentAtMs: parsed.sentAtMs ?? null,
-          ageMs: typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null,
+          ageMs: commandAgeMs,
+          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
           managerAttached: Boolean(attachedManager),
         });
         const currentManager = registry.getManager(robotId);
@@ -248,10 +284,11 @@ const rosGateway = async (fastify: FastifyInstance) => {
           );
           return;
         }
-        logRosCommand('info', 'published', {
+        logRosCommand(commandLogLevel, 'published', {
           robotId,
           channel: parsed.channel,
           commandId: parsed.commandId ?? null,
+          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
           result,
         });
         return;
@@ -305,6 +342,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   fastify.get('/health/ros', async () => {
     return {
       robots: registry.getStatuses(),
+      missions: (fastify as any).missionRegistry?.getStatuses?.() ?? [],
     };
   });
 
@@ -342,6 +380,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
 
     const safeClientSend = (message: string) => {
       if (clientSocket.readyState !== WebSocket.OPEN) return;
+      if (closeIfBacklogged(clientSocket, fastify.log, { robotId, socket: 'mapping' })) return;
       try {
         clientSocket.send(message);
       } catch (err) {
@@ -489,6 +528,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
 
     const safeClientSend = (message: string) => {
       if (clientSocket.readyState !== WebSocket.OPEN) return;
+      if (closeIfBacklogged(clientSocket, fastify.log, { robotId, socket: 'emergency' })) return;
       try {
         clientSocket.send(message);
       } catch (err) {

@@ -55,6 +55,7 @@ export function MapStage({
   telemetryRobotId,
   selectedRobotId,
   telemetry,
+  onRobotSelect,
   setPoseMode,
   onPoseConfirm,
   onPoseCancel,
@@ -156,6 +157,7 @@ export function MapStage({
           robots={robots}
           locations={locations}
           selectedRobotId={selectedRobotId ?? null}
+          {...(onRobotSelect ? { onRobotSelect } : {})}
           stageScale={stageScale}
           {...(setPoseMode !== undefined ? { setPoseMode } : {})}
           {...(onPoseConfirm ? { onPoseConfirm } : {})}

@@ -55,6 +55,8 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
         {resolvedHitRadius > 0 ? (
           <Circle x={0} y={0} radius={resolvedHitRadius} fill="#000" opacity={0.01} listening />
         ) : null}
+        {/* No shadow and no perfect-draw: fill+stroke+shadow would route every pin
+            through a stage-sized buffer canvas, which made the map redraw cost tens of ms. */}
         <Path
           data={pathData}
           fill={color}
@@ -65,10 +67,7 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
           rotation={-90}
           offsetX={12}
           offsetY={9}
-          shadowColor="black"
-          shadowBlur={5}
-          shadowOpacity={0.3}
-          shadowOffset={{ x: 2, y: 2 }}
+          perfectDrawEnabled={false}
         />
       </Group>
     );

@@ -30,6 +30,11 @@ const SCAN_POSE_MATCH_TIMEOUT_MS = (() => {
 })();
 // Allow older TF/odom stamps to avoid dropping to AMCL-only fallback when clocks lag.
 const TF_STALE_MS = 1200;
+const POSE_ODOM_AMCL_MAX_DELTA_M = (() => {
+  const raw = Number(process.env['ROS_POSE_ODOM_AMCL_MAX_DELTA_M'] ?? 2);
+  if (!Number.isFinite(raw) || raw <= 0) return 2;
+  return raw;
+})();
 // Teleop safety defaults
 const TELEOP_MAX_LINEAR = 0.5; // m/s
 const TELEOP_MAX_ANGULAR = 0.8; // rad/s
@@ -40,6 +45,8 @@ const MAX_LASER_POINTS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 450;
   return Math.max(60, Math.floor(raw));
 })();
+// Nav plans can carry thousands of poses; the dashboard only draws a polyline.
+const MAX_PATH_POSES = 300;
 
 const rosStampToMs = (stamp: any): number | undefined => {
   if (!stamp || typeof stamp !== 'object') return undefined;
@@ -126,10 +133,10 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   }
   if (channelName === 'waypoints') {
     const path = data as any;
-    const poses = Array.isArray(path.poses)
-      ? path.poses.map((p: any) => ({ pose: pickPose(p.pose) }))
-      : [];
-    return { poses };
+    const raw: any[] = Array.isArray(path.poses) ? path.poses : [];
+    const stride = Math.max(1, Math.ceil((raw.length - 1) / (MAX_PATH_POSES - 1)));
+    const kept = raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
+    return { poses: kept.map((p: any) => ({ pose: pickPose(p.pose) })) };
   }
   return data;
 };
@@ -326,15 +333,52 @@ export class RosRobotManager extends EventEmitter {
       this.armTeleopWatchdog(runtime.config);
     }
 
+    const requestedConnectionId = runtime.config.connectionId ?? 'default';
     const connection = this.getConnectionForChannel(runtime.config);
+    const fallbackConnection =
+      requestedConnectionId !== 'default' ? this.connections.get('default') : undefined;
     if (!connection) {
+      if (fallbackConnection) {
+        try {
+          fallbackConnection.publish(
+            runtime.config.topic,
+            runtime.config.msgType,
+            outgoing as object
+          );
+          return {
+            ok: true,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.() ?? {
+              connected: fallbackConnection.isConnected(),
+              url: fallbackConnection.url,
+            },
+          };
+        } catch (error) {
+          runtime.errorCount += 1;
+          this.emit('error', error as Error);
+          return {
+            ok: false,
+            error: (error as Error).message,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.(),
+          };
+        }
+      }
       return {
         ok: false,
         error: `No connection for channel ${channelName}`,
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
       };
     }
     const connectionStatusBefore = connection.getDebugStatus?.() ?? {
@@ -348,10 +392,46 @@ export class RosRobotManager extends EventEmitter {
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
         connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
       };
     } catch (error) {
+      if (fallbackConnection) {
+        try {
+          fallbackConnection.publish(
+            runtime.config.topic,
+            runtime.config.msgType,
+            outgoing as object
+          );
+          return {
+            ok: true,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            primaryError: (error as Error).message,
+            connection: fallbackConnection.getDebugStatus?.() ?? {
+              connected: fallbackConnection.isConnected(),
+              url: fallbackConnection.url,
+            },
+          };
+        } catch (fallbackError) {
+          runtime.errorCount += 1;
+          this.emit('error', fallbackError as Error);
+          return {
+            ok: false,
+            error: (fallbackError as Error).message,
+            primaryError: (error as Error).message,
+            channelName,
+            topic: runtime.config.topic,
+            msgType: runtime.config.msgType,
+            connectionId: 'default',
+            fallbackFromConnectionId: requestedConnectionId,
+            connection: fallbackConnection.getDebugStatus?.(),
+          };
+        }
+      }
       runtime.errorCount += 1;
       this.emit('error', error as Error);
       return {
@@ -360,7 +440,7 @@ export class RosRobotManager extends EventEmitter {
         channelName,
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
-        connectionId: runtime.config.connectionId ?? 'default',
+        connectionId: requestedConnectionId,
         connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
       };
     }
@@ -1078,6 +1158,12 @@ export class RosRobotManager extends EventEmitter {
     // 3) map->odom TF + odom pose topic (fallback)
     if (this.mapToOdom && this.odomPose && !this.isTfStale(this.mapToOdom, this.odomPose.stampMs)) {
       const pose = combineTransforms(this.mapToOdom, this.odomPose);
+      if (this.mapPose) {
+        const amclDeltaM = Math.hypot(pose.x - this.mapPose.x, pose.y - this.mapPose.y);
+        if (amclDeltaM > POSE_ODOM_AMCL_MAX_DELTA_M) {
+          return { pose: { ...this.mapPose }, source: 'amcl' };
+        }
+      }
       return { pose, source: 'tf:map->odom + odom topic', stampMs: this.mapToOdom.stampMs };
     }
     // 4) amcl pose as last resort

@@ -6,6 +6,7 @@ WORKDIR /app
 ARG VITE_API_URL=/api
 ARG VITE_WS_URL=/ws
 ARG VITE_CLOUD_DASHBOARD=true
+ARG VITE_ROS_TELEOP_RATE_HZ=4
 
 # Install workspace dependencies first for better layer caching.
 COPY bun.lock package.json tsconfig.json ./
@@ -22,6 +23,7 @@ COPY shared ./shared
 ENV VITE_API_URL=${VITE_API_URL}
 ENV VITE_WS_URL=${VITE_WS_URL}
 ENV VITE_CLOUD_DASHBOARD=${VITE_CLOUD_DASHBOARD}
+ENV VITE_ROS_TELEOP_RATE_HZ=${VITE_ROS_TELEOP_RATE_HZ}
 
 # Produces /app/frontend/dist
 RUN bun run --cwd frontend build

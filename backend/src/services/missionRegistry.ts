@@ -34,15 +34,57 @@ type RobotMissionConfig = {
   url?: string | undefined;
 };
 
+type PersistedRobotMissionConfig = {
+  id: string;
+  name: string;
+  ipAddress: string | null;
+  mapId: string | null;
+  missionBridgePort: number | null;
+  mappingBridgePort: number | null;
+};
+
+export type MissionBridgeStatus = {
+  robotId: string;
+  robotName: string;
+  url: string | null;
+  status: MissionConnectionStatus;
+  readyState: number | null;
+  connectingAgeMs: number | null;
+  reconnectAttempt: number;
+  connectedAt: string | null;
+  lastError: string | null;
+  lastPongAt: string | null;
+};
+
 type ActiveConnection = {
   socket: WebSocket;
   manualClose: boolean;
+  startedAt: number;
+  awaitingPong: boolean;
+  connectedAt?: number;
+  connectTimeout?: NodeJS.Timeout;
+  heartbeatInterval?: NodeJS.Timeout;
+  heartbeatTimeout?: NodeJS.Timeout;
+  lastError?: string;
+  lastPongAt?: number;
 };
 
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
+
+const parsePositiveMs = (envKey: string, fallback: number) => {
+  const raw = process.env[envKey];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+};
+
+const MISSION_CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
+const MISSION_HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_INTERVAL_MS', 30_000);
+const MISSION_HEARTBEAT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_TIMEOUT_MS', 10_000);
 
 const formatError = (error: unknown) =>
   error instanceof Error
@@ -107,6 +149,7 @@ export class MissionRegistry extends EventEmitter {
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
   private reconnectAttempts = new Map<string, number>();
   private statuses = new Map<string, MissionConnectionStatus>();
+  private lastConnectionErrors = new Map<string, string>();
   private runStore: MissionRunStore;
   private rememberNonEmergencyStatus:
     | ((robotId: string, status: 'TELEOP' | 'AUTONOMOUS') => void)
@@ -128,6 +171,32 @@ export class MissionRegistry extends EventEmitter {
 
   get missionRunStore() {
     return this.runStore;
+  }
+
+  getStatuses(): MissionBridgeStatus[] {
+    const now = Date.now();
+    return Array.from(this.robotConfigs.values()).map(config => {
+      const connection = this.connections.get(config.id);
+      const readyState = connection?.socket.readyState ?? null;
+      const status = this.statuses.get(config.id) ?? (config.url ? 'disconnected' : 'unconfigured');
+      const connectingAgeMs =
+        connection && readyState === WebSocket.CONNECTING ? now - connection.startedAt : null;
+
+      return {
+        robotId: config.id,
+        robotName: config.name,
+        url: config.url ?? null,
+        status,
+        readyState,
+        connectingAgeMs,
+        reconnectAttempt: this.reconnectAttempts.get(config.id) ?? 0,
+        connectedAt: connection?.connectedAt
+          ? new Date(connection.connectedAt).toISOString()
+          : null,
+        lastError: connection?.lastError ?? this.lastConnectionErrors.get(config.id) ?? null,
+        lastPongAt: connection?.lastPongAt ? new Date(connection.lastPongAt).toISOString() : null,
+      };
+    });
   }
 
   async reloadFromDb() {
@@ -155,66 +224,92 @@ export class MissionRegistry extends EventEmitter {
 
       for (const robot of robots) {
         desiredIds.add(robot.id);
-        const port =
-          robot.missionBridgePort ?? robot.mappingBridgePort ?? DEFAULT_MISSION_BRIDGE_PORT;
-        const url = robot.ipAddress
-          ? `ws://${robot.ipAddress}:${port ?? DEFAULT_MAPPING_BRIDGE_PORT}`
-          : undefined;
-        const nextConfig: RobotMissionConfig = {
-          id: robot.id,
-          name: robot.name,
-          ipAddress: robot.ipAddress,
-          mapId: robot.mapId,
-          missionBridgePort: robot.missionBridgePort,
-          mappingBridgePort: robot.mappingBridgePort,
-          url,
-        };
-
-        this.log.info(
-          {
-            robotId: robot.id,
-            robotName: robot.name,
-            ipAddress: robot.ipAddress,
-            missionBridgePort: robot.missionBridgePort,
-            mappingBridgePort: robot.mappingBridgePort,
-            resolvedMissionBridgeUrl: url,
-            existingStatus: this.statuses.get(robot.id) ?? null,
-          },
-          'Resolved mission bridge config'
-        );
-
-        const previous = this.robotConfigs.get(robot.id);
-        this.robotConfigs.set(robot.id, nextConfig);
-
-        if (!url) {
-          this.log.warn(
-            { robotId: robot.id, robotName: robot.name, ipAddress: robot.ipAddress },
-            'Mission bridge not configured: robot has no IP address'
-          );
-          this.disconnectRobot(robot.id);
-          this.statuses.set(robot.id, 'unconfigured');
-          continue;
-        }
-
-        const connection = this.connections.get(robot.id);
-        if (connection && previous?.url === url) {
-          continue;
-        }
-
-        this.connectRobot(robot.id);
+        this.syncRobotConfig(robot);
       }
 
-      for (const robotId of Array.from(this.robotConfigs.keys())) {
-        if (desiredIds.has(robotId)) continue;
-        this.log.warn({ robotId }, 'Removing stale mission bridge robot config');
-        this.robotConfigs.delete(robotId);
-        this.statuses.delete(robotId);
-        this.disconnectRobot(robotId);
-        this.clearReconnectTimer(robotId);
-      }
+      this.removeStaleRobotConfigs(desiredIds);
     } catch (error) {
       this.log.error({ err: formatError(error) }, 'Mission registry DB reload failed');
       throw error;
+    }
+  }
+
+  private syncRobotConfig(robot: PersistedRobotMissionConfig) {
+    const port = robot.missionBridgePort ?? robot.mappingBridgePort ?? DEFAULT_MISSION_BRIDGE_PORT;
+    const url = robot.ipAddress
+      ? `ws://${robot.ipAddress}:${port ?? DEFAULT_MAPPING_BRIDGE_PORT}`
+      : undefined;
+    const nextConfig: RobotMissionConfig = {
+      id: robot.id,
+      name: robot.name,
+      ipAddress: robot.ipAddress,
+      mapId: robot.mapId,
+      missionBridgePort: robot.missionBridgePort,
+      mappingBridgePort: robot.mappingBridgePort,
+      url,
+    };
+
+    this.log.info(
+      {
+        robotId: robot.id,
+        robotName: robot.name,
+        ipAddress: robot.ipAddress,
+        missionBridgePort: robot.missionBridgePort,
+        mappingBridgePort: robot.mappingBridgePort,
+        resolvedMissionBridgeUrl: url,
+        existingStatus: this.statuses.get(robot.id) ?? null,
+      },
+      'Resolved mission bridge config'
+    );
+
+    const previous = this.robotConfigs.get(robot.id);
+    this.robotConfigs.set(robot.id, nextConfig);
+
+    if (!url) {
+      this.log.warn(
+        { robotId: robot.id, robotName: robot.name, ipAddress: robot.ipAddress },
+        'Mission bridge not configured: robot has no IP address'
+      );
+      this.disconnectRobot(robot.id);
+      this.statuses.set(robot.id, 'unconfigured');
+      this.lastConnectionErrors.delete(robot.id);
+      return;
+    }
+
+    const connection = this.connections.get(robot.id);
+    if (connection && previous?.url === url) {
+      this.reconnectStaleUnchangedUrl(robot.id, url, connection);
+      return;
+    }
+
+    this.connectRobot(robot.id);
+  }
+
+  private reconnectStaleUnchangedUrl(robotId: string, url: string, connection: ActiveConnection) {
+    if (!this.isStaleConnecting(connection)) return;
+
+    this.log.warn(
+      {
+        robotId,
+        url,
+        readyState: connection.socket.readyState,
+        connectingAgeMs: Date.now() - connection.startedAt,
+        timeoutMs: MISSION_CONNECT_TIMEOUT_MS,
+      },
+      'Mission bridge connection is stale during reload; reconnecting'
+    );
+    this.connectRobot(robotId);
+  }
+
+  private removeStaleRobotConfigs(desiredIds: Set<string>) {
+    for (const robotId of Array.from(this.robotConfigs.keys())) {
+      if (desiredIds.has(robotId)) continue;
+      this.log.warn({ robotId }, 'Removing stale mission bridge robot config');
+      this.robotConfigs.delete(robotId);
+      this.statuses.delete(robotId);
+      this.lastConnectionErrors.delete(robotId);
+      this.disconnectRobot(robotId);
+      this.clearReconnectTimer(robotId);
     }
   }
 
@@ -311,6 +406,7 @@ export class MissionRegistry extends EventEmitter {
       socket = new WebSocket(config.url);
     } catch (error) {
       this.statuses.set(robotId, 'error');
+      this.lastConnectionErrors.set(robotId, 'socket_construction_failed');
       this.log.error(
         { robotId, url: config.url, err: formatError(error) },
         'Mission bridge socket construction failed'
@@ -318,14 +414,36 @@ export class MissionRegistry extends EventEmitter {
       this.scheduleReconnect(robotId);
       return;
     }
-    const connection: ActiveConnection = { socket, manualClose: false };
+    const connection: ActiveConnection = {
+      socket,
+      manualClose: false,
+      startedAt: Date.now(),
+      awaitingPong: false,
+    };
     this.connections.set(robotId, connection);
+    connection.connectTimeout = this.createTimeout(() => {
+      if (this.connections.get(robotId) !== connection) return;
+      if (socket.readyState !== WebSocket.CONNECTING) return;
+      this.resetConnection(
+        robotId,
+        connection,
+        'connect_timeout',
+        'Mission bridge connect timed out; scheduling reconnect',
+        { timeoutMs: MISSION_CONNECT_TIMEOUT_MS }
+      );
+    }, MISSION_CONNECT_TIMEOUT_MS);
 
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
+      this.clearConnectTimeout(connection);
+      connection.connectedAt = Date.now();
+      connection.awaitingPong = false;
+      connection.lastPongAt = Date.now();
       this.reconnectAttempts.set(robotId, 0);
       this.statuses.set(robotId, 'connected');
+      this.lastConnectionErrors.delete(robotId);
       this.log.info({ robotId, url: config.url }, 'Connected to mission bridge');
+      this.startHeartbeat(robotId, connection);
     });
 
     socket.on('message', data => {
@@ -338,17 +456,34 @@ export class MissionRegistry extends EventEmitter {
       });
     });
 
+    socket.on('pong', () => {
+      if (this.connections.get(robotId) !== connection) return;
+      connection.awaitingPong = false;
+      connection.lastPongAt = Date.now();
+      this.clearHeartbeatTimeout(connection);
+    });
+
     socket.on('error', error => {
       if (this.connections.get(robotId) !== connection) return;
       this.statuses.set(robotId, 'error');
+      connection.lastError = 'socket_error';
+      this.lastConnectionErrors.set(robotId, 'socket_error');
       this.log.error(
         { robotId, url: config.url, err: formatError(error) },
         'Mission bridge socket error'
+      );
+      this.resetConnection(
+        robotId,
+        connection,
+        'socket_error',
+        'Mission bridge socket error; scheduling reconnect',
+        { err: formatError(error) }
       );
     });
 
     socket.on('close', (code, reason) => {
       if (this.connections.get(robotId) !== connection) return;
+      this.clearConnectionTimers(connection);
       this.connections.delete(robotId);
       if (connection.manualClose || this.stopped || !this.robotConfigs.get(robotId)?.url) {
         this.statuses.set(robotId, 'disconnected');
@@ -374,19 +509,165 @@ export class MissionRegistry extends EventEmitter {
     });
   }
 
+  private isStaleConnecting(connection: ActiveConnection, now = Date.now()) {
+    return (
+      connection.socket.readyState === WebSocket.CONNECTING &&
+      now - connection.startedAt >= MISSION_CONNECT_TIMEOUT_MS
+    );
+  }
+
+  private createTimeout(callback: () => void, delayMs: number) {
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  private createInterval(callback: () => void, delayMs: number) {
+    const timer = setInterval(callback, delayMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  private clearConnectTimeout(connection: ActiveConnection) {
+    if (!connection.connectTimeout) return;
+    clearTimeout(connection.connectTimeout);
+    delete connection.connectTimeout;
+  }
+
+  private clearHeartbeatTimeout(connection: ActiveConnection) {
+    if (!connection.heartbeatTimeout) return;
+    clearTimeout(connection.heartbeatTimeout);
+    delete connection.heartbeatTimeout;
+  }
+
+  private clearHeartbeatInterval(connection: ActiveConnection) {
+    if (!connection.heartbeatInterval) return;
+    clearInterval(connection.heartbeatInterval);
+    delete connection.heartbeatInterval;
+  }
+
+  private clearConnectionTimers(connection: ActiveConnection) {
+    this.clearConnectTimeout(connection);
+    this.clearHeartbeatTimeout(connection);
+    this.clearHeartbeatInterval(connection);
+    connection.awaitingPong = false;
+  }
+
+  private startHeartbeat(robotId: string, connection: ActiveConnection) {
+    this.clearHeartbeatInterval(connection);
+    this.clearHeartbeatTimeout(connection);
+    connection.heartbeatInterval = this.createInterval(() => {
+      if (this.connections.get(robotId) !== connection) {
+        this.clearConnectionTimers(connection);
+        return;
+      }
+      if (connection.socket.readyState !== WebSocket.OPEN) return;
+      if (connection.awaitingPong) {
+        this.resetConnection(
+          robotId,
+          connection,
+          'heartbeat_missed_pong',
+          'Mission bridge heartbeat missed pong; scheduling reconnect',
+          {
+            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
+            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+          }
+        );
+        return;
+      }
+
+      connection.awaitingPong = true;
+      try {
+        connection.socket.ping();
+      } catch (error) {
+        this.resetConnection(
+          robotId,
+          connection,
+          'heartbeat_ping_failed',
+          'Mission bridge heartbeat ping failed; scheduling reconnect',
+          { err: formatError(error) }
+        );
+        return;
+      }
+
+      this.clearHeartbeatTimeout(connection);
+      connection.heartbeatTimeout = this.createTimeout(() => {
+        if (this.connections.get(robotId) !== connection || !connection.awaitingPong) return;
+        this.resetConnection(
+          robotId,
+          connection,
+          'heartbeat_missed_pong',
+          'Mission bridge heartbeat missed pong; scheduling reconnect',
+          {
+            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
+            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+          }
+        );
+      }, MISSION_HEARTBEAT_TIMEOUT_MS);
+    }, MISSION_HEARTBEAT_INTERVAL_MS);
+  }
+
+  private resetConnection(
+    robotId: string,
+    connection: ActiveConnection,
+    error: string,
+    message: string,
+    fields: Record<string, unknown>
+  ) {
+    if (this.connections.get(robotId) !== connection) {
+      this.clearConnectionTimers(connection);
+      return;
+    }
+
+    const config = this.robotConfigs.get(robotId);
+    connection.manualClose = true;
+    connection.lastError = error;
+    this.lastConnectionErrors.set(robotId, error);
+    this.clearConnectionTimers(connection);
+    this.connections.delete(robotId);
+    this.statuses.set(robotId, 'disconnected');
+    this.log.warn(
+      {
+        robotId,
+        url: config?.url ?? null,
+        readyState: connection.socket.readyState,
+        ...fields,
+      },
+      message
+    );
+
+    try {
+      this.detachRetiredSocket(connection);
+      connection.socket.terminate();
+    } catch {}
+
+    this.scheduleReconnect(robotId);
+  }
+
   private disconnectRobot(robotId: string) {
     const connection = this.connections.get(robotId);
     if (!connection) return;
     connection.manualClose = true;
+    this.clearConnectionTimers(connection);
     this.connections.delete(robotId);
     try {
-      connection.socket.removeAllListeners();
-      connection.socket.close();
+      this.detachRetiredSocket(connection);
+      if (connection.socket.readyState === WebSocket.OPEN) {
+        connection.socket.close();
+      } else if (connection.socket.readyState !== WebSocket.CLOSED) {
+        connection.socket.terminate();
+      }
     } catch {}
+  }
+
+  private detachRetiredSocket(connection: ActiveConnection) {
+    connection.socket.removeAllListeners();
+    connection.socket.on('error', () => {});
   }
 
   private scheduleReconnect(robotId: string) {
     if (this.stopped || this.reconnectTimers.has(robotId)) return;
+    if (!this.robotConfigs.get(robotId)?.url) return;
     const attempt = this.reconnectAttempts.get(robotId) ?? 0;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
     this.reconnectAttempts.set(robotId, attempt + 1);

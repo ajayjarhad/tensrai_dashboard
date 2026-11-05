@@ -88,9 +88,6 @@ export const api = ky.create({
   prefixUrl: resolveApiHttpBase(),
   credentials: 'include',
   timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
   retry: {
     limit: 2,
     methods: ['get', 'put', 'patch', 'delete'],
@@ -117,18 +114,25 @@ type ApiRequestOptions = Omit<Options, 'prefixUrl'>;
 
 const withOptions = (options?: ApiRequestOptions): Options | undefined => options;
 
+const withJsonBody = (data?: any, options?: ApiRequestOptions): Options | undefined => {
+  if (data === undefined) {
+    return withOptions(options);
+  }
+  return { json: data, ...withOptions(options) };
+};
+
 export const apiClient = {
   get: <T>(url: string, options?: ApiRequestOptions) =>
     api.get<T>(url, withOptions(options)).json<T>(),
 
   post: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    api.post<T>(url, { json: data, ...withOptions(options) }).json<T>(),
+    api.post<T>(url, withJsonBody(data, options)).json<T>(),
 
   put: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    api.put<T>(url, { json: data, ...withOptions(options) }).json<T>(),
+    api.put<T>(url, withJsonBody(data, options)).json<T>(),
 
   patch: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
-    api.patch<T>(url, { json: data, ...withOptions(options) }).json<T>(),
+    api.patch<T>(url, withJsonBody(data, options)).json<T>(),
 
   delete: <T>(url: string, options?: ApiRequestOptions) =>
     api.delete<T>(url, withOptions(options)).json<T>(),

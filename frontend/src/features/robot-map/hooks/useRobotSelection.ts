@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { Robot } from '@/types/robot';
 
+export { robotHasMap } from '../utils/mapSelection';
+
 interface RobotSelectionOptions {
   suspendAutoMapSync?: boolean;
+}
+
+// The robot's active map: prefer the active RobotMap assignment, fall back to the
+// legacy mapId (which the backend keeps pointed at the active map).
+export function activeMapIdForRobot(robot: Robot | null | undefined): string | null {
+  if (!robot) return null;
+  return robot.maps?.find(map => map.isActive)?.id ?? robot.mapId ?? null;
 }
 
 export function useRobotSelection(robots: Robot[], options: RobotSelectionOptions = {}) {
@@ -12,33 +21,36 @@ export function useRobotSelection(robots: Robot[], options: RobotSelectionOption
 
   const activeRobotId =
     selectedRobotId ??
-    robots.find(robot => robot.mapId && robot.mapId === activeMapId)?.id ??
-    robots.find(robot => robot.mapId)?.id ??
+    robots.find(robot => activeMapIdForRobot(robot) === activeMapId && activeMapId)?.id ??
+    robots.find(robot => activeMapIdForRobot(robot))?.id ??
     null;
 
   // Initialize or recover active map when robots load or change
   useEffect(() => {
     if (options.suspendAutoMapSync) return;
     if (activeMapId) return;
-    const firstWithMap = robots.find(robot => robot.mapId);
-    if (firstWithMap?.mapId) {
-      setActiveMapId(firstWithMap.mapId);
+    const firstWithMap = robots.find(robot => activeMapIdForRobot(robot));
+    const firstMapId = activeMapIdForRobot(firstWithMap);
+    if (firstMapId) {
+      setActiveMapId(firstMapId);
     }
   }, [activeMapId, options.suspendAutoMapSync, robots]);
 
-  // Keep active map in sync with the selected robot when its map changes
+  // Keep active map in sync with the selected robot when its active map changes
   useEffect(() => {
     if (options.suspendAutoMapSync) return;
     const selectedRobot = robots.find(robot => robot.id === selectedRobotId);
-    if (selectedRobot?.mapId && selectedRobot.mapId !== activeMapId) {
-      setActiveMapId(selectedRobot.mapId);
+    const selectedMapId = activeMapIdForRobot(selectedRobot);
+    if (selectedMapId && selectedMapId !== activeMapId) {
+      setActiveMapId(selectedMapId);
     }
   }, [activeMapId, options.suspendAutoMapSync, robots, selectedRobotId]);
 
   const handleSelectRobot = (robot: Robot | null) => {
     setSelectedRobotId(robot?.id ?? null);
-    if (robot?.mapId) {
-      setActiveMapId(robot.mapId);
+    const mapId = activeMapIdForRobot(robot);
+    if (mapId) {
+      setActiveMapId(mapId);
     }
     if (robot) {
       setIsSidebarOpen(true);

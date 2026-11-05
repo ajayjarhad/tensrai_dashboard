@@ -113,16 +113,49 @@ model Robot {
   updatedAt           DateTime  @updatedAt
 
   missionRuns         MissionRun[]
+  robotMaps           RobotMap[]
 }
 
 model Map {
+  id                     String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                   String    @unique
+  filename               String    @unique
+  image                  Bytes     // Binary PGM data
+  metadata               Json      // YAML metadata (resolution, origin)
+  features               Json      // Location tags, missions
+  contentHash            String?
+  pixelWidth             Int?
+  pixelHeight            Int?
+  imageSizeBytes         Int?
+  displayWebp            Bytes?
+  displayWebpSizeBytes   Int?
+  displayWebpGeneratedAt DateTime?
+  displayPng             Bytes?
+  displayPngSizeBytes    Int?
+  displayPngGeneratedAt  DateTime?
+  previewWebp            Bytes?
+  previewPng             Bytes?
+  previewSizeBytes       Int?
+  displayGenerationError String?
+  robots                 Robot[]
+  robotMaps              RobotMap[]
+}
+
+model RobotMap {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  name      String   @unique
-  filename  String   @unique
-  image     Bytes    // Binary PGM data
-  metadata  Json     // YAML metadata (resolution, origin)
-  features  Json     // Location tags, missions
-  robots    Robot[]
+  robotId   String   @db.ObjectId
+  mapId     String   @db.ObjectId
+  isActive  Boolean  @default(false) // map currently shown / localized for this robot
+  isPinned  Boolean  @default(false) // user manually overrode auto-follow
+  syncedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  robot Robot @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  map   Map   @relation(fields: [mapId], references: [id], onDelete: Cascade)
+
+  @@unique([robotId, mapId])
+  @@index([robotId, isActive])
+  @@index([mapId])
 }
 
 enum RobotMode {
