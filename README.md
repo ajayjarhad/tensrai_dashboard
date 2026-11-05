@@ -36,21 +36,45 @@ bun run dev
 ```
 
 `bun run dev` uses your local MongoDB if `mongod` is installed, otherwise it starts the one from
-`docker-compose.yml` (so Docker needs to be running). Each start also syncs the schema and creates any
-missing seed users.
+`docker-compose.yml` (so Docker needs to be running). Each start also syncs the schema.
 
-From the repo root, `bun run backend <script>` runs any backend script with these settings, for example
-`bun run backend staff:create someone someone@tensrai.com` for a staff login.
+From the repo root, `bun run backend <script>` runs any backend script with these settings.
 
-### Seed baseline users
+### Default staff account
 
-Provision default admin/operator accounts for local testing:
+The first login on any deployment is `admin@tensrai.ai`, whose username is that address. Its first password is
+set once, by whoever looks after the repo:
 
 ```bash
-bun run backend seed
+bun run backend staff:default-password
 ```
 
-Set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`, `PASSWORD`) before running the command; without a password the account is created with the default `pass`, which the script warns about. The seed only creates accounts that are missing, so it is safe to run on every start and never resets an existing user's password.
+That asks for a password (hidden) and writes only its bcrypt hash to
+`backend/scripts/defaultStaffPassword.hash`, which you commit. **This repo is public, so the hash is too.** Use
+a long random password, keep it in a password manager, and never reuse it.
+
+A deployment that has no staff at all creates the account when it starts, from that hash. There's nothing to set
+up on the server, but until someone signs in, anyone who knows the password can take the account, so:
+
+1. Sign in straight after deploying. You'll have to choose a new password, and the committed one stops working.
+2. If nobody signs in within 72 hours, the first password expires.
+
+To set or reset a password yourself, including after it expires, run one of these. Nothing you type is shown,
+and it signs the account out everywhere:
+
+```bash
+bun run backend staff:create
+```
+
+```bash
+docker compose exec backend sh -c 'cd backend && bunx tsx scripts/createStaff.ts'
+```
+
+Changing the committed hash only affects new deployments. Deleting the only staff account means the next start
+creates it again from the hash.
+
+To also seed demo accounts, set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNAME`, `DISPLAY_NAME`,
+`PASSWORD`). An account with no password set isn't created, and existing accounts are never changed.
 
 ### Organizations (multi-tenancy)
 

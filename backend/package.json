@@ -20,6 +20,7 @@
     "backfill:org": "./scripts/mongoReplica.sh && tsx scripts/backfillOrg.ts",
     "org:create": "./scripts/mongoReplica.sh && tsx scripts/createOrg.ts",
     "staff:create": "./scripts/mongoReplica.sh && tsx scripts/createStaff.ts",
+    "staff:default-password": "tsx scripts/setDefaultStaffPassword.ts",
     "dev:with-seed": "npm run seed:all && bun --watch src/index.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

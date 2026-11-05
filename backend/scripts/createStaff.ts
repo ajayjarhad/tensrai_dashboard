@@ -1,16 +1,53 @@
-import { randomBytes } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
-import { createUserWithTempPassword } from '../src/services/user.service.js';
-import { ensureDefaultOrg } from './defaultOrg.js';
+import bcrypt from 'bcryptjs';
+import { createUserWithTempPassword, logAuditEvent } from '../src/services/user.service.js';
+import { commandLineActorId, ensureDefaultOrg } from './defaultOrg.js';
+import { askForPassword, DEFAULT_STAFF } from './defaultStaff.js';
 
 const prisma = new PrismaClient();
 
 const [username, email] = process.argv.slice(2);
 
+// Replaces the password whenever it's run, which is also the way back in if it's lost or has expired.
+const setDefaultStaff = async () => {
+  const password = await askForPassword();
+  const account = {
+    role: 'STAFF' as const,
+    isActive: true,
+    passwordHash: await bcrypt.hash(password, 12),
+    tempPasswordHash: null,
+    tempPasswordExpiry: null,
+    mustResetPassword: false,
+  };
+
+  const existing = await prisma.user.findFirst({
+    where: { OR: [{ username: DEFAULT_STAFF.username }, { email: DEFAULT_STAFF.email }] },
+  });
+  const user = existing
+    ? await prisma.user.update({ where: { id: existing.id }, data: account })
+    : await prisma.user.create({
+        data: { ...DEFAULT_STAFF, ...account, orgId: (await ensureDefaultOrg(prisma)).id },
+      });
+  await prisma.session.deleteMany({ where: { userId: user.id } });
+
+  await logAuditEvent(prisma, {
+    orgId: user.orgId,
+    userId: commandLineActorId(),
+    role: 'SYSTEM',
+    action: existing ? 'STAFF_PASSWORD_REPLACED' : 'STAFF_CREATED',
+    targetUserId: user.id,
+    metadata: { targetUsername: user.username },
+  });
+  console.log(
+    `${existing ? 'New password set' : 'Created staff user'}. Sign in as ${user.username}`
+  );
+};
+
 // The only way to make a staff user: the API refuses to assign this role, by anyone.
 async function main() {
   if (!username) {
-    throw new Error('Usage: staff:create <username> [email]   (email is required for a new user)');
+    await setDefaultStaff();
+    return;
   }
 
   const existing = await prisma.user.findUnique({ where: { username } });
@@ -22,12 +59,10 @@ async function main() {
   if (!email) throw new Error(`No user named ${username}; pass an email to create one`);
 
   const org = await ensureDefaultOrg(prisma);
-  // The audit trail needs an actor id; this one marks the command line.
-  const actorId = randomBytes(12).toString('hex');
   const { tempPassword } = await createUserWithTempPassword(
     prisma,
     { username, email, role: 'STAFF' },
-    actorId,
+    commandLineActorId(),
     'SYSTEM',
     org.id
   );

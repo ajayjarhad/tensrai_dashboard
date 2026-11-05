@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { createOrgWithAdmin } from '../src/services/org.service.js';
+import { commandLineActorId } from './defaultOrg.js';
 
 const prisma = new PrismaClient();
 
@@ -12,7 +12,7 @@ async function main() {
   }
 
   // The audit trail needs an actor id; this one marks the command line.
-  const actor = { id: randomBytes(12).toString('hex'), role: 'SYSTEM' };
+  const actor = { id: commandLineActorId(), role: 'SYSTEM' };
   const { org, user, tempPassword } = await createOrgWithAdmin(
     prisma,
     { name, slug, username, email },

@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { generateTemporaryPassword } from '../utils/password-generator.js';
 import { AuthTracer } from '../utils/tracing.js';
 
-const TEMP_PASSWORD_TTL_MS = 72 * 60 * 60 * 1000;
+export const TEMP_PASSWORD_TTL_MS = 72 * 60 * 60 * 1000;
 
 // An expected failure whose message is safe to show the caller.
 export class ServiceError extends Error {
@@ -39,7 +39,7 @@ export interface ResetPasswordInput {
 /**
  * Log audit event helper
  */
-async function logAuditEvent(
+export async function logAuditEvent(
   prisma: PrismaClient,
   event: {
     orgId?: string;
@@ -158,6 +158,10 @@ export async function resetPasswordWithTemp(
 
   if (resetData.newPassword.length < 8) {
     throw new Error('Password must be at least 8 characters long');
+  }
+
+  if (resetData.newPassword === resetData.tempPassword) {
+    throw new Error('Choose a password different from the temporary one');
   }
 
   const user = await prisma.user.findUnique({
