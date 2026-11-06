@@ -211,6 +211,7 @@ export class RosRobotManager extends EventEmitter {
   private pendingLaserByStamp = new Map<string, PendingLaserScan>();
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
+  private teleopConnectionId?: string;
   private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
 
   constructor(readonly config: RosRobotConfig) {
@@ -333,6 +334,14 @@ export class RosRobotManager extends EventEmitter {
       this.armTeleopWatchdog(runtime.config);
     }
 
+    const published = this.publishToChannel(channelName, runtime, outgoing);
+    if (channelName === 'teleop' && published.ok) {
+      this.teleopConnectionId = published.connectionId;
+    }
+    return published;
+  }
+
+  private publishToChannel(channelName: string, runtime: ChannelRuntime, outgoing: unknown) {
     const requestedConnectionId = runtime.config.connectionId ?? 'default';
     const connection = this.getConnectionForChannel(runtime.config);
     const fallbackConnection =
@@ -531,30 +540,48 @@ export class RosRobotManager extends EventEmitter {
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.teleopTimers.delete(channelName);
-      try {
-        const connection = this.getConnectionForChannel(config);
-        if (connection) {
-          connection.publish(config.topic, config.msgType, zeroTwist());
-        }
-      } catch {
-        // ignore watchdog send failures
-      }
+      this.publishTeleopStop(config, true);
     }, timeoutMs);
     this.teleopTimers.set(channelName, timer);
   }
 
   private sendZeroTeleopIfNeeded() {
+    const motionPending = this.teleopTimers.size > 0;
     for (const timer of this.teleopTimers.values()) {
       clearTimeout(timer);
     }
     this.teleopTimers.clear();
     const teleop = this.channels.get('teleop');
     if (!teleop || teleop.config.direction !== 'publish') return;
-    try {
-      const connection = this.getConnectionForChannel(teleop.config);
-      connection?.publish(teleop.config.topic, teleop.config.msgType, zeroTwist());
-    } catch {
-      // ignore cleanup send failures
+    this.publishTeleopStop(teleop.config, motionPending);
+  }
+
+  // Teleop may be running on the default connection while control is down, and a publisher that has
+  // only just advertised can lose its first message, so the stop goes where teleop last went.
+  // ponytail: a stop nothing could carry is reported, not retried on reconnect. Keep it pending if
+  // a robot base turns out to have no cmd_vel timeout of its own.
+  private publishTeleopStop(config: RosChannelConfig, motionPending: boolean) {
+    const candidates = new Set([
+      this.teleopConnectionId,
+      config.connectionId ?? 'default',
+      'default',
+    ]);
+    const failures: string[] = [];
+    for (const id of candidates) {
+      const connection = this.connections.get(id);
+      if (!connection) continue;
+      try {
+        connection.publish(config.topic, config.msgType, zeroTwist());
+        return;
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
+    }
+    if (motionPending) {
+      this.emit(
+        'error',
+        new Error(`Teleop stop not delivered: ${failures.join('; ') || 'no connection'}`)
+      );
     }
   }
 
