@@ -1,112 +1,27 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
-import {
-  ArrowLeft,
-  ChevronDown,
-  ChevronRight,
-  Pencil,
-  Plus,
-  RefreshCcw,
-  Save,
-  Trash2,
-  X,
-} from 'lucide-react';
+import { ArrowLeft, Plus, RefreshCcw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { MoveRobotControl } from '@/features/staff/components/MoveRobotControl';
 import { apiClient } from '@/lib/api';
 import { evictFromCache } from '@/lib/map/loadMapAssets';
 import { queryKeys } from '@/lib/query-keys';
-import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
+import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { useAuth } from '@/stores/auth';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
-import type { Robot, RobotMode } from '@/types/robot';
+import type { Robot } from '@/types/robot';
+import { useChannelEditor } from '../hooks/useChannelEditor';
+import { useMapSync } from '../hooks/useMapSync';
+import {
+  DEFAULT_CHANNELS,
+  DEFAULT_ROBOT,
+  type EditableRobot,
+  type MapOption,
+} from '../robotFormModel';
 import { AdminNav } from './AdminNav';
-
-type EditableRobot = Partial<Robot> & {
-  id?: string;
-  name: string;
-  ipAddress?: string;
-  bridgePort?: number;
-  mappingBridgePort?: number;
-  missionBridgePort?: number;
-  emergencyBridgePort?: number;
-  mapId?: string;
-  status?: RobotMode;
-  channels?: Robot['channels'];
-};
-
-const DEFAULT_ROBOT: EditableRobot = {
-  name: '',
-  ipAddress: '',
-  bridgePort: 9090,
-  mappingBridgePort: 8765,
-  missionBridgePort: 9487,
-  emergencyBridgePort: 8766,
-  mapId: '',
-  status: 'UNKNOWN' as RobotMode,
-};
-
-const defaultChannels = [
-  {
-    name: 'odom',
-    topic: '/odom_ui',
-    msgType: 'nav_msgs/msg/Odometry',
-    direction: 'subscribe',
-    rateLimitHz: 5,
-  },
-  {
-    name: 'laser',
-    topic: '/scan_ui',
-    msgType: 'sensor_msgs/msg/LaserScan',
-    direction: 'subscribe',
-    rateLimitHz: 3,
-  },
-  {
-    name: 'waypoints',
-    topic: '/plan_ui',
-    msgType: 'nav_msgs/msg/Path',
-    direction: 'subscribe',
-    rateLimitHz: 2,
-  },
-  {
-    name: 'teleop',
-    topic: '/cmd_vel_ui',
-    msgType: 'geometry_msgs/msg/Twist',
-    direction: 'publish',
-    connectionId: 'control',
-  },
-];
-
-type MapSyncStatus = {
-  phase:
-    | 'idle'
-    | 'connecting'
-    | 'manifest'
-    | 'skipped'
-    | 'receiving'
-    | 'processing'
-    | 'complete'
-    | 'failed';
-  robotId: string;
-  mapId?: string;
-  mapName?: string;
-  filename?: string;
-  contentHash?: string;
-  bytesReceived: number;
-  totalBytes?: number;
-  percent?: number;
-  lastError?: string;
-};
-
-const MAP_SYNC_TERMINAL_PHASES = new Set<MapSyncStatus['phase']>(['complete', 'skipped', 'failed']);
-const MAP_SYNC_POLL_INTERVAL_MS = 2_000;
-
-const isTerminalMapSyncStatus = (status: MapSyncStatus | null | undefined) =>
-  Boolean(status && MAP_SYNC_TERMINAL_PHASES.has(status.phase));
-
-const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+import { RobotForm } from './RobotForm';
+import { RobotTable } from './RobotTable';
 
 export function RobotManagement() {
   const navigate = useNavigate();
@@ -120,14 +35,11 @@ export function RobotManagement() {
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<EditableRobot>(DEFAULT_ROBOT);
   const [saving, setSaving] = useState(false);
-  const [maps, setMaps] = useState<{ id: string; name: string }[]>([]);
-  const [channelsInput, setChannelsInput] = useState<string>('');
-  const [channelsError, setChannelsError] = useState<string | null>(null);
-  const [customChannels, setCustomChannels] = useState<any[]>(defaultChannels);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [maps, setMaps] = useState<MapOption[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [mapSyncByRobotId, setMapSyncByRobotId] = useState<Record<string, MapSyncStatus>>({});
   const [refreshingMapRobotId, setRefreshingMapRobotId] = useState<string | null>(null);
+  const channelEditor = useChannelEditor();
+  const { statusByRobotId: mapSyncByRobotId, runMapSync } = useMapSync();
   const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
   const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
   const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
@@ -181,9 +93,7 @@ export function RobotManagement() {
 
   const loadMaps = useCallback(async () => {
     try {
-      const res = await apiClient.get<{ success: boolean; data: { id: string; name: string }[] }>(
-        'maps'
-      );
+      const res = await apiClient.get<{ success: boolean; data: MapOption[] }>('maps');
       if (res.success) {
         setMaps(res.data);
       }
@@ -249,19 +159,15 @@ export function RobotManagement() {
       next.channels = robot.channels;
     }
     setForm(next);
-    const initialChannels =
-      robot.channels && Array.isArray(robot.channels) ? robot.channels : defaultChannels;
-    setCustomChannels(initialChannels);
-    setChannelsInput(JSON.stringify(initialChannels, null, 2));
+    channelEditor.load(
+      robot.channels && Array.isArray(robot.channels) ? robot.channels : DEFAULT_CHANNELS
+    );
     setShowForm(true);
   };
 
   const resetForm = () => {
     setForm(DEFAULT_ROBOT);
-    setCustomChannels(defaultChannels);
-    setChannelsInput(JSON.stringify(defaultChannels, null, 2));
-    setChannelsError(null);
-    setAdvancedOpen(false);
+    channelEditor.reset();
     setShowForm(true);
   };
 
@@ -270,10 +176,9 @@ export function RobotManagement() {
       setError('Name is required');
       return;
     }
-    const finalChannels = customChannels.length ? customChannels : undefined;
     setSaving(true);
     try {
-      const payload: any = {
+      const payload = {
         name: form.name,
         ipAddress: form.ipAddress || undefined,
         bridgePort: form.bridgePort ? Number(form.bridgePort) : undefined,
@@ -283,7 +188,7 @@ export function RobotManagement() {
           ? Number(form.emergencyBridgePort)
           : undefined,
         status: form.status ?? 'UNKNOWN',
-        channels: finalChannels,
+        channels: channelEditor.channels.length ? channelEditor.channels : undefined,
       };
       if (form.id) {
         await apiClient.patch(`robots/${form.id}`, payload);
@@ -318,32 +223,7 @@ export function RobotManagement() {
 
     setRefreshingMapRobotId(robotId);
     try {
-      const startResponse = await apiClient.post<{
-        success: boolean;
-        data?: MapSyncStatus;
-        error?: string;
-      }>(`robots/${robotId}/map-sync`);
-      let status = startResponse.data ?? null;
-      if (status) {
-        const nextStatus = status;
-        setMapSyncByRobotId(current => ({ ...current, [robotId]: nextStatus }));
-      }
-
-      while (!isTerminalMapSyncStatus(status)) {
-        await sleep(MAP_SYNC_POLL_INTERVAL_MS);
-        const pollResponse = await apiClient.get<{ success: boolean; data?: MapSyncStatus }>(
-          `robots/${robotId}/map-sync`
-        );
-        status = pollResponse.data ?? null;
-        if (status) {
-          const nextStatus = status;
-          setMapSyncByRobotId(current => ({ ...current, [robotId]: nextStatus }));
-        }
-      }
-
-      if (status?.phase === 'failed') {
-        throw new Error(status.lastError ?? 'Map refresh failed');
-      }
+      const status = await runMapSync(robotId);
 
       const affectedMapId = status?.mapId ?? fallbackMapId;
       if (affectedMapId) {
@@ -388,72 +268,6 @@ export function RobotManagement() {
       setError(message);
       toast.error(message);
     }
-  };
-
-  const handleApplyChannels = () => {
-    if (!channelsInput.trim()) {
-      setCustomChannels([]);
-      setChannelsError(null);
-      toast.success('Channels cleared; defaults will be used');
-      return;
-    }
-    try {
-      const parsed = JSON.parse(channelsInput);
-      if (!Array.isArray(parsed)) {
-        throw new Error('Channels must be an array');
-      }
-      setCustomChannels(parsed);
-      setChannelsError(null);
-      toast.success('Channels loaded. Preview updated; Save to persist.');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Invalid channels JSON';
-      setChannelsError(msg);
-      toast.error(msg);
-    }
-  };
-
-  const effectiveChannels = useMemo(() => customChannels, [customChannels]);
-  const editingRobot = form.id ? robots.find(robot => robot.id === form.id) : null;
-  const currentMapSyncStatus = form.id ? mapSyncByRobotId[form.id] : undefined;
-  const isRefreshingCurrentMap = Boolean(form.id && refreshingMapRobotId === form.id);
-  const refreshMapDisabled = Boolean(
-    !form.id ||
-      isRefreshingCurrentMap ||
-      !editingRobot?.ipAddress ||
-      !editingRobot?.mappingBridgePort
-  );
-  const refreshMapTitle = form.id
-    ? !editingRobot?.ipAddress || !editingRobot?.mappingBridgePort
-      ? 'Saved robot needs IP address and mapping bridge port'
-      : 'Refresh map and metadata from robot'
-    : 'Save the robot before refreshing map data';
-
-  const handleEditChannelRow = (channel: any) => {
-    const current = Array.isArray(customChannels) ? [...customChannels] : [];
-    if (current.some(ch => ch.name === channel.name)) {
-      const idx = current.findIndex(ch => ch.name === channel.name);
-      current[idx] = channel;
-    } else {
-      current.push(channel);
-    }
-    setCustomChannels(current);
-    setChannelsInput(JSON.stringify(current, null, 2));
-    toast.success(
-      `Channel "${channel.name}" loaded into editor. Apply to preview, then Save to persist.`
-    );
-  };
-
-  const handleDeleteChannelRow = (channel: any) => {
-    const exists = customChannels.some(ch => ch.name === channel.name);
-    if (!exists) {
-      toast.error(`"${channel.name}" is not in custom list.`);
-      return;
-    }
-    if (!confirm(`Remove override for ${channel.name}?`)) return;
-    const updated = customChannels.filter(ch => ch.name !== channel.name);
-    setCustomChannels(updated);
-    setChannelsInput(updated.length ? JSON.stringify(updated, null, 2) : '');
-    toast.success(`Removed override for "${channel.name}". Apply to preview, then Save.`);
   };
 
   if (!isAdminUser) {
@@ -517,106 +331,17 @@ export function RobotManagement() {
           </div>
         )}
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-          <div className="bg-card shadow overflow-x-auto sm:rounded-md">
-            {loading ? (
-              <div className="flex justify-center py-12">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-              </div>
-            ) : displayedRobots.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground">No robots found</div>
-            ) : (
-              <table className="min-w-full divide-y divide-border">
-                <thead className="bg-secondary">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Name
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      IP / Port
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Map
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-background divide-y divide-border">
-                  {displayedRobots.map(robot => (
-                    <tr key={robot.id}>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="text-sm font-medium text-foreground">{robot.name}</div>
-                        <div className="text-xs text-muted-foreground">{robot.id}</div>
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
-                        {robot.ipAddress ?? '—'}:{robot.bridgePort ?? 9090}
-                        {robot.mappingBridgePort ? ` / ${robot.mappingBridgePort}` : ''}
-                        {robot.missionBridgePort ? ` / ${robot.missionBridgePort}` : ''}
-                        {robot.emergencyBridgePort ? ` / ${robot.emergencyBridgePort}` : ''}
-                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'PENDING' && (
-                          <div className="text-xs text-muted-foreground">
-                            Waiting for approval. The dashboard won&apos;t connect until then.
-                          </div>
-                        )}
-                        {robot.ipAddress && addressStatusByIp[robot.ipAddress] === 'REJECTED' && (
-                          <div className="text-xs text-destructive">
-                            Address rejected. The dashboard won&apos;t connect to it.
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-foreground">
-                        {robot.maps?.find(m => m.isActive)?.name ??
-                          maps.find(m => m.id === robot.mapId)?.name ??
-                          '—'}
-                        {robot.maps && robot.maps.length > 1 ? (
-                          <span className="ml-1 text-xs text-muted-foreground">
-                            (+{robot.maps.length - 1})
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
-                        {getRobotDisplayStatusLabel(robot)}
-                      </td>
-                      <td className="px-4 py-3 text-sm font-medium">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleEdit(robots.find(item => item.id === robot.id) ?? robot)
-                            }
-                            className="text-primary hover:text-primary/80 focus-ring inline-flex items-center gap-1"
-                          >
-                            <Save className="h-4 w-4 rotate-90" />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(robot.id)}
-                            className="text-destructive hover:text-destructive/80 focus-ring inline-flex items-center gap-1"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            Delete
-                          </button>
-                          {isStaff && (
-                            <MoveRobotControl
-                              robotId={robot.id}
-                              robotName={robot.name}
-                              currentOrgId={user?.orgId}
-                              onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
-                            />
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <RobotTable
+            robots={displayedRobots}
+            loading={loading}
+            maps={maps}
+            addressStatusByIp={addressStatusByIp}
+            canMoveRobots={isStaff}
+            currentOrgId={user?.orgId}
+            onEdit={robot => handleEdit(robots.find(item => item.id === robot.id) ?? robot)}
+            onDelete={handleDelete}
+            onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
+          />
 
           <div className="bg-card shadow rounded-md p-4 space-y-4 min-h-[520px]">
             <div className="flex items-center justify-between">
@@ -634,288 +359,18 @@ export function RobotManagement() {
               )}
             </div>
             {showForm ? (
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Name</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.name}
-                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="Robot name"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">IP Address</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.ipAddress ?? ''}
-                    onChange={e => setForm(f => ({ ...f, ipAddress: e.target.value }))}
-                    placeholder="192.168.1.230"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Bridge Port</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.bridgePort ?? 9090}
-                    onChange={e =>
-                      setForm(f => ({
-                        ...f,
-                        bridgePort: e.target.value ? Number(e.target.value) : undefined,
-                      }))
-                    }
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="9090"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Mapping Bridge Port</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.mappingBridgePort ?? ''}
-                    onChange={e =>
-                      setForm(f => ({
-                        ...f,
-                        mappingBridgePort: e.target.value ? Number(e.target.value) : undefined,
-                      }))
-                    }
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="8765"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Optional mapping ROS bridge on the same IP (e.g. 8765). Use channel connectionId
-                    ("mapping") to target this socket.
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Mission Bridge Port</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.missionBridgePort ?? ''}
-                    onChange={e =>
-                      setForm(f => ({
-                        ...f,
-                        missionBridgePort: e.target.value ? Number(e.target.value) : undefined,
-                      }))
-                    }
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="9487"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Optional mission-control bridge on the same IP (e.g. 9487). Used for mission
-                    show-up and start commands.
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Emergency Bridge Port</label>
-                  <input
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.emergencyBridgePort ?? ''}
-                    onChange={e =>
-                      setForm(f => ({
-                        ...f,
-                        emergencyBridgePort: e.target.value ? Number(e.target.value) : undefined,
-                      }))
-                    }
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="8766"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Optional direct emergency bridge on the same IP (e.g. 8766). Used by the
-                    dashboard for emergency stop control and backend sync.
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-sm text-muted-foreground">Map</label>
-                    {form.id && (
-                      <button
-                        type="button"
-                        onClick={handleRefreshRobotMap}
-                        disabled={refreshMapDisabled}
-                        title={refreshMapTitle}
-                        aria-label="Refresh map and metadata from robot"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <RefreshCcw
-                          className={`h-3.5 w-3.5 ${isRefreshingCurrentMap ? 'animate-spin' : ''}`}
-                        />
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <select
-                      className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                      value={form.mapId ?? ''}
-                      onChange={e => setForm(f => ({ ...f, mapId: e.target.value || undefined }))}
-                    >
-                      <option value="">Select a map (optional)</option>
-                      {(form.id
-                        ? (robots.find(r => r.id === form.id)?.maps ?? []).map(m => ({
-                            id: m.id,
-                            name: m.name ?? m.id,
-                          }))
-                        : maps
-                      ).map(map => (
-                        <option key={map.id} value={map.id}>
-                          {map.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {currentMapSyncStatus && form.id && (
-                    <div className="text-xs text-muted-foreground">
-                      {currentMapSyncStatus.phase === 'failed'
-                        ? (currentMapSyncStatus.lastError ?? 'Map refresh failed')
-                        : currentMapSyncStatus.phase === 'skipped'
-                          ? 'Image unchanged; metadata checked'
-                          : currentMapSyncStatus.phase === 'complete'
-                            ? 'Map refresh complete'
-                            : `Refreshing map${
-                                typeof currentMapSyncStatus.percent === 'number'
-                                  ? ` (${Math.round(currentMapSyncStatus.percent)}%)`
-                                  : ''
-                              }`}
-                    </div>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm text-muted-foreground">Status</label>
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring"
-                    value={form.status ?? 'UNKNOWN'}
-                    onChange={e => setForm(f => ({ ...f, status: e.target.value as RobotMode }))}
-                  >
-                    <option value="MISSION">MISSION</option>
-                    <option value="DOCKING">DOCKING</option>
-                    <option value="CHARGING">CHARGING</option>
-                    <option value="SW_EMERGENCY">SW_EMERGENCY</option>
-                    <option value="HW_EMERGENCY">HW_EMERGENCY</option>
-                    <option value="TELEOP">TELEOP</option>
-                    <option value="AUTONOMOUS">AUTONOMOUS</option>
-                    <option value="HRI">HRI</option>
-                    <option value="UNKNOWN">UNKNOWN</option>
-                  </select>
-                </div>
-
-                <div className="border border-border rounded-md">
-                  <button
-                    type="button"
-                    onClick={() => setAdvancedOpen(o => !o)}
-                    className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium bg-muted/40 hover:bg-muted/60 transition-colors"
-                  >
-                    <span>Advanced (Channels)</span>
-                    {advancedOpen ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                  </button>
-                  {advancedOpen && (
-                    <div className="p-3 space-y-3">
-                      <div className="text-sm font-medium text-foreground">Channel Config</div>
-                      <div className="space-y-1">
-                        <label className="text-sm text-muted-foreground">Channels (JSON)</label>
-                        <textarea
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-ring h-32 font-mono"
-                          value={channelsInput}
-                          onChange={e => setChannelsInput(e.target.value)}
-                          placeholder='[{"name":"odom","topic":"/odom_ui","msgType":"nav_msgs/Odometry","direction":"subscribe"}]'
-                        />
-                        <div className="text-xs text-muted-foreground">
-                          Provide an array of channels. Leave blank to start from defaults.
-                          Edit/Delete rows below to change the working set; Save to persist to the
-                          robot. Use <code>connectionId</code> (e.g. "default", "control", or
-                          "mapping") to pick which ROS bridge port to use.
-                        </div>
-                        {channelsError && (
-                          <div className="text-xs text-destructive mt-1">{channelsError}</div>
-                        )}
-                      </div>
-
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={handleApplyChannels}
-                          className="px-3 py-2 bg-muted text-foreground rounded-md text-sm font-medium focus-ring"
-                        >
-                          Apply Channels
-                        </button>
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium text-foreground">
-                          Effective Channels
-                        </div>
-                        <div className="rounded-md border border-border bg-muted/30">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="text-muted-foreground bg-muted/40">
-                                <th className="px-2 py-1 text-left">Name</th>
-                                <th className="px-2 py-1 text-left">Direction</th>
-                                <th className="px-2 py-1 text-left">Conn</th>
-                                <th className="px-2 py-1 text-left">Topic</th>
-                                <th className="px-2 py-1 text-left">Type</th>
-                                <th className="px-2 py-1 text-left">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {effectiveChannels.map(ch => (
-                                <tr key={ch.name} className="border-t border-border/60">
-                                  <td className="px-2 py-1 font-medium">{ch.name}</td>
-                                  <td className="px-2 py-1">{ch.direction}</td>
-                                  <td className="px-2 py-1 text-muted-foreground">
-                                    {ch.connectionId ?? 'default'}
-                                  </td>
-                                  <td className="px-2 py-1">{ch.topic}</td>
-                                  <td className="px-2 py-1 text-muted-foreground">{ch.msgType}</td>
-                                  <td className="px-2 py-1">
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleEditChannelRow(ch)}
-                                        className="p-1 rounded hover:bg-muted focus-ring"
-                                        title="Edit channel"
-                                      >
-                                        <Pencil className="h-4 w-4" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDeleteChannelRow(ch)}
-                                        className="p-1 rounded hover:bg-muted focus-ring"
-                                        title="Delete channel"
-                                      >
-                                        <X className="h-4 w-4" />
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={saving}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 focus-ring disabled:opacity-60"
-                >
-                  <Save className="h-4 w-4" />
-                  {form.id ? 'Update Robot' : 'Create Robot'}
-                </button>
-              </div>
+              <RobotForm
+                form={form}
+                setForm={setForm}
+                editingRobot={robots.find(robot => robot.id === form.id)}
+                maps={maps}
+                mapSyncStatus={form.id ? mapSyncByRobotId[form.id] : undefined}
+                isRefreshingMap={Boolean(form.id && refreshingMapRobotId === form.id)}
+                onRefreshMap={handleRefreshRobotMap}
+                channelEditor={channelEditor}
+                saving={saving}
+                onSave={handleSave}
+              />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
                 Select a robot to edit or click "New Robot" to create one.
