@@ -1,4 +1,5 @@
 import { resolveWsBaseUrl } from '@/lib/api';
+import { generateRequestId } from '@/lib/utils/utils';
 
 type WsEvent =
   | { type: 'event'; channel: string; data: unknown }
@@ -62,13 +63,6 @@ export const createRobotWsClient = (robotId: string) => {
         socket.close();
       } catch {}
     }, 8000);
-  };
-
-  const createCommandId = (channel: string) => {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
-    }
-    return `${robotId}:${channel}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   };
 
   const logCommandDispatch = (
@@ -195,7 +189,7 @@ export const createRobotWsClient = (robotId: string) => {
   };
 
   const sendCommand = (channel: string, data: unknown): CommandDispatchResult => {
-    const commandId = createCommandId(channel);
+    const commandId = generateRequestId();
     if (!shouldReconnect) {
       logCommandDispatch(channel, commandId, 'dropped', 'client_disconnected');
       return { status: 'dropped', reason: 'client_disconnected', commandId };

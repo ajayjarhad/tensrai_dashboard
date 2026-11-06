@@ -29,18 +29,19 @@ const RobotModeSchema = z.enum([
   'UNKNOWN',
 ]);
 
-const CreateRobotSchema = z.object({
-  name: z.string().trim().min(1).max(100),
+const RobotNameSchema = z.string().trim().min(1).max(100);
+const BridgePortSchema = z.number().int().min(1).max(65535).optional();
+
+const SharedRobotFields = {
   status: RobotModeSchema.optional(),
-  mapId: z.string().optional(),
   x: z.number().optional(),
   y: z.number().optional(),
   theta: z.number().optional(),
   ipAddress: z.string().optional(),
-  bridgePort: z.number().int().min(1).max(65535).optional(),
-  mappingBridgePort: z.number().int().min(1).max(65535).optional(),
-  missionBridgePort: z.number().int().min(1).max(65535).optional(),
-  emergencyBridgePort: z.number().int().min(1).max(65535).optional(),
+  bridgePort: BridgePortSchema,
+  mappingBridgePort: BridgePortSchema,
+  missionBridgePort: BridgePortSchema,
+  emergencyBridgePort: BridgePortSchema,
   channels: z
     .array(
       z.object({
@@ -53,33 +54,19 @@ const CreateRobotSchema = z.object({
       })
     )
     .optional(),
+};
+
+const CreateRobotSchema = z.object({
+  ...SharedRobotFields,
+  name: RobotNameSchema,
+  mapId: z.string().optional(),
 });
 
 const UpdateRobotSchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(),
-  status: RobotModeSchema.optional(),
+  ...SharedRobotFields,
+  name: RobotNameSchema.optional(),
   battery: z.number().min(0).max(100).optional(),
   // Map assignment is managed via POST /robots/:id/active-map and map-sync, not PATCH.
-  x: z.number().optional(),
-  y: z.number().optional(),
-  theta: z.number().optional(),
-  ipAddress: z.string().optional(),
-  bridgePort: z.number().int().min(1).max(65535).optional(),
-  mappingBridgePort: z.number().int().min(1).max(65535).optional(),
-  missionBridgePort: z.number().int().min(1).max(65535).optional(),
-  emergencyBridgePort: z.number().int().min(1).max(65535).optional(),
-  channels: z
-    .array(
-      z.object({
-        name: z.string(),
-        topic: z.string(),
-        msgType: z.string(),
-        direction: z.union([z.literal('subscribe'), z.literal('publish')]),
-        rateLimitHz: z.number().positive().optional(),
-        connectionId: z.string().optional(),
-      })
-    )
-    .optional(),
 });
 
 const ActiveMapSchema = z.object({

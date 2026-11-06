@@ -475,6 +475,69 @@ const recordIntent = (
   return base;
 };
 
+// Merges what the server reports into local state. Undefined means the report is older than what
+// this client already knows, so it should be ignored.
+const hydrateStatus = (
+  existing: MissionStatus | undefined,
+  mission: NonNullable<Robot['mission']>
+): MissionStatus | undefined => {
+  const parsedUpdatedAt = mission.updatedAt ? Date.parse(mission.updatedAt) : undefined;
+  const localFreshTs = existing?.lastEventAt ?? existing?.lastSeenTs ?? existing?.updatedAt;
+  if (
+    existing &&
+    Number.isFinite(parsedUpdatedAt) &&
+    Number.isFinite(localFreshTs) &&
+    (parsedUpdatedAt as number) < (localFreshTs as number)
+  ) {
+    return undefined;
+  }
+
+  const incomingPhase =
+    (mission.phase as MissionLifecycleStatus) ??
+    (mission.status as MissionLifecycleStatus) ??
+    existing?.phase ??
+    'idle';
+  const preserveLocalPreview =
+    isPreviewLikePhase(existing?.phase) &&
+    incomingPhase === 'idle' &&
+    !mission.currentMissionId &&
+    !mission.runId;
+  const resolvedPhase = preserveLocalPreview ? (existing?.phase ?? incomingPhase) : incomingPhase;
+  const keepWaypoint = shouldKeepWaypointProgress(resolvedPhase);
+  // An idle report can't describe a preview this client just asked for, so it can't overwrite it.
+  const runFields: Partial<typeof mission> = preserveLocalPreview ? {} : mission;
+
+  return {
+    ...existing,
+    status: resolvedPhase,
+    phase: resolvedPhase,
+    currentMissionId: runFields.currentMissionId ?? existing?.currentMissionId,
+    requestIdLast: runFields.requestIdLast ?? existing?.requestIdLast,
+    runId: runFields.runId ?? existing?.runId,
+    startedAt: runFields.startedAt ?? existing?.startedAt,
+    message: runFields.message ?? existing?.message,
+    lastEvent: runFields.lastEvent ?? existing?.lastEvent,
+    updatedAt: Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : existing?.updatedAt,
+    lastEventStatus: runFields.lastEventStatus ?? existing?.lastEventStatus,
+    lastRequestType: runFields.lastRequestType ?? existing?.lastRequestType,
+    mode: mission.mode ?? existing?.mode,
+    batteryPercentage:
+      mission.batteryPercentage !== undefined
+        ? mission.batteryPercentage
+        : existing?.batteryPercentage,
+    chargingStatus:
+      mission.chargingStatus !== undefined ? mission.chargingStatus : existing?.chargingStatus,
+    lastSeenTs: mission.lastSeenTs ?? existing?.lastSeenTs,
+    waypointIndex: keepWaypoint ? (mission.waypointIndex ?? existing?.waypointIndex) : undefined,
+    totalWaypoints: keepWaypoint ? (mission.totalWaypoints ?? existing?.totalWaypoints) : undefined,
+    runtimeUpdatedAt: mission.lastSeenTs ?? existing?.runtimeUpdatedAt,
+    modeUpdatedAt:
+      mission.lastSeenTs !== undefined && mission.mode !== undefined
+        ? mission.lastSeenTs
+        : existing?.modeUpdatedAt,
+  };
+};
+
 export const useRobotMissionStore = create<MissionState>(set => ({
   statusByRobot: {},
 
@@ -554,89 +617,9 @@ export const useRobotMissionStore = create<MissionState>(set => ({
       for (const robot of robots) {
         if (!robot?.id || !robot.mission) continue;
 
-        const mission = robot.mission;
         const existing = state.statusByRobot[robot.id];
-        const parsedUpdatedAt = mission.updatedAt ? Date.parse(mission.updatedAt) : undefined;
-        const localFreshTs = existing?.lastEventAt ?? existing?.lastSeenTs ?? existing?.updatedAt;
-        if (
-          existing &&
-          Number.isFinite(parsedUpdatedAt) &&
-          Number.isFinite(localFreshTs) &&
-          (parsedUpdatedAt as number) < (localFreshTs as number)
-        ) {
-          continue;
-        }
-
-        const resolvedUpdatedAt = Number.isFinite(parsedUpdatedAt)
-          ? parsedUpdatedAt
-          : existing?.updatedAt;
-        const incomingPhase =
-          (mission.phase as MissionLifecycleStatus) ??
-          (mission.status as MissionLifecycleStatus) ??
-          existing?.phase ??
-          'idle';
-        const preserveLocalPreview =
-          isPreviewLikePhase(existing?.phase) &&
-          incomingPhase === 'idle' &&
-          !mission.currentMissionId &&
-          !mission.runId;
-        const resolvedPhase = preserveLocalPreview
-          ? (existing?.phase ?? incomingPhase)
-          : incomingPhase;
-        const keepWaypoint = shouldKeepWaypointProgress(resolvedPhase);
-
-        const nextStatus: MissionStatus = {
-          ...existing,
-          status: resolvedPhase,
-          phase: resolvedPhase,
-          currentMissionId: preserveLocalPreview
-            ? existing?.currentMissionId
-            : (mission.currentMissionId ?? existing?.currentMissionId),
-          requestIdLast: preserveLocalPreview
-            ? existing?.requestIdLast
-            : (mission.requestIdLast ?? existing?.requestIdLast),
-          runId: preserveLocalPreview ? existing?.runId : (mission.runId ?? existing?.runId),
-          startedAt: preserveLocalPreview
-            ? existing?.startedAt
-            : (mission.startedAt ?? existing?.startedAt),
-          message: preserveLocalPreview
-            ? existing?.message
-            : (mission.message ?? existing?.message),
-          lastEvent: preserveLocalPreview
-            ? existing?.lastEvent
-            : (mission.lastEvent ?? existing?.lastEvent),
-          updatedAt: resolvedUpdatedAt,
-          lastEventStatus: preserveLocalPreview
-            ? existing?.lastEventStatus
-            : (mission.lastEventStatus ?? existing?.lastEventStatus),
-          lastRequestType: preserveLocalPreview
-            ? existing?.lastRequestType
-            : (mission.lastRequestType ?? existing?.lastRequestType),
-          mode: mission.mode ?? existing?.mode,
-          batteryPercentage:
-            mission.batteryPercentage !== undefined
-              ? mission.batteryPercentage
-              : existing?.batteryPercentage,
-          chargingStatus:
-            mission.chargingStatus !== undefined
-              ? mission.chargingStatus
-              : existing?.chargingStatus,
-          lastSeenTs: mission.lastSeenTs ?? existing?.lastSeenTs,
-          waypointIndex: keepWaypoint
-            ? (mission.waypointIndex ?? existing?.waypointIndex)
-            : undefined,
-          totalWaypoints: keepWaypoint
-            ? (mission.totalWaypoints ?? existing?.totalWaypoints)
-            : undefined,
-          runtimeUpdatedAt: mission.lastSeenTs ?? existing?.runtimeUpdatedAt,
-          modeUpdatedAt:
-            mission.lastSeenTs !== undefined && mission.mode !== undefined
-              ? mission.lastSeenTs
-              : existing?.modeUpdatedAt,
-        };
-
-        const hasChanged = JSON.stringify(existing ?? {}) !== JSON.stringify(nextStatus);
-        if (!hasChanged) continue;
+        const nextStatus = hydrateStatus(existing, robot.mission);
+        if (!nextStatus || JSON.stringify(existing ?? {}) === JSON.stringify(nextStatus)) continue;
         next[robot.id] = nextStatus;
         changed = true;
       }

@@ -1,23 +1,8 @@
-const MISSION_CONTROL_EVENTS = [
-  'SHOW_UP',
-  'START_MISSION',
-  'PAUSE_MISSION',
-  'RESUME_MISSION',
-  'CANCEL_MISSION',
-  'CHANGE_MODE',
-] as const;
-
-const MISSION_STATUS_EVENTS = [
-  'MISSION_CONTROL_ACK',
-  'MISSION_START_ACK',
-  'MISSION_COMPLETED',
-  'WAYPOINT_ACK',
-  'MODE_CHANGE_ACK',
-  'ROBOT_STATUS_UPDATE',
-] as const;
-
-const isRuntimeMode = (value: unknown): value is 'teleop' | 'autonomous' =>
-  value === 'teleop' || value === 'autonomous';
+import {
+  isRobotMissionCommandEvent,
+  isRobotMissionStatusEvent,
+  isRobotRuntimeMode,
+} from '@tensrai/shared';
 
 export type MissionStatePhase =
   | 'idle'
@@ -470,7 +455,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
   if (event === 'MODE_CHANGE_ACK') {
     const modeTimestamp =
       timestampMs(payload?.timestamp) ?? timestampMs(payload?.time) ?? current.modeUpdatedAt;
-    const mode = isRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode;
+    const mode = isRobotRuntimeMode(payload?.currentMode) ? payload.currentMode : current.mode;
     const requestId = normalizeRequestId(payload?.requestId);
     const ackStatus =
       typeof payload?.status === 'string' ? payload.status : current.lastEventStatus;
@@ -517,7 +502,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
     const clearMissionId = phase === 'idle' && !hasMissionId;
     const missionChanged = hasMissionId && missionId !== current.currentMissionId;
     const clearWaypoint = missionChanged || !shouldKeepWaypointProgress(phase);
-    const mode = isRuntimeMode(payload?.mode) ? payload.mode : current.mode;
+    const mode = isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode;
     const battery =
       typeof payload?.batteryPercentage === 'number' && Number.isFinite(payload.batteryPercentage)
         ? payload.batteryPercentage
@@ -563,7 +548,7 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
         lastEventAt: appliedAtMs,
         lastEventMissionId: clearMissionId ? undefined : nextMissionId,
         mode,
-        modeUpdatedAt: isRuntimeMode(payload?.mode) ? appliedAtMs : current.modeUpdatedAt,
+        modeUpdatedAt: isRobotRuntimeMode(payload?.mode) ? appliedAtMs : current.modeUpdatedAt,
         batteryPercentage: battery,
         chargingStatus,
         lastSeenTs: appliedAtMs,
@@ -583,13 +568,8 @@ export const updateMissionFromEvent = (robotId: string, event: string, payload: 
   );
 };
 
-export const isMissionControlEvent = (event: string) => {
-  return MISSION_CONTROL_EVENTS.includes(event as (typeof MISSION_CONTROL_EVENTS)[number]);
-};
-
-export const isMissionStatusEvent = (event: string) => {
-  return MISSION_STATUS_EVENTS.includes(event as (typeof MISSION_STATUS_EVENTS)[number]);
-};
+export const isMissionControlEvent = isRobotMissionCommandEvent;
+export const isMissionStatusEvent = isRobotMissionStatusEvent;
 
 export const buildMissionFailureAck = (event: string, payload: any, message: string) => {
   const missionId = normalizeMissionId(payload?.missionId ?? payload?.missionID);

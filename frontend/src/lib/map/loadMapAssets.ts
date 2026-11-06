@@ -33,12 +33,7 @@ export interface LoadMapAssetsOptions {
   mapId: string;
   cacheEnabled?: boolean;
   timeout?: number;
-  useOptimizedParser?: boolean;
-  pgmQuality?: number;
-  chunkSize?: number;
   progressCallback?: (progress: MapLoadProgress) => void;
-  retryFailedOperations?: boolean;
-  maxRetries?: number;
 }
 
 type MapMetadataResponse = {
@@ -66,9 +61,8 @@ const CACHE_CONFIG = {
   DEFAULT_TIMEOUT: 30000,
 };
 
-const mapCache = new Map<string, { promise: Promise<ProcessedMapDataWithBitmap>; at: number }>();
-const cacheAccessOrder = new Map<string, number>();
-let accessCounter = 0;
+// A Map iterates in insertion order, so re-inserting on access keeps the least recently used first.
+const mapCache = new Map<string, Promise<ProcessedMapDataWithBitmap>>();
 
 let mapWorker: Worker | null = null;
 let mapWorkerRequestId = 0;
@@ -84,39 +78,19 @@ const getWorker = () => {
 };
 
 const getFromCache = (key: string): Promise<ProcessedMapDataWithBitmap> | undefined => {
-  const entry = mapCache.get(key);
-  if (!entry) return undefined;
-  accessCounter += 1;
-  cacheAccessOrder.set(key, accessCounter);
-  return entry.promise;
-};
-
-const removeFromCache = (key: string) => {
+  const promise = mapCache.get(key);
+  if (!promise) return undefined;
   mapCache.delete(key);
-  cacheAccessOrder.delete(key);
-};
-
-const evictLeastRecentlyUsed = () => {
-  let lruKey: string | undefined;
-  let oldest = Number.POSITIVE_INFINITY;
-  for (const [key, order] of cacheAccessOrder.entries()) {
-    if (order < oldest) {
-      oldest = order;
-      lruKey = key;
-    }
-  }
-  if (lruKey) {
-    removeFromCache(lruKey);
-  }
+  mapCache.set(key, promise);
+  return promise;
 };
 
 const addToCache = (key: string, promise: Promise<ProcessedMapDataWithBitmap>) => {
   if (mapCache.size >= CACHE_CONFIG.MAX_SIZE) {
-    evictLeastRecentlyUsed();
+    const leastRecentlyUsed = mapCache.keys().next().value;
+    if (leastRecentlyUsed !== undefined) mapCache.delete(leastRecentlyUsed);
   }
-  mapCache.set(key, { promise, at: Date.now() });
-  accessCounter += 1;
-  cacheAccessOrder.set(key, accessCounter);
+  mapCache.set(key, promise);
 };
 
 const processMapInWorker = async (
@@ -134,15 +108,6 @@ const processMapInWorker = async (
     };
     const handleMessage = (e: MessageEvent<MapWorkerResponse>) => {
       if (e.data.requestId !== requestId) return;
-      if (e.data.type === 'MAP_PROGRESS') {
-        options.progressCallback?.({
-          phase: 'decoding',
-          progress: 75 + ((e.data.progress ?? 0) / 100) * 20,
-          source: 'pgm',
-        });
-        return;
-      }
-      if (e.data.type !== 'MAP_PROCESSED') return;
       cleanup();
       if (e.data.error) {
         reject(new Error(e.data.error));
@@ -156,17 +121,9 @@ const processMapInWorker = async (
     }, options.timeout ?? CACHE_CONFIG.DEFAULT_TIMEOUT);
 
     worker.addEventListener('message', handleMessage);
-    worker.postMessage(
-      {
-        type: 'PROCESS_MAP',
-        requestId,
-        pgmBuffer,
-        yaml: metadata,
-        useOptimized: options.useOptimizedParser ?? pgmBuffer.byteLength > 5 * 1024 * 1024,
-        pgmQuality: options.pgmQuality,
-      } as MapWorkerRequest,
-      [pgmBuffer]
-    );
+    worker.postMessage({ requestId, pgmBuffer, yaml: metadata } satisfies MapWorkerRequest, [
+      pgmBuffer,
+    ]);
   });
 };
 
@@ -175,9 +132,7 @@ const buildAssetPath = (mapId: string, path: string, contentHash?: string | null
   return `maps/${mapId}/${path}${rev}`;
 };
 
-const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
-
-const downloadBinaryOnce = async (
+const downloadBinary = async (
   path: string,
   options: LoadMapAssetsOptions,
   progress: Omit<MapLoadProgress, 'bytesReceived' | 'totalBytes' | 'progress'>
@@ -243,27 +198,6 @@ const downloadBinaryOnce = async (
   } finally {
     window.clearTimeout(timeoutId);
   }
-};
-
-const downloadBinary = async (
-  path: string,
-  options: LoadMapAssetsOptions,
-  progress: Omit<MapLoadProgress, 'bytesReceived' | 'totalBytes' | 'progress'>
-) => {
-  const attempts = options.retryFailedOperations ? (options.maxRetries ?? 3) + 1 : 1;
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await downloadBinaryOnce(path, options, progress);
-    } catch (error) {
-      lastError = error;
-      if (attempt === attempts - 1) break;
-      await wait(250 * (attempt + 1));
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('Map download failed');
 };
 
 const createImageFromBytes = async (bytes: Uint8Array, contentType?: string) => {
@@ -406,6 +340,7 @@ export async function loadMapAssets(
         pgmDownload.bytes.byteOffset,
         pgmDownload.bytes.byteOffset + pgmDownload.bytes.byteLength
       );
+      options.progressCallback?.({ phase: 'decoding', progress: 75, source: 'pgm' });
       const result = await processMapInWorker(pgmBuffer, metadata, options);
 
       if (!result.width || !result.height || !result.bitmap) {
@@ -433,7 +368,7 @@ export async function loadMapAssets(
         source: 'pgm',
       } as ProcessedMapDataWithBitmap;
     } catch (error) {
-      removeFromCache(cacheKey);
+      mapCache.delete(cacheKey);
       options.progressCallback?.({
         phase: 'failed',
         message: error instanceof Error ? error.message : 'Failed to load map',
@@ -449,21 +384,15 @@ export async function loadMapAssets(
   return loadingPromise;
 }
 
-function clearMapAssetCache(): void {
-  mapCache.clear();
-  cacheAccessOrder.clear();
-  accessCounter = 0;
-}
-
 export function evictFromCache(mapId: string): void {
   for (const key of Array.from(mapCache.keys())) {
     if (key.startsWith(`map_${mapId}_`)) {
-      removeFromCache(key);
+      mapCache.delete(key);
     }
   }
 }
 
 // Decoded floor plans belong to one organization.
 useAuthStore.subscribe((state, previous) => {
-  if (state.user?.id !== previous.user?.id) clearMapAssetCache();
+  if (state.user?.id !== previous.user?.id) mapCache.clear();
 });

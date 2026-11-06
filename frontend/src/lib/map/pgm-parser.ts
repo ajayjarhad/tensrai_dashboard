@@ -75,7 +75,14 @@ function skipWhitespace(dataView: DataView, offset: number): number {
   let currentOffset = offset;
   while (currentOffset < dataView.byteLength) {
     const char = String.fromCharCode(dataView.getUint8(currentOffset));
-    if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+    if (char === '#') {
+      while (
+        currentOffset < dataView.byteLength &&
+        String.fromCharCode(dataView.getUint8(currentOffset)) !== '\n'
+      ) {
+        currentOffset++;
+      }
+    } else if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
       currentOffset++;
     } else {
       break;

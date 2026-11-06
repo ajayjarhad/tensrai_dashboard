@@ -55,6 +55,21 @@ const hashJson = (value: unknown) =>
 
 type MapAssetParams = { Params: { id: string; format: 'webp' | 'png' } };
 
+const idParamsSchema = {
+  params: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+    },
+    required: ['id'],
+  },
+};
+
+const ASSET_COLUMNS = {
+  display: { webp: 'displayWebp', png: 'displayPng' },
+  preview: { webp: 'previewWebp', png: 'previewPng' },
+} as const;
+
 const mapRoutes = async (server: AppFastifyInstance) => {
   server.addHook('onRequest', requireActiveSession);
 
@@ -117,242 +132,171 @@ const mapRoutes = async (server: AppFastifyInstance) => {
   });
 
   // GET /api/maps/:id - Get map metadata and features
-  server.get<IdParams>(
-    '/maps/:id',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
+  server.get<IdParams>('/maps/:id', { schema: idParamsSchema }, async (request, reply) => {
+    const { id } = request.params;
+    const prisma = request.db;
+
+    const map = await prisma.map.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        metadata: true,
+        features: true,
+        contentHash: true,
+        pixelWidth: true,
+        pixelHeight: true,
+        imageSizeBytes: true,
+        displayWebpSizeBytes: true,
+        displayPngSizeBytes: true,
+        previewWebp: true,
+        previewPng: true,
+        previewSizeBytes: true,
+        displayGenerationError: true,
+        // Exclude image for performance
+      },
+    });
+
+    if (!map) {
+      return reply.status(404).send({
+        success: false,
+        error: 'Map not found',
+      });
+    }
+
+    return {
+      success: true,
+      data: {
+        ...map,
+        featuresHash: hashJson(map.features),
+        displayAssets: displayFieldsForMap(map),
+        previewWebp: undefined,
+        previewPng: undefined,
+      },
+    };
+  });
+
+  for (const kind of ['display', 'preview'] as const) {
+    server.get<MapAssetParams>(
+      `/maps/:id/${kind}/:format`,
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              format: { type: 'string', enum: ['webp', 'png'] },
+            },
+            required: ['id', 'format'],
           },
-          required: ['id'],
         },
       },
-    },
-    async (request, reply) => {
-      const { id } = request.params;
+      async (request, reply) => {
+        const { id, format } = request.params;
+        const column = ASSET_COLUMNS[kind][format];
+        // Prisma can't type a select chosen at runtime.
+        const prisma = request.db as any;
+        const map = await prisma.map.findUnique({
+          where: { id },
+          select: { [column]: true, contentHash: true },
+        });
+
+        const asset = map?.[column];
+        if (!asset) {
+          return reply.status(404).send({
+            success: false,
+            error: `Map ${format.toUpperCase()} ${kind} asset not found`,
+          });
+        }
+
+        return sendBinaryAsset(
+          reply,
+          asset,
+          format === 'webp' ? 'image/webp' : 'image/png',
+          map.contentHash
+        );
+      }
+    );
+  }
+
+  // GET /api/maps/:id/image - Get map PGM image
+  server.get<IdParams>('/maps/:id/image', { schema: idParamsSchema }, async (request, reply) => {
+    const { id } = request.params;
+    const tracer = trace.getTracer('map-routes');
+    const span = tracer.startSpan('maps.image.download', {
+      attributes: {
+        'map.id': id,
+      },
+    });
+    const startTime = Date.now();
+
+    try {
       const prisma = request.db;
 
       const map = await prisma.map.findUnique({
         where: { id },
         select: {
-          id: true,
-          name: true,
-          metadata: true,
-          features: true,
+          image: true,
           contentHash: true,
-          pixelWidth: true,
-          pixelHeight: true,
-          imageSizeBytes: true,
-          displayWebpSizeBytes: true,
-          displayPngSizeBytes: true,
-          previewWebp: true,
-          previewPng: true,
-          previewSizeBytes: true,
-          displayGenerationError: true,
-          // Exclude image for performance
         },
       });
 
       if (!map) {
-        return reply.status(404).send({
-          success: false,
-          error: 'Map not found',
-        });
-      }
-
-      return {
-        success: true,
-        data: {
-          ...map,
-          featuresHash: hashJson(map.features),
-          displayAssets: displayFieldsForMap(map),
-          previewWebp: undefined,
-          previewPng: undefined,
-        },
-      };
-    }
-  );
-
-  server.get<MapAssetParams>(
-    '/maps/:id/display/:format',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            format: { type: 'string', enum: ['webp', 'png'] },
-          },
-          required: ['id', 'format'],
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id, format } = request.params;
-      // Prisma can't type a select chosen at runtime.
-      const prisma = request.db as any;
-      const map = await prisma.map.findUnique({
-        where: { id },
-        select:
-          format === 'webp'
-            ? { displayWebp: true, contentHash: true }
-            : { displayPng: true, contentHash: true },
-      });
-
-      const asset = format === 'webp' ? map?.displayWebp : map?.displayPng;
-      if (!asset) {
-        return reply.status(404).send({
-          success: false,
-          error: `Map ${format.toUpperCase()} display asset not found`,
-        });
-      }
-
-      return sendBinaryAsset(
-        reply,
-        asset,
-        format === 'webp' ? 'image/webp' : 'image/png',
-        map.contentHash
-      );
-    }
-  );
-
-  server.get<MapAssetParams>(
-    '/maps/:id/preview/:format',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            format: { type: 'string', enum: ['webp', 'png'] },
-          },
-          required: ['id', 'format'],
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id, format } = request.params;
-      // Prisma can't type a select chosen at runtime.
-      const prisma = request.db as any;
-      const map = await prisma.map.findUnique({
-        where: { id },
-        select:
-          format === 'webp'
-            ? { previewWebp: true, contentHash: true }
-            : { previewPng: true, contentHash: true },
-      });
-
-      const asset = format === 'webp' ? map?.previewWebp : map?.previewPng;
-      if (!asset) {
-        return reply.status(404).send({
-          success: false,
-          error: `Map ${format.toUpperCase()} preview asset not found`,
-        });
-      }
-
-      return sendBinaryAsset(
-        reply,
-        asset,
-        format === 'webp' ? 'image/webp' : 'image/png',
-        map.contentHash
-      );
-    }
-  );
-
-  // GET /api/maps/:id/image - Get map PGM image
-  server.get<IdParams>(
-    '/maps/:id/image',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-          },
-          required: ['id'],
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params;
-      const tracer = trace.getTracer('map-routes');
-      const span = tracer.startSpan('maps.image.download', {
-        attributes: {
-          'map.id': id,
-        },
-      });
-      const startTime = Date.now();
-
-      try {
-        const prisma = request.db;
-
-        const map = await prisma.map.findUnique({
-          where: { id },
-          select: {
-            image: true,
-            contentHash: true,
-          },
-        });
-
-        if (!map) {
-          span.setAttributes({
-            'map.download.success': false,
-            'map.download.reason': 'not_found',
-          });
-          span.end();
-          return reply.status(404).send('Map not found');
-        }
-
-        // Record download metrics
-        mapMetrics.downloadCount.add(1, {
-          'map.id': id,
-        });
-
-        // Record database metrics
-        databaseMetrics.queryDuration.record(Date.now() - startTime, {
-          'db.operation': 'findUnique',
-          'db.collection': 'maps',
-        });
-
-        databaseMetrics.operationCount.add(1, {
-          'db.operation': 'findUnique',
-          'db.collection': 'maps',
-        });
-
-        span.setAttributes({
-          'map.download.success': true,
-          'map.image.size_bytes': map.image ? map.image.length : 0,
-          'db.query.duration_ms': Date.now() - startTime,
-        });
-        span.end();
-
-        reply.header('Content-Type', 'image/x-portable-graymap');
-        reply.header('Content-Length', String(map.image ? map.image.length : 0));
-        if (map.contentHash) {
-          reply.header('ETag', `"${map.contentHash}"`);
-        }
-        reply.header('Cache-Control', 'private, max-age=31536000, immutable');
-        return reply.send(map.image);
-      } catch (error) {
-        databaseMetrics.queryDuration.record(Date.now() - startTime, {
-          'db.operation': 'findUnique',
-          'db.collection': 'maps',
-          'db.error': 'true',
-        });
-
         span.setAttributes({
           'map.download.success': false,
-          'map.download.reason': 'database_error',
+          'map.download.reason': 'not_found',
         });
-
-        span.recordException(error as Error);
         span.end();
-        throw error;
+        return reply.status(404).send('Map not found');
       }
+
+      // Record download metrics
+      mapMetrics.downloadCount.add(1, {
+        'map.id': id,
+      });
+
+      // Record database metrics
+      databaseMetrics.queryDuration.record(Date.now() - startTime, {
+        'db.operation': 'findUnique',
+        'db.collection': 'maps',
+      });
+
+      databaseMetrics.operationCount.add(1, {
+        'db.operation': 'findUnique',
+        'db.collection': 'maps',
+      });
+
+      span.setAttributes({
+        'map.download.success': true,
+        'map.image.size_bytes': map.image ? map.image.length : 0,
+        'db.query.duration_ms': Date.now() - startTime,
+      });
+      span.end();
+
+      reply.header('Content-Type', 'image/x-portable-graymap');
+      reply.header('Content-Length', String(map.image ? map.image.length : 0));
+      if (map.contentHash) {
+        reply.header('ETag', `"${map.contentHash}"`);
+      }
+      reply.header('Cache-Control', 'private, max-age=31536000, immutable');
+      return reply.send(map.image);
+    } catch (error) {
+      databaseMetrics.queryDuration.record(Date.now() - startTime, {
+        'db.operation': 'findUnique',
+        'db.collection': 'maps',
+        'db.error': 'true',
+      });
+
+      span.setAttributes({
+        'map.download.success': false,
+        'map.download.reason': 'database_error',
+      });
+
+      span.recordException(error as Error);
+      span.end();
+      throw error;
     }
-  );
+  });
 };
 
 export default mapRoutes;

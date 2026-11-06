@@ -1,16 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { LoginCredentialsSchema } from '@tensrai/shared';
 import { LogIn } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { z } from 'zod';
 import { FormError, LoadingButton } from '@/components/forms';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/stores/auth';
-
-const loginSchema = z.object({
-  username: z.string().min(1, 'Username is required'),
-  password: z.string().min(1, 'Password is required'),
-});
 
 export function LoginForm() {
   const { login, isLoading, error } = useAuth();
@@ -21,7 +16,7 @@ export function LoginForm() {
     watch,
     formState: { errors, isSubmitting },
   } = useForm({
-    resolver: zodResolver(loginSchema),
+    resolver: zodResolver(LoginCredentialsSchema),
     mode: 'onChange',
     defaultValues: {
       username: '',

@@ -1,20 +1,6 @@
-/**
- * Form Error Boundary
- * Functional error boundary for form components using react-error-boundary
- */
-
 import type { ReactNode } from 'react';
-import { type FallbackProps, ErrorBoundary as ReactErrorBoundary } from 'react-error-boundary';
+import { ErrorBoundary, type FallbackProps } from 'react-error-boundary';
 
-interface FormErrorBoundaryProps {
-  children: ReactNode;
-  fallback?: ReactNode;
-  onError?: (error: Error, errorInfo: { componentStack: string }) => void;
-}
-
-/**
- * Default form error fallback component
- */
 function FormErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   return (
     <div className="rounded-md border border-destructive/20 bg-destructive/5 p-4">
@@ -49,32 +35,13 @@ function FormErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   );
 }
 
-/**
- * Form Error Boundary Component
- *
- * @param props - Component props
- * @param props.children - Child components to wrap
- * @param props.fallback - Optional custom fallback component
- * @param props.onError - Optional error handler callback
- */
-export function FormErrorBoundary({ children, fallback, onError }: FormErrorBoundaryProps) {
-  const handleError = (error: Error, info: { componentStack: string }) => {
-    console.error('Form Error Boundary caught an error:', error, info);
-    onError?.(error, info);
-  };
-
-  const fallbackComponent = fallback ? () => <>{fallback}</> : FormErrorFallback;
-
+export function FormErrorBoundary({ children }: { children: ReactNode }) {
   return (
-    <ReactErrorBoundary
-      FallbackComponent={fallbackComponent}
-      // @ts-expect-error
-      onError={handleError}
-      onReset={() => {
-        // Optional: perform any cleanup before retry
-      }}
+    <ErrorBoundary
+      FallbackComponent={FormErrorFallback}
+      onError={(error, info) => console.error('Form Error Boundary caught an error:', error, info)}
     >
       {children}
-    </ReactErrorBoundary>
+    </ErrorBoundary>
   );
 }
