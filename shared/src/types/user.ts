@@ -1,4 +1,4 @@
-import type { Role } from '../constants/permissions';
+import type { Role } from '../constants/permissions.js';
 
 export interface User {
   id: string;

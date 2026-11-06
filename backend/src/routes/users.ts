@@ -1,18 +1,20 @@
 import { requireActiveSession, requireAdmin } from '../middleware/auth.js';
 import {
+  type CreateUserInput,
   createUserWithTempPassword,
   deleteUser,
   getAllUsers,
   getUserById,
+  type ResetPasswordInput,
   resetPasswordWithTemp,
   resetUserPassword,
   ServiceError,
   updateUser,
 } from '../services/user.service.js';
-import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
+import type { AppFastifyInstance, IdParams, SessionUser } from '../types/app.js';
 
 export default async function userRoutes(fastify: AppFastifyInstance) {
-  fastify.post(
+  fastify.post<{ Body: CreateUserInput }>(
     '/users',
     {
       onRequest: [requireActiveSession, requireAdmin],
@@ -30,9 +32,9 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         },
       },
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
-        let currentUser: Awaited<ReturnType<AppFastifyRequest['getCurrentUser']>> | null = null;
+        let currentUser: SessionUser | null = null;
         try {
           currentUser = await request.getCurrentUser();
         } catch (authError) {
@@ -82,7 +84,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     {
       onRequest: [requireActiveSession, requireAdmin],
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 
@@ -111,12 +113,12 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     }
   );
 
-  fastify.get(
+  fastify.get<IdParams>(
     '/users/:id',
     {
       onRequest: [requireActiveSession, requireAdmin],
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 
@@ -153,7 +155,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     }
   );
 
-  fastify.put(
+  fastify.put<IdParams & { Body: Parameters<typeof updateUser>[2] }>(
     '/users/:id',
     {
       onRequest: [requireActiveSession, requireAdmin],
@@ -173,7 +175,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         },
       },
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 
@@ -214,12 +216,12 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     }
   );
 
-  fastify.delete(
+  fastify.delete<IdParams>(
     '/users/:id',
     {
       onRequest: [requireActiveSession, requireAdmin],
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 
@@ -259,12 +261,12 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     }
   );
 
-  fastify.post(
+  fastify.post<IdParams>(
     '/users/:id/reset-password',
     {
       onRequest: [requireActiveSession, requireAdmin],
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 
@@ -276,12 +278,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         }
 
         const { id } = request.params;
-        const result = await resetUserPassword(
-          request.db,
-          id as string,
-          currentUser.id,
-          currentUser.role
-        );
+        const result = await resetUserPassword(request.db, id, currentUser.id, currentUser.role);
         return reply.send({ success: true, data: result });
       } catch (error) {
         if (error instanceof ServiceError) {
@@ -293,7 +290,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
     }
   );
 
-  fastify.post(
+  fastify.post<{ Body: ResetPasswordInput }>(
     '/auth/first-time-setup',
     {
       config: {
@@ -315,7 +312,7 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         },
       },
     },
-    async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    async (request, reply) => {
       try {
         const currentUser = await request.getCurrentUser();
 

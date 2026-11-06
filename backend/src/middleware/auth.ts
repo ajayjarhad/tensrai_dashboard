@@ -1,6 +1,6 @@
 import { trace } from '@opentelemetry/api';
+import { ROLE } from '@tensrai/shared';
 import type { AppFastifyReply, AppFastifyRequest, AppSession } from '../types/app.js';
-import { ROLE } from '../types/shared-shim.js';
 
 // Staff act in the organization they entered; everyone else acts in their own.
 export const actingOrgId = (session: AppSession): string | null => {
@@ -79,10 +79,12 @@ export const requireStaff = async (
 export const requireOwnedRobot =
   (param = 'id') =>
   async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    const robotId = (request.params as Record<string, string> | undefined)?.[param];
     let robot = null;
     try {
       robot = await request.server.prisma.robot.findFirst({
-        where: { id: request.params?.[param], orgId: request.orgId },
+        // requireActiveSession runs first, so orgId is set; a null would fail the query and deny.
+        where: { id: robotId as string, orgId: request.orgId as string },
         select: { id: true },
       });
     } catch {
@@ -91,7 +93,7 @@ export const requireOwnedRobot =
 
     if (!robot) {
       request.server.log.warn(
-        { robotId: request.params?.[param], orgId: request.orgId, url: request.url },
+        { robotId, orgId: request.orgId, url: request.url },
         'Denied access to a robot outside the organization'
       );
       return reply.code(404).send({

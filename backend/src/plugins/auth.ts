@@ -796,9 +796,9 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         max: 10,
         timeWindow: '15 minutes',
         // After body parsing, so one attacker can't lock everyone out of an account from elsewhere.
-        hook: 'preHandler',
+        hook: 'preHandler' as const,
         keyGenerator: (request: AppFastifyRequest) =>
-          `${request.ip}|${String(request.body?.username ?? '').toLowerCase()}`,
+          `${request.ip}|${String((request.body as { username?: unknown } | undefined)?.username ?? '').toLowerCase()}`,
       },
     },
   };

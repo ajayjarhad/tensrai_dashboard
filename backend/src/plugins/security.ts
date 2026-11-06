@@ -76,7 +76,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
   await fastify.register(rateLimit, { global: false });
 
   await fastify.register(cors, {
-    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+    origin: (origin, cb) => {
       if (isAllowedOrigin(origin)) {
         return cb(null, true);
       }
