@@ -1,4 +1,5 @@
 // @ts-nocheck
+import EventEmitter from 'node:events';
 import { withApprovedAddress } from './robotAddress.js';
 import { RosRobotManager } from './rosRobotManager.js';
 
@@ -138,11 +139,21 @@ const _mergeChannels = (base: any[], custom: any[] | undefined) => {
   return Array.from(byName.values());
 };
 
-export class RosRegistry {
+export class RosRegistry extends EventEmitter {
   constructor(prisma, logger) {
+    super();
+    this.setMaxListeners(0);
     this.prisma = prisma;
     this.logger = logger;
     this.managers = new Map();
+  }
+
+  // A reload stops a robot's manager and may start another. Anything forwarding its events has to
+  // move with it, or it stays subscribed to a manager that will never emit again.
+  onManagerChange(robotId, listener) {
+    const event = `manager:${robotId}`;
+    this.on(event, listener);
+    return () => this.off(event, listener);
   }
 
   async reloadFromDb() {
@@ -205,6 +216,7 @@ export class RosRegistry {
         this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
       });
       this.managers.set(robotId, manager);
+      this.emit(`manager:${robotId}`, manager);
       manager.start().catch(error => {
         this.logger?.error({ robotId, err: formatErr(error) }, 'Failed to start ROS manager');
       });
@@ -215,6 +227,7 @@ export class RosRegistry {
       if (!desiredIds.has(robotId)) {
         manager.stop();
         this.managers.delete(robotId);
+        this.emit(`manager:${robotId}`, undefined);
       }
     }
   }
