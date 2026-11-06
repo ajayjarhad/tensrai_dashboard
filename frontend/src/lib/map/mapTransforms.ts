@@ -5,8 +5,6 @@
  */
 
 import type {
-  CanvasPoint,
-  MapPlacement,
   MapTransforms,
   PixelPoint,
   ROSPose,
@@ -85,95 +83,6 @@ export function mapPixelToWorld(pixelPoint: PixelPoint, transforms: MapTransform
 }
 
 /**
- * Convert map pixel coordinates to canvas coordinates
- * Takes into account canvas placement, scaling, and rotation
- */
-export function mapPixelToCanvas(pixelPoint: PixelPoint, placement: MapPlacement): CanvasPoint {
-  const { topLeft, scale, rotation } = placement;
-
-  // Apply scale
-  let x = pixelPoint.x * scale.x;
-  let y = pixelPoint.y * scale.y;
-
-  // Apply rotation around origin
-  if (rotation !== 0) {
-    const cos = Math.cos(rotation);
-    const sin = Math.sin(rotation);
-    const rotatedX = x * cos - y * sin;
-    const rotatedY = x * sin + y * cos;
-    x = rotatedX;
-    y = rotatedY;
-  }
-
-  // Apply offset
-  return {
-    x: x + topLeft.x,
-    y: y + topLeft.y,
-  };
-}
-
-/**
- * Convert canvas coordinates to map pixel coordinates
- */
-export function canvasToMapPixel(canvasPoint: CanvasPoint, placement: MapPlacement): PixelPoint {
-  const { topLeft, scale, rotation } = placement;
-
-  // Remove offset
-  let x = canvasPoint.x - topLeft.x;
-  let y = canvasPoint.y - topLeft.y;
-
-  // Remove rotation
-  if (rotation !== 0) {
-    const cos = Math.cos(-rotation);
-    const sin = Math.sin(-rotation);
-    const rotatedX = x * cos - y * sin;
-    const rotatedY = x * sin + y * cos;
-    x = rotatedX;
-    y = rotatedY;
-  }
-
-  // Remove scale
-  return {
-    x: x / scale.x,
-    y: y / scale.y,
-  };
-}
-
-/**
- * Convert world coordinates to canvas coordinates (world → pixel → canvas)
- */
-export function worldToCanvas(
-  worldPoint: WorldPoint,
-  transforms: MapTransforms,
-  placement: MapPlacement
-): CanvasPoint {
-  const pixelPoint = worldToMapPixel(worldPoint, transforms);
-  return mapPixelToCanvas(pixelPoint, placement);
-}
-
-/**
- * Convert canvas coordinates to world coordinates (canvas → pixel → world)
- */
-export function canvasToWorld(
-  canvasPoint: CanvasPoint,
-  placement: MapPlacement,
-  transforms: MapTransforms
-): WorldPoint {
-  const pixelPoint = canvasToMapPixel(canvasPoint, placement);
-  return mapPixelToWorld(pixelPoint, transforms);
-}
-
-/**
- * Convert ROS pose to world point (extract x, y position)
- */
-export function rosPoseToWorld(pose: ROSPose): WorldPoint {
-  return {
-    x: pose.position.x,
-    y: pose.position.y,
-  };
-}
-
-/**
  * Convert world point and angle to ROS pose
  */
 export function worldToRosPose(worldPoint: WorldPoint, yaw: number): ROSPose {
@@ -188,31 +97,10 @@ export function worldToRosPose(worldPoint: WorldPoint, yaw: number): ROSPose {
 }
 
 /**
- * Calculate distance between two world points
- */
-export function worldDistance(p1: WorldPoint, p2: WorldPoint): number {
-  const dx = p1.x - p2.x;
-  const dy = p1.y - p2.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-/**
  * Calculate angle between two world points (in radians)
  */
 export function worldAngle(p1: WorldPoint, p2: WorldPoint): number {
   return Math.atan2(p2.y - p1.y, p2.x - p1.x);
-}
-
-/**
- * Check if a pixel point is within map bounds
- */
-export function isPixelInBounds(pixelPoint: PixelPoint, transforms: MapTransforms): boolean {
-  return (
-    pixelPoint.x >= 0 &&
-    pixelPoint.x < transforms.width &&
-    pixelPoint.y >= 0 &&
-    pixelPoint.y < transforms.height
-  );
 }
 
 /**
@@ -239,20 +127,5 @@ export function createMapTransforms(metadata: {
     height: metadata.height,
     resolution: metadata.resolution,
     origin: metadata.origin,
-  };
-}
-
-/**
- * Create map placement object from Konva stage/image state
- */
-export function createMapPlacement(params: {
-  topLeft: CanvasPoint;
-  scale: { x: number; y: number };
-  rotation: number;
-}): MapPlacement {
-  return {
-    topLeft: params.topLeft,
-    scale: params.scale,
-    rotation: params.rotation,
   };
 }

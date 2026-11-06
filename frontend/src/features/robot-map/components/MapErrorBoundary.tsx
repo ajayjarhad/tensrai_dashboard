@@ -83,23 +83,3 @@ export function MapErrorBoundary({ children, fallback, onError }: MapErrorBounda
     </ReactErrorBoundary>
   );
 }
-
-/**
- * Hook for handling errors in functional components
- *
- * @param onError - Optional error handler callback
- * @returns Error state and handler functions
- */
-export function useMapErrorHandler(onError?: (error: Error) => void) {
-  const handleError = (error: Error) => {
-    console.error('Map component error:', error);
-    onError?.(error);
-  };
-
-  return {
-    handleError,
-  };
-}
-
-// Export the ErrorBoundary component for advanced usage
-export { ReactErrorBoundary as BaseErrorBoundary };

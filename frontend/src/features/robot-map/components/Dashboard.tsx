@@ -22,12 +22,12 @@ import { useMissionRuns } from '../hooks/useMissionRuns';
 import { useRobotMissions } from '../hooks/useRobotMissions';
 import { robotHasMap, useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
+import type { MissionWithContext } from '../types';
 import { resolveSelectionMap } from '../utils/mapSelection';
 import { DashboardLayout } from './DashboardLayout';
 import { LiveOccupancyMap } from './LiveOccupancyMap';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
 import { MapSelector } from './MapSelector';
-import type { MissionWithContext } from './MissionDialog';
 import {
   MissionDock,
   type MissionLogView,

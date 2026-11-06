@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { MoveRobotControl } from '@/features/staff/components/MoveRobotControl';
 import { apiClient } from '@/lib/api';
-import { evictFromCache } from '@/lib/map';
+import { evictFromCache } from '@/lib/map/loadMapAssets';
 import { queryKeys } from '@/lib/query-keys';
 import { getRobotDisplayStatusLabel, mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { useAuth } from '@/stores/auth';

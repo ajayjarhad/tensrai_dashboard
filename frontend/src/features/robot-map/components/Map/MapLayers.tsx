@@ -19,13 +19,12 @@ interface MapLayersProps {
   stageRef: RefObject<Konva.Stage | null>;
   mapGroupRef: RefObject<Konva.Group | null>;
   mapData: ProcessedMapData;
-  mapImage: HTMLImageElement | ImageBitmap | HTMLCanvasElement | undefined;
+  mapImage: HTMLImageElement | ImageBitmap | undefined;
   rotation: number;
   locations: TempLocation[];
   robots: Robot[];
   laserPoints?: Float32Array;
   pathPoints?: Float32Array;
-  overlayBitmap?: ImageBitmap | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   stageScale?: number;
   selectedRobotId?: string | null;
@@ -46,7 +45,6 @@ export function MapLayers({
   robots,
   laserPoints = EMPTY_FLOATS,
   pathPoints = EMPTY_FLOATS,
-  overlayBitmap,
   onRobotSelect,
   stageScale = 1,
   selectedRobotId,
@@ -180,14 +178,8 @@ export function MapLayers({
 
       <Layer listening={false}>
         <Group {...sharedGroupProps}>
-          {overlayBitmap ? (
-            <KonvaImage image={overlayBitmap} width={mapWidth} height={mapHeight} />
-          ) : (
-            <>
-              <PathLayer points={pathPoints} />
-              <LaserLayer points={laserPoints} scale={stageScale} />
-            </>
-          )}
+          <PathLayer points={pathPoints} />
+          <LaserLayer points={laserPoints} scale={stageScale} />
         </Group>
       </Layer>
 

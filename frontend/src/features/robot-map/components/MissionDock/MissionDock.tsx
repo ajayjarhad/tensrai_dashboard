@@ -4,8 +4,8 @@ import { Button } from '@/components/ui/button';
 import { getRobotDisplayStatusLabel, isRobotEmergencyActive } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
 import type { Robot } from '@/types/robot';
+import type { MissionWithContext } from '../../types';
 import { robotHasMap } from '../../utils/mapSelection';
-import type { MissionWithContext } from '../MissionDialog';
 
 export type OngoingMissionView = {
   robotId: string;

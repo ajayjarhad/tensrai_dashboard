@@ -8,7 +8,6 @@ export type TelemetryOverlayRequest = {
   path?: PathMessage | null;
   robotPose?: Pose2D | null;
   laserPose?: Pose2D | null;
-  stageScale?: number;
   laserStep?: number;
   maxLaserPoints?: number;
 };
@@ -17,5 +16,4 @@ export type TelemetryOverlayResponse = {
   requestId: number;
   laserPoints: Float32Array;
   pathPoints: Float32Array;
-  overlayBitmap?: ImageBitmap;
 };

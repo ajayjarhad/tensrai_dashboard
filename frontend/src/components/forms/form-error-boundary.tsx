@@ -78,23 +78,3 @@ export function FormErrorBoundary({ children, fallback, onError }: FormErrorBoun
     </ReactErrorBoundary>
   );
 }
-
-/**
- * Hook for handling form errors in functional components
- *
- * @param onError - Optional error handler callback
- * @returns Error state and handler functions
- */
-export function useFormErrorHandler(onError?: (error: Error) => void) {
-  const handleError = (error: Error) => {
-    console.error('Form component error:', error);
-    onError?.(error);
-  };
-
-  return {
-    handleError,
-  };
-}
-
-// Export the ErrorBoundary component for advanced usage
-export { ReactErrorBoundary as BaseFormErrorBoundary };

@@ -12,7 +12,7 @@ interface MapCanvasProps {
   stageRef: React.RefObject<Konva.Stage | null>;
   mapGroupRef: React.RefObject<Konva.Group | null>;
   mapData: ProcessedMapData;
-  mapImage: HTMLImageElement | ImageBitmap | HTMLCanvasElement | undefined;
+  mapImage: HTMLImageElement | ImageBitmap | undefined;
   robots: Robot[];
   locations: TempLocation[];
   enablePanning?: boolean;
@@ -24,7 +24,6 @@ interface MapCanvasProps {
   onPoseCancel?: () => void;
   laserPoints: Float32Array;
   pathPoints: Float32Array;
-  overlayBitmap?: ImageBitmap | undefined;
   rotation: number;
   width: number;
   height: number;
@@ -49,7 +48,6 @@ export function MapCanvas({
   onPoseCancel,
   laserPoints,
   pathPoints,
-  overlayBitmap,
   rotation,
   width,
   height,
@@ -83,7 +81,6 @@ export function MapCanvas({
         robots={robots}
         laserPoints={laserPoints}
         pathPoints={pathPoints}
-        overlayBitmap={overlayBitmap}
         onRobotSelect={onRobotSelect}
         stageScale={stageScale}
         selectedRobotId={selectedRobotId ?? null}

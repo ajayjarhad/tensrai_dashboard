@@ -449,7 +449,7 @@ export async function loadMapAssets(
   return loadingPromise;
 }
 
-export function clearMapAssetCache(): void {
+function clearMapAssetCache(): void {
   mapCache.clear();
   cacheAccessOrder.clear();
   accessCounter = 0;
@@ -462,16 +462,6 @@ export function evictFromCache(mapId: string): void {
     }
   }
 }
-
-export function getCacheStats(): { size: number; keys: string[]; maxSize: number } {
-  return {
-    size: mapCache.size,
-    keys: Array.from(mapCache.keys()),
-    maxSize: CACHE_CONFIG.MAX_SIZE,
-  };
-}
-
-export { loadMapAssets as default };
 
 // Decoded floor plans belong to one organization.
 useAuthStore.subscribe((state, previous) => {

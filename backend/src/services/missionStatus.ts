@@ -180,10 +180,6 @@ const shouldAcceptRequest = (
   return appliedAtMs >= currentTs;
 };
 
-export const clearMissionState = (robotId: string) => {
-  missionStateByRobot.delete(robotId);
-};
-
 const persistedRunStatusToPhase = (value: unknown): MissionStatePhase => {
   const status = String(value ?? '').toUpperCase();
   if (status === 'PREVIEW_PENDING') return 'preview_pending';

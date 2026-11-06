@@ -29,12 +29,6 @@ if (!(globalThis as any).WebSocket) {
   (globalThis as any).WebSocket = WebSocket as unknown as typeof WebSocket;
 }
 
-export type RosBridgeConnectionEvents = {
-  connected: () => void;
-  disconnected: () => void;
-  error: (error: Error) => void;
-};
-
 type TopicKey = `${string}:${string}`;
 
 export type RosBridgeConnectionOptions = {

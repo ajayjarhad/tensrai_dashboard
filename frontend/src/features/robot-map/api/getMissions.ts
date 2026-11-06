@@ -1,6 +1,6 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import { apiClient } from '@/lib/api';
-import type { MissionWithContext } from '../components/MissionDialog';
+import type { MissionWithContext } from '../types';
 
 export const getMissions = async (): Promise<MissionWithContext[]> => {
   const missions: MissionWithContext[] = [];

@@ -125,16 +125,3 @@ function readNumber(dataView: DataView, offset: number): number {
 
   return parseInt(numStr, 10);
 }
-
-/**
- * Validate PGM data structure
- */
-export function validatePGM(parsed: ParsedPGM): boolean {
-  return (
-    parsed.width > 0 &&
-    parsed.height > 0 &&
-    parsed.maxVal > 0 &&
-    parsed.maxVal <= 255 &&
-    parsed.data.length === parsed.width * parsed.height
-  );
-}

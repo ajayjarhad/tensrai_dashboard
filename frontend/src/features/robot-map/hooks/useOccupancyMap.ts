@@ -3,13 +3,16 @@
  * Handles map asset loading, caching, and error states
  */
 
-import type { ProcessedMapData } from '@tensrai/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { clearMapAssetCache, evictFromCache, loadMapAssets } from '../../../lib/map';
-import type { MapLoadProgress } from '../../../lib/map/loadMapAssets';
+import {
+  evictFromCache,
+  loadMapAssets,
+  type MapLoadProgress,
+  type ProcessedMapDataWithBitmap,
+} from '../../../lib/map/loadMapAssets';
 
 export interface UseOccupancyMapState {
-  data: ProcessedMapData | null;
+  data: ProcessedMapDataWithBitmap | null;
   loading: boolean;
   error: string | null;
   progress: MapLoadProgress | null;
@@ -44,7 +47,7 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
   } = options;
 
   const [state, setState] = useState<{
-    data: ProcessedMapData | null;
+    data: ProcessedMapDataWithBitmap | null;
     loading: boolean;
     error: string | null;
     progress: MapLoadProgress | null;
@@ -144,18 +147,5 @@ export function useOccupancyMap(options: UseOccupancyMapOptions): UseOccupancyMa
     error: state.error,
     progress: state.progress,
     reload,
-  };
-}
-
-/**
- * Hook to manage global map cache
- */
-export function useMapCache() {
-  const clearCache = useCallback(() => {
-    clearMapAssetCache();
-  }, []);
-
-  return {
-    clearCache,
   };
 }
