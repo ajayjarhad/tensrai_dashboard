@@ -1,0 +1,44 @@
+{
+  "locationTags": [
+    {
+      "id": 1,
+      "name": "Tag1",
+      "x": -5.5,
+      "y": 0,
+      "theta": 0.0
+    },
+    {
+      "id": 2,
+      "name": "Tag2",
+      "x": 0,
+      "y": 0,
+      "theta": 0.0
+    },
+    {
+      "id": 3,
+      "name": "Tag3",
+      "x": 5.5,
+      "y": 0,
+      "theta": 3.14
+    },
+    {
+      "id": 4,
+      "name": "Tag4",
+      "x": 3.5,
+      "y": 5,
+      "theta": -1.57
+    }
+  ],
+  "missions": [
+    {
+      "missionId": 5,
+      "name": "Mission 5",
+      "locationTagId": [1, 3, 1]
+    },
+    {
+      "missionId": 6,
+      "name": "Mission 6",
+      "locationTagId": [4]
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+# Simulated robots for trying the product without hardware, on a stack of their own: bun run robots
+# A deployment only loads docker-compose.yml, so it never gets these.
+# 10.77.0.0/24 is outside the block list in robotAddress.ts, so nothing about address checks changes.
+x-robot: &robot
+  image: oven/bun:1-slim
+  command: ["bun", "/mock/mock-robot.ts"]
+  init: true
+  restart: unless-stopped
+
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:18090:80"
+
+  mongo:
+    ports: !reset []
+
+  backend:
+    ports: !reset []
+    networks:
+      - simulated-robots
+
+  robot-1:
+    <<: *robot
+    environment:
+      ROBOT_NAME: robot-1
+      WAYPOINT_MS: 6000
+    volumes:
+      - ./tools/e2e/mock-robot.ts:/mock/mock-robot.ts:ro
+      - ./tools/e2e/robots/robot-1:/maps:ro
+    networks:
+      simulated-robots:
+        ipv4_address: 10.77.0.11
+
+  robot-2:
+    <<: *robot
+    environment:
+      ROBOT_NAME: robot-2
+      WAYPOINT_MS: 6000
+    volumes:
+      - ./tools/e2e/mock-robot.ts:/mock/mock-robot.ts:ro
+      - ./tools/e2e/robots/robot-2:/maps:ro
+    networks:
+      simulated-robots:
+        ipv4_address: 10.77.0.12
+
+  robot-3:
+    <<: *robot
+    environment:
+      ROBOT_NAME: robot-3
+      WAYPOINT_MS: 6000
+    volumes:
+      - ./tools/e2e/mock-robot.ts:/mock/mock-robot.ts:ro
+      - ./tools/e2e/robots/robot-3:/maps:ro
+    networks:
+      simulated-robots:
+        ipv4_address: 10.77.0.13
+
+networks:
+  signoz-backend:
+    name: dashboard-robots-signoz
+  simulated-robots:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
