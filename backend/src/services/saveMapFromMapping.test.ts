@@ -920,3 +920,158 @@ test('POST /active-map/auto clears the pin on a robot’s maps', async () => {
     isActive: true,
   });
 });
+
+// What a real Prisma client reports with errorFormat 'pretty' and the database unreachable.
+const PRISMA_ERROR = `
+Invalid \`prisma.robot.findUnique()\` invocation in
+/app/backend/src/services/saveMapFromMapping.ts:226:36
+
+→ 226   const robot = await prisma.robot.findUnique(
+Raw query failed. Code: \`unknown\`. Message: \`Kind: Server selection timeout: No available servers. Topology: { Type: ReplicaSetNoPrimary, Set Name: rs0, Servers: [ { Address: mongo:27017, Type: Unknown } ] }\``;
+const INTERNALS = /prisma|mongo|\.ts:\d+/i;
+
+const capturingLogger = () => {
+  const errors: any[] = [];
+  return { log: { ...createLogger(), error: (entry: any) => errors.push(entry) }, errors };
+};
+
+const prismaFailingToSaveActiveMap = (robotId: string) => {
+  const { prisma } = createFakePrisma({ robots: [{ id: robotId, orgId: ORG }] });
+  prisma.$transaction = async () => {
+    throw new Error(PRISMA_ERROR);
+  };
+  return prisma;
+};
+
+const onBridge = (id: string, port: number) => ({
+  id,
+  orgId: ORG,
+  ipAddress: '127.0.0.1',
+  mappingBridgePort: port,
+});
+
+const chunkedRobot =
+  (chunk: Buffer, sha256: string, onTransferError: (message: string) => void = () => {}) =>
+  (socket: WebSocket, { event, payload }: any) => {
+    const transferId = 'transfer';
+    if (event === 'GET_MAP_DATA') {
+      socket.send(
+        JSON.stringify({
+          event: 'MAP_MANIFEST',
+          payload: {
+            transferId,
+            map_yaml: 'map.yaml',
+            map_pgm: 'map.pgm',
+            map_yaml_content: inlineYaml('map.pgm'),
+            sha256,
+            total_chunks: 1,
+          },
+        })
+      );
+    }
+    if (event === 'MAP_SEND_CHUNKS') {
+      const data = chunk.toString('base64');
+      socket.send(JSON.stringify({ event: 'MAP_CHUNK', payload: { transferId, index: 0, data } }));
+      socket.send(JSON.stringify({ event: 'MAP_TRANSFER_COMPLETE', payload: { transferId } }));
+    }
+    if (event === 'MAP_TRANSFER_ERROR') onTransferError(payload.message);
+  };
+
+test('a failed database write reaches the logs, not the members of the organization', async () => {
+  const id = 'robot-db-write';
+  const server = await startMappingServer(socket => {
+    const files = { ...floorFiles(FLOOR_ONE), map_pgm_content: FLOOR_ONE.toString('base64') };
+    socket.send(JSON.stringify({ event: 'MAP_DATA_RESPONSE', payload: { files } }));
+  });
+  const { log, errors } = capturingLogger();
+  const prisma = prismaFailingToSaveActiveMap(id);
+
+  await fetchMapViaMappingBridge({ log, prisma }, onBridge(id, server.port));
+  await waitFor(() => getMapSyncStatus(id).phase === 'failed');
+
+  const app = await registerRobotApp(prisma);
+  const response = await app.inject({
+    method: 'GET',
+    url: `/api/robots/${id}/map-sync`,
+    headers: asUser('user'),
+  });
+  await app.close();
+
+  const { lastError } = response.json().data;
+  expect(lastError).toBeTruthy();
+  expect(lastError).not.toMatch(INTERNALS);
+  expect(errors.map(entry => entry.err?.message)).toContain(PRISMA_ERROR);
+});
+
+test('a failed database write during a chunked transfer is not told to the robot', async () => {
+  const id = 'robot-chunked-db-write';
+  const toldRobot: string[] = [];
+  const server = await startMappingServer(
+    chunkedRobot(
+      gzipSync(FLOOR_ONE),
+      createHash('sha256').update(FLOOR_ONE).digest('hex'),
+      message => toldRobot.push(message)
+    )
+  );
+  const { log, errors } = capturingLogger();
+
+  await fetchMapViaMappingBridge(
+    { log, prisma: prismaFailingToSaveActiveMap(id) },
+    onBridge(id, server.port)
+  );
+  await waitFor(() => toldRobot.length > 0);
+
+  expect(toldRobot[0]).not.toMatch(INTERNALS);
+  expect(getMapSyncStatus(id).lastError).toBe(toldRobot[0]);
+  expect(errors.map(entry => entry.err?.message)).toContain(PRISMA_ERROR);
+});
+
+test('a transfer the robot got wrong still says what is wrong', async () => {
+  const cases = [
+    ['robot-wrong-checksum', gzipSync(FLOOR_ONE), '0'.repeat(64), /sha256/],
+    ['robot-corrupt-gzip', Buffer.from('not gzip'), '0'.repeat(64), /could not be read/],
+  ] as const;
+
+  for (const [id, chunk, sha256, reason] of cases) {
+    const server = await startMappingServer(chunkedRobot(chunk, sha256));
+    const { prisma } = createFakePrisma({ robots: [{ id, orgId: ORG }] });
+
+    await fetchMapViaMappingBridge({ log: createLogger(), prisma }, onBridge(id, server.port));
+    await waitFor(() => getMapSyncStatus(id).phase === 'failed');
+
+    expect(getMapSyncStatus(id).lastError).toMatch(reason);
+  }
+});
+
+test('an unreachable bridge gives a reason without the socket error text', async () => {
+  const id = 'robot-unreachable';
+  const { port, close } = await startMappingServer();
+  await close();
+  const { log, errors } = capturingLogger();
+  const { prisma } = createFakePrisma({ robots: [{ id, orgId: ORG }] });
+
+  await fetchMapViaMappingBridge({ log, prisma }, onBridge(id, port));
+  await waitFor(() => getMapSyncStatus(id).phase === 'failed', 2_000);
+
+  const { lastError } = getMapSyncStatus(id);
+  expect(lastError).toBeTruthy();
+  expect(lastError).not.toContain(String(port));
+  expect(lastError).not.toContain('ws://');
+  expect(errors.map(entry => entry.err?.message).join()).toContain(String(port));
+});
+
+test('junk frames from a bridge end the sync with one logged error, not one per frame', async () => {
+  const id = 'robot-junk-frames';
+  const server = await startMappingServer(socket => {
+    for (let frame = 0; frame < 5; frame += 1) socket.send('not json');
+  });
+  const { log, errors } = capturingLogger();
+  const { prisma } = createFakePrisma({ robots: [{ id, orgId: ORG }] });
+
+  await fetchMapViaMappingBridge({ log, prisma }, onBridge(id, server.port));
+  await waitFor(() => getMapSyncStatus(id).phase === 'failed');
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  expect(errors).toHaveLength(1);
+  expect(getMapSyncStatus(id).lastError).not.toContain('JSON');
+});
