@@ -23,6 +23,7 @@ import { useRobotMissions } from '../hooks/useRobotMissions';
 import { robotHasMap, useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
 import { resolveSelectionMap } from '../utils/mapSelection';
+import { createTeleopPanel } from '../utils/teleopPanel';
 import { DashboardLayout } from './DashboardLayout';
 import { LiveOccupancyMap } from './LiveOccupancyMap';
 import type { PoseConfirmPayload } from './Map/SetPoseLayer';
@@ -261,7 +262,6 @@ export function Dashboard() {
   const [_mapFeatures, setMapFeatures] = useState<ProcessedMapData['features'] | undefined>();
   const [isSettingPose, setIsSettingPose] = useState(false);
   const [teleopRobotId, setTeleopRobotId] = useState<string | null>(null);
-  const teleopConfirmedRobotRef = useRef<string | null>(null);
 
   const mapNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1197,67 +1197,49 @@ export function Dashboard() {
     [dispatchMissionEvent]
   );
 
+  const [teleopPanel] = useState(() =>
+    createTeleopPanel({
+      sendModeChange,
+      onRobotChange: setTeleopRobotId,
+      confirmTimeoutMs: TELEOP_CONFIRM_TIMEOUT_MS,
+    })
+  );
+
+  useEffect(() => () => teleopPanel.dispose(), [teleopPanel]);
+
   const enableManualControl = useCallback(
     (robotId: string) => {
       if (!robotId || selectedRobotId !== robotId) {
         toast.error('Select a robot before entering manual control');
         return;
       }
-      if (teleopRobotId && teleopRobotId !== robotId) {
-        sendModeChange(teleopRobotId, 'autonomousActive');
-      }
-      if (teleopRobotId !== robotId) {
-        sendModeChange(robotId, 'teleopActive');
-      }
-      setTeleopRobotId(robotId);
+      teleopPanel.open(robotId);
       setIsSidebarOpen(true);
     },
-    [selectedRobotId, sendModeChange, setIsSidebarOpen, teleopRobotId]
-  );
-
-  const disableManualControl = useCallback(
-    (robotId?: string | null) => {
-      const targetId = robotId ?? teleopRobotId;
-      if (!targetId) return;
-      sendModeChange(targetId, 'autonomousActive');
-      setTeleopRobotId(current => (current === targetId ? null : current));
-    },
-    [sendModeChange, teleopRobotId]
+    [selectedRobotId, setIsSidebarOpen, teleopPanel]
   );
 
   const teleopRobot = teleopRobotId ? (robots.find(r => r.id === teleopRobotId) ?? null) : null;
 
   useEffect(() => {
     if (teleopRobotId && !robots.some(r => r.id === teleopRobotId)) {
-      setTeleopRobotId(null);
+      teleopPanel.forget();
     }
-  }, [robots, teleopRobotId]);
+  }, [robots, teleopPanel, teleopRobotId]);
 
   useEffect(() => {
     if (!selectedRobotId && teleopRobotId) {
-      setTeleopRobotId(null);
+      teleopPanel.close();
     }
-  }, [selectedRobotId, teleopRobotId]);
+  }, [selectedRobotId, teleopPanel, teleopRobotId]);
 
   useEffect(() => {
     if (!teleopRobotId) return;
     const teleopStatus = missionStatusByRobot[teleopRobotId];
-    const liveMode =
-      teleopStatus?.mode ?? robots.find(robot => robot.id === teleopRobotId)?.runtimeMode;
-    if (liveMode === 'teleop') {
-      teleopConfirmedRobotRef.current = teleopRobotId;
-      return;
-    }
-    if (teleopConfirmedRobotRef.current === teleopRobotId) {
-      teleopConfirmedRobotRef.current = null;
-      setTeleopRobotId(null);
-      return;
-    }
-    // The panel opens before the robot confirms the switch, so until then "not teleop" only means
-    // the answer has not arrived. A robot that never confirms closes the panel here.
-    const timer = setTimeout(() => setTeleopRobotId(null), TELEOP_CONFIRM_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [missionStatusByRobot, robots, teleopRobotId]);
+    teleopPanel.observeMode(
+      teleopStatus?.mode ?? robots.find(robot => robot.id === teleopRobotId)?.runtimeMode
+    );
+  }, [missionStatusByRobot, robots, teleopPanel, teleopRobotId]);
 
   const handleFocusMission = useCallback(
     (robotId: string, missionId?: string) => {
@@ -1465,7 +1447,7 @@ export function Dashboard() {
               robotId={teleopRobotId}
               robotName={teleopRobot.name}
               sendTeleop={sendTeleop}
-              onClose={() => disableManualControl(teleopRobotId)}
+              onClose={teleopPanel.close}
               className={isSidebarOpen ? 'right-2 md:right-4 bottom-28' : 'right-2 bottom-28'}
             />
           ) : null
