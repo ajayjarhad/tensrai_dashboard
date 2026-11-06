@@ -1348,7 +1348,7 @@ export function Dashboard() {
       <DashboardLayout
         emergencyHeader={{
           summary: emergencySummary,
-          pendingDispatch: emergencyPendingDispatch !== null,
+          pendingDesiredStatus: emergencyPendingDispatch?.desiredStatus ?? null,
           canSendEmergency: hasReachableEmergencyRobot,
           canReleaseSoftware: canReleaseSoftwareEmergency,
           onEmergencyAll: () => {
