@@ -11,6 +11,7 @@ import {
   type WaypointAckPayload,
 } from '@tensrai/shared';
 import { create } from 'zustand';
+import { isMissionActivePhase, isPreviewLikePhase } from '@/lib/missionPhases';
 import { createRobotMappingWsClient } from '@/services/robotMappingWsClient';
 import type { Robot } from '@/types/robot';
 
@@ -125,12 +126,6 @@ const fromRuntimeMissionStatus = (value: unknown): MissionLifecycleStatus | unde
 
 const toFiniteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-
-const shouldKeepWaypointProgress = (status: MissionLifecycleStatus | undefined) =>
-  status === 'running' || status === 'paused' || status === 'showing' || status === 'start_pending';
-
-const isPreviewLikePhase = (status: MissionLifecycleStatus | undefined) =>
-  status === 'preview_pending' || status === 'showing' || status === 'start_pending';
 
 const shouldAcceptRunId = (current: MissionStatus, eventRunId: string | undefined) => {
   if (!eventRunId || !current.runId) return true;
@@ -333,7 +328,7 @@ const updateFromRobotStatusUpdate = (
     ? false
     : runtimePhase === 'idle' && !hasMissionId;
   const missionChanged = hasMissionId && missionId !== current.currentMissionId;
-  const clearWaypoint = missionChanged || !shouldKeepWaypointProgress(nextPhase);
+  const clearWaypoint = missionChanged || !isMissionActivePhase(nextPhase);
   const nextMode = isRobotRuntimeMode(payload?.mode) ? payload.mode : current.mode;
 
   return setPhase(
@@ -503,7 +498,7 @@ const hydrateStatus = (
     !mission.currentMissionId &&
     !mission.runId;
   const resolvedPhase = preserveLocalPreview ? (existing?.phase ?? incomingPhase) : incomingPhase;
-  const keepWaypoint = shouldKeepWaypointProgress(resolvedPhase);
+  const keepWaypoint = isMissionActivePhase(resolvedPhase);
   // An idle report can't describe a preview this client just asked for, so it can't overwrite it.
   const runFields: Partial<typeof mission> = preserveLocalPreview ? {} : mission;
 

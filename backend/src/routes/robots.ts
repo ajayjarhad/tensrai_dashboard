@@ -2,6 +2,7 @@ import { trace } from '@opentelemetry/api';
 import { z } from 'zod';
 import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
 import { requireActiveSession, requireAdmin, requireOwnedRobot } from '../middleware/auth.js';
+import { getMapSyncStatus, isMapSyncActive } from '../services/mapSyncStatus.js';
 import { getMissionState } from '../services/missionStatus.js';
 import {
   isAddressApproved,
@@ -10,11 +11,7 @@ import {
   reloadRobotConnections,
   requestRobotAddress,
 } from '../services/robotAddress.js';
-import {
-  fetchMapViaMappingBridge,
-  getMapSyncStatus,
-  isMapSyncActive,
-} from '../services/saveMapFromMapping.js';
+import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance, AppFastifyRequest, IdParams, SessionUser } from '../types/app.js';
 
 const RobotModeSchema = z.enum([

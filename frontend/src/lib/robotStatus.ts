@@ -1,5 +1,6 @@
 import type { RobotEmergencyConnectionStatus } from '@tensrai/shared';
 import { type Robot, RobotMode } from '@/types/robot';
+import { isMissionActivePhase } from './missionPhases';
 
 type EmergencyRuntimeSource = 'live' | 'fallback' | 'unknown';
 
@@ -35,12 +36,7 @@ export const getRobotDisplayMode = (robot: Robot): RobotMode => {
   const emergencyMode = getRobotEmergencyMode(robot);
   if (emergencyMode) return emergencyMode;
 
-  if (
-    robot.mission?.phase === 'running' ||
-    robot.mission?.phase === 'paused' ||
-    robot.mission?.phase === 'showing' ||
-    robot.mission?.phase === 'start_pending'
-  ) {
+  if (isMissionActivePhase(robot.mission?.phase)) {
     return RobotMode.MISSION;
   }
   if (robot.runtimeMode === 'teleop') return RobotMode.TELEOP;

@@ -20,7 +20,7 @@ const mapFiles = (fill: number) => ({
 if (url) {
   const { PrismaClient } = await import('@prisma/client');
   const { scopedPrisma } = await import('./orgScope.js');
-  const { upsertMapFromResponse } = await import('./saveMapFromMapping.js');
+  const { upsertMapFromResponse } = await import('./mapRecords.js');
   const { MissionRunStore } = await import('./missionRunStore.js');
   const { createUserWithTempPassword, getAllUsers } = await import('./user.service.js');
   const { moveRobotToOrg } = await import('./org.service.js');

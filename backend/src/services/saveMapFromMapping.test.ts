@@ -6,9 +6,9 @@ import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { asUser, createTestApp, ORG_A as ORG } from '../testing/authStub.js';
 
-const { fetchMapViaMappingBridge, getMapSyncStatus, upsertMapFromResponse } = await import(
-  './saveMapFromMapping.js'
-);
+const { fetchMapViaMappingBridge } = await import('./saveMapFromMapping.js');
+const { getMapSyncStatus } = await import('./mapSyncStatus.js');
+const { upsertMapFromResponse } = await import('./mapRecords.js');
 const { default: robotRoutes } = await import('../routes/robots.js');
 
 type TestMappingServer = {
