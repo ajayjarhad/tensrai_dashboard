@@ -193,27 +193,14 @@ const rosGateway = async (fastify: FastifyInstance) => {
     _activeConnections++;
     // Note: activeConnections metric removed due to Bun runtime compatibility issues
 
-    let manager = registry.getManager(robotId);
-
-    if (!manager) {
+    // Access was checked at the upgrade, so the robot exists. No manager only means it has no
+    // approved address right now: the socket stays open and attaches when it gets one.
+    if (!registry.getManager(robotId)) {
       websocketMetrics.connectionErrors.add(1, {
         'robot.id': robotId,
         'websocket.type': 'ros-bridge',
         'error.reason': 'robot_not_found',
       });
-
-      span.setAttributes({
-        'websocket.connection.success': false,
-        'websocket.error.reason': 'robot_not_found',
-      });
-      span.end();
-
-      connection.socket?.send?.(makeError(undefined, undefined, `Unknown robot: ${robotId}`));
-      connection.socket?.close?.();
-
-      _activeConnections--;
-      // Note: activeConnections metric removed due to Bun runtime compatibility issues
-      return;
     }
 
     // @fastify/websocket normally puts the WS on connection.socket (Node),
@@ -255,9 +242,10 @@ const rosGateway = async (fastify: FastifyInstance) => {
 
     let attachedManager: any;
     const attachManager = (nextManager: any) => {
-      if (!nextManager || attachedManager === nextManager) return;
+      if (attachedManager === nextManager) return;
       attachedManager?.off?.('channel-data', forward);
       attachedManager = nextManager;
+      if (!attachedManager) return;
       attachedManager.on('channel-data', forward);
 
       for (const event of attachedManager.getLatestChannelEvents()) {
@@ -268,7 +256,8 @@ const rosGateway = async (fastify: FastifyInstance) => {
       }
     };
 
-    attachManager(manager);
+    attachManager(registry.getManager(robotId));
+    const stopFollowingManager = registry.onManagerChange(robotId, attachManager);
 
     socket.on('message', async buffer => {
       let parsed: IncomingMessage;
@@ -321,9 +310,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
           socket.send(makeError(parsed.channel, parsed.commandId, `Unknown robot: ${robotId}`));
           return;
         }
-        manager = currentManager;
-        attachManager(manager);
-        const result = manager.handleCommand(parsed.channel, parsed.data);
+        const result = currentManager.handleCommand(parsed.channel, parsed.data);
         if (!result.ok) {
           logRosCommand('warn', 'rejected', {
             robotId,
@@ -359,6 +346,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
     });
 
     socket.on('close', () => {
+      stopFollowingManager();
       attachedManager?.off?.('channel-data', forward);
 
       // Decrement active connections

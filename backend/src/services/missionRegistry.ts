@@ -1,6 +1,7 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
 import WebSocket from 'ws';
+import { parsePositiveMs } from '../utils/env.js';
 import { MissionRunStore } from './missionRunStore.js';
 import {
   hydrateMissionStateFromPersistedRun,
@@ -77,14 +78,6 @@ const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
-
-const parsePositiveMs = (envKey: string, fallback: number) => {
-  const raw = process.env[envKey];
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
-};
 
 const MISSION_CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
 const MISSION_HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_INTERVAL_MS', 30_000);
