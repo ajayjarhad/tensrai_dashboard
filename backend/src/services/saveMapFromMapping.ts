@@ -9,6 +9,15 @@ import { isAddressApproved } from './robotAddress.js';
 const MAP_TRANSFER_ACTIVITY_TIMEOUT_MS = 45_000;
 const DEFAULT_MAP_SYNC_CONNECT_TIMEOUT_MS = 15_000;
 
+const MAP_SYNC_FAILED = 'Map sync failed. Try again.';
+const UNREADABLE_MAP_FILES = 'Robot map files could not be read';
+const BRIDGE_CONNECTION_FAILED = "Connection to the robot's mapping bridge failed";
+
+// A failure whose message is written for the user. Any other exception stays in the logs: the sync
+// status reaches every member of the organization, the robot can be a server that organization
+// runs, and Prisma's text carries source paths and the database's address.
+class MapSyncFailure extends Error {}
+
 type MapSyncStatus = {
   phase:
     | 'idle'
@@ -210,6 +219,14 @@ const normalizeFeatures = (features: any) => {
 // bound what one transfer can make this process hold, since every customer shares it.
 const MAX_MAP_TRANSFER_BYTES = 64 * 1024 * 1024;
 const MAX_MAP_IMAGE_BYTES = 256 * 1024 * 1024;
+
+const gunzipMapImage = (gzipBytes: Buffer, maxOutputLength: number) => {
+  try {
+    return gunzipSync(gzipBytes, { maxOutputLength });
+  } catch (err) {
+    throw new MapSyncFailure(UNREADABLE_MAP_FILES, { cause: err });
+  }
+};
 
 const getMapDetails = (files: any) => {
   const features = normalizeFeatures(files.metadata_json ?? {});
@@ -535,12 +552,10 @@ export const fetchMapViaMappingBridge = async (
 
     try {
       const gzipBytes = Buffer.concat(transfer.chunks);
-      const pgmBytes = gunzipSync(gzipBytes, {
-        maxOutputLength: fastify?.maxMapImageBytes ?? MAX_MAP_IMAGE_BYTES,
-      });
+      const pgmBytes = gunzipMapImage(gzipBytes, fastify?.maxMapImageBytes ?? MAX_MAP_IMAGE_BYTES);
       const actualHash = createHash('sha256').update(pgmBytes).digest('hex');
       if (actualHash !== manifest.sha256) {
-        throw new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actualHash}`);
+        throw new MapSyncFailure(`sha256 mismatch: expected ${manifest.sha256}, got ${actualHash}`);
       }
 
       const storedMap = await upsertSingleMap(fastify, robotId, {
@@ -552,7 +567,7 @@ export const fetchMapViaMappingBridge = async (
         metadata_json: manifest.metadata_json,
       });
       if (!storedMap) {
-        throw new Error('Map upsert failed');
+        throw new MapSyncFailure('Map upsert failed');
       }
 
       const isDefaultMap = Boolean(manifest.is_default ?? manifest.isDefault ?? true);
@@ -580,7 +595,7 @@ export const fetchMapViaMappingBridge = async (
       });
       resetActivityTimeout();
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = error instanceof MapSyncFailure ? error.message : MAP_SYNC_FAILED;
       logger.error({ robotId, transferId, err: error }, 'Failed to finalize chunked map transfer');
       sendEvent('MAP_TRANSFER_ERROR', { transferId, message });
       markFailed(message);
@@ -765,7 +780,7 @@ export const fetchMapViaMappingBridge = async (
         });
         const storedMap = await upsertMapFromResponse(fastify, robotId, parsed.payload.files);
         if (!storedMap) {
-          markFailed('Robot map files could not be read');
+          markFailed(UNREADABLE_MAP_FILES);
           return;
         }
         updateMapSyncStatus(robotId, {
@@ -777,21 +792,18 @@ export const fetchMapViaMappingBridge = async (
         stop('map-upserted');
       }
     } catch (err) {
-      logger.debug({ robotId, err }, 'Failed to process mapping bridge payload');
-      updateMapSyncStatus(robotId, {
-        phase: 'failed',
-        lastError: err instanceof Error ? err.message : String(err),
-      });
+      logger.error({ robotId, err }, 'Failed to process mapping bridge payload');
+      // Ending the sync keeps this to one log line per sync, whatever the robot sends next.
+      markFailed(MAP_SYNC_FAILED);
     }
   });
 
   socket.on('error', err => {
     logger.error({ robotId, targetUrl, err }, 'Mapping bridge socket error');
     // Tearing the socket down after an earlier failure (e.g. the connect timeout) raises this
-    // too; keep the first, real reason. Bun delivers an ErrorEvent, not an Error.
+    // too; keep the first, real reason.
     if (mapSyncStatusByRobot.get(robotId)?.phase !== 'failed') {
-      const message = (err as { message?: string } | undefined)?.message;
-      updateMapSyncStatus(robotId, { phase: 'failed', lastError: message || String(err) });
+      updateMapSyncStatus(robotId, { phase: 'failed', lastError: BRIDGE_CONNECTION_FAILED });
     }
     stop('error');
   });
