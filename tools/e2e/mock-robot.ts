@@ -396,6 +396,10 @@ const showUp = (missionId: number, requestId: string | null) => {
   }, 100);
 };
 const startMission = (missionId: number, requestId: string | null) => {
+  if (emergencyActive()) {
+    startAck('failure', missionId, 'Mission start refused: emergency stop is active', requestId);
+    return;
+  }
   if (mission.active && !mission.paused) {
     startAck('failure', missionId, 'Mission already running', requestId);
     return;
@@ -486,6 +490,17 @@ const pauseMission = (missionId: number | null, requestId: string | null) => {
   }, confirmed);
 };
 const resumeMission = (missionId: number | null, requestId: string | null) => {
+  if (emergencyActive()) {
+    controlAck(
+      'RESUME_MISSION',
+      'failure',
+      missionId,
+      'Resume refused: emergency stop is active',
+      requestId,
+      mission.active ? runId : null
+    );
+    return;
+  }
   if (!mission.active) {
     controlAck('RESUME_MISSION', 'failure', missionId, 'No mission to resume', requestId);
     return;
