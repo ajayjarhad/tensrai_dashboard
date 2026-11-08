@@ -35,6 +35,7 @@ export type MissionStatus = {
   lastEventStatus?: string | undefined;
   lastRequestType?: string | undefined;
   lastEventAt?: number | undefined;
+  lastCommandAt?: number | undefined;
   lastEventMissionId?: string | undefined;
   mode?: RobotRuntimeMode | undefined;
   batteryPercentage?: number | null | undefined;
@@ -397,10 +398,12 @@ export const applyMissionIntent = (
 ): MissionStatus => {
   if (!MISSION_INTENTS.has(event)) return current;
   const missionId = missionIdOf(payload);
+  // lastEventAt is the robot's clock, which robot events are ordered by. A command is stamped by
+  // this machine's clock, so writing it there would drop events from a robot whose clock lags.
   const base: MissionStatus = {
     ...current,
     lastEvent: event,
-    lastEventAt: nowMs,
+    lastCommandAt: nowMs,
     updatedAt: nowMs,
     lastEventMissionId: missionId ?? current.currentMissionId,
     lastEventStatus: 'pending',

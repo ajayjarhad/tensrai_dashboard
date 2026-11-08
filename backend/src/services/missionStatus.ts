@@ -2,6 +2,7 @@ import {
   applyMissionEvent,
   applyMissionIntent,
   isMissionActivePhase,
+  isRobotMissionStatusEvent,
   type MissionPhase,
   type MissionStatus,
   missionIdOf,
@@ -86,6 +87,16 @@ const persistedRunStatusToPhase = (value: unknown): MissionPhase => {
   return 'idle';
 };
 
+// Only a saved robot event carries the robot's clock; a saved command carries the server's.
+const savedRobotEventAt = (
+  lastEvent: string | null | undefined,
+  lastEventAt: Date | string | null | undefined
+) => {
+  if (!isRobotMissionStatusEvent(lastEvent) || !lastEventAt) return undefined;
+  const ms = Date.parse(String(lastEventAt));
+  return Number.isFinite(ms) ? ms : undefined;
+};
+
 export const hydrateMissionStateFromPersistedRun = (
   robotId: string,
   run:
@@ -133,7 +144,7 @@ export const hydrateMissionStateFromPersistedRun = (
           : undefined,
       lastEvent: typeof run.lastEvent === 'string' ? run.lastEvent : undefined,
       message: typeof run.lastMessage === 'string' ? run.lastMessage : undefined,
-      lastEventAt: Number.isFinite(updatedAtMs) ? updatedAtMs : nowMs(),
+      lastEventAt: savedRobotEventAt(run.lastEvent, run.lastEventAt),
     },
     Number.isFinite(updatedAtMs) ? updatedAtMs : nowMs()
   );

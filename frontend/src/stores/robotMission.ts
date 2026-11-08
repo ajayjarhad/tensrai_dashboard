@@ -30,6 +30,8 @@ type MissionState = {
 };
 
 const clients = new Map<string, ReturnType<typeof createRobotMappingWsClient>>();
+// A command that never reached the server must not block merges for good.
+const COMMAND_SYNC_WINDOW_MS = 30_000;
 const IDLE: MissionStatus = { status: 'idle', phase: 'idle' };
 
 // Merges what the server reports into local state. Undefined means the report is older than what
@@ -39,12 +41,19 @@ const hydrateStatus = (
   mission: NonNullable<Robot['mission']>
 ): MissionStatus | undefined => {
   const parsedUpdatedAt = mission.updatedAt ? Date.parse(mission.updatedAt) : undefined;
-  const localFreshTs = existing?.lastEventAt ?? existing?.lastSeenTs ?? existing?.updatedAt;
+  // Compared like with like, because the robot, the server and this browser keep different clocks:
+  // robot events and reports by the robot's clock, and this client's latest command by its id.
+  const isOlder = (incoming: number | undefined, local: number | undefined) =>
+    incoming !== undefined && local !== undefined && incoming < local;
+  const awaitingOwnCommand =
+    existing?.lastCommandAt !== undefined &&
+    Date.now() - existing.lastCommandAt < COMMAND_SYNC_WINDOW_MS &&
+    mission.requestIdLast !== existing.requestIdLast;
   if (
     existing &&
-    Number.isFinite(parsedUpdatedAt) &&
-    Number.isFinite(localFreshTs) &&
-    (parsedUpdatedAt as number) < (localFreshTs as number)
+    (awaitingOwnCommand ||
+      isOlder(mission.lastEventAt, existing.lastEventAt) ||
+      isOlder(mission.lastSeenTs, existing.lastSeenTs))
   ) {
     return undefined;
   }

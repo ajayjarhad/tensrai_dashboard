@@ -49,9 +49,10 @@ export class MissionRunStore {
 
   private isStalePreviewRun(run: any, nowMs = Date.now()) {
     if (!run || !PREVIEW_STATUSES.includes(run.status)) return false;
+    // updatedAt is the server's clock, like nowMs; lastEventAt can carry the robot's.
     const ts =
-      (run.lastEventAt ? new Date(run.lastEventAt).getTime() : undefined) ??
-      (run.updatedAt ? new Date(run.updatedAt).getTime() : undefined);
+      (run.updatedAt ? new Date(run.updatedAt).getTime() : undefined) ??
+      (run.lastEventAt ? new Date(run.lastEventAt).getTime() : undefined);
     if (!Number.isFinite(ts)) return false;
     return nowMs - (ts as number) > PREVIEW_EXPIRY_MS;
   }

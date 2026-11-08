@@ -1,5 +1,7 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { applyMissionEvent, applyMissionIntent, type MissionStatus } from '@tensrai/shared';
+import { useRobotMissionStore } from '@/stores/robotMission';
+import type { Robot } from '@/types/robot';
 
 const T0 = Date.parse('2026-11-08T10:00:00.000Z');
 const ms = (seconds: number) => T0 + seconds * 1000;
@@ -233,5 +235,147 @@ describe('the behaviour chosen where backend and frontend used to disagree', () 
       2
     );
     expect(paused.lastEventMissionId).toBe('m1');
+  });
+});
+
+describe('a robot whose clock is 3 seconds behind the server', () => {
+  const robotAt = (seconds: number) => at(seconds - 3);
+
+  test('its acks, waypoints and completions still land after a command', () => {
+    const pending = intent(IDLE, 'START_MISSION', { missionId: 'm1' }, 10, 'q1');
+    const started = event(
+      pending,
+      'MISSION_START_ACK',
+      {
+        status: 'success',
+        missionId: 'm1',
+        requestId: 'q1',
+        runId: 'run1',
+        timestamp: robotAt(10.2),
+      },
+      10.2
+    );
+    expect(started.phase).toBe('running');
+
+    const pauseSent = intent(started, 'PAUSE_MISSION', { missionId: 'm1' }, 20, 'q2');
+    const progressed = event(
+      pauseSent,
+      'WAYPOINT_ACK',
+      { runId: 'run1', waypointIndex: 1, totalWaypoints: 3, time: robotAt(20.1) },
+      20.1
+    );
+    const paused = event(
+      progressed,
+      'MISSION_CONTROL_ACK',
+      { requestType: 'PAUSE', status: 'success', requestId: 'q2', timestamp: robotAt(20.2) },
+      20.2
+    );
+    expect(paused).toMatchObject({ phase: 'paused', waypointIndex: 1 });
+
+    const cancelSent = intent(paused, 'CANCEL_MISSION', { missionId: 'm1' }, 30, 'q3');
+    const done = event(
+      cancelSent,
+      'MISSION_COMPLETED',
+      { status: 'cancelled', runId: 'run1', completionTime: robotAt(30.1) },
+      30.1
+    );
+    expect(done.phase).toBe('cancelled');
+  });
+
+  test('a command leaves the robot-event clock alone, so the ack that answers it still toasts', () => {
+    const current = running();
+    expect(intent(current, 'PAUSE_MISSION', { missionId: 'm1' }, 20, 'q2').lastEventAt).toBe(
+      current.lastEventAt
+    );
+  });
+
+  test('a server snapshot taken before a command does not undo it', () => {
+    const startPending = intent(showing(), 'START_MISSION', { missionId: 'm1' }, 20, 'q2');
+    setSystemTime(new Date(ms(21)));
+    useRobotMissionStore.setState({ statusByRobot: { r1: startPending } });
+    const snapshotFromBefore = {
+      phase: 'showing',
+      status: 'showing',
+      currentMissionId: 'm1',
+      updatedAt: at(1),
+    };
+    useRobotMissionStore
+      .getState()
+      .hydrateFromRobots([{ id: 'r1', mission: snapshotFromBefore } as unknown as Robot]);
+
+    expect(useRobotMissionStore.getState().statusByRobot['r1']?.phase).toBe('start_pending');
+  });
+});
+
+describe('merging a server snapshot, whatever this browser’s clock says', () => {
+  afterEach(() => setSystemTime());
+
+  const merge = (local: MissionStatus, snapshot: Record<string, unknown>) => {
+    useRobotMissionStore.setState({ statusByRobot: { r1: local } });
+    useRobotMissionStore
+      .getState()
+      .hydrateFromRobots([{ id: 'r1', mission: snapshot } as unknown as Robot]);
+    return useRobotMissionStore.getState().statusByRobot['r1'];
+  };
+
+  test('a snapshot from before this browser’s command cannot undo it, with the browser 5 minutes behind', () => {
+    const startSent = intent(showing(), 'START_MISSION', { missionId: 'm1' }, 20 - 300, 'q2');
+    setSystemTime(new Date(ms(21 - 300)));
+    const beforeCommand = {
+      phase: 'showing',
+      currentMissionId: 'm1',
+      requestIdLast: 'q1',
+      lastEventAt: ms(1),
+      updatedAt: at(10),
+    };
+
+    expect(merge(startSent, beforeCommand)?.phase).toBe('start_pending');
+  });
+
+  test('a snapshot that has seen the command is merged, with the browser 5 minutes ahead', () => {
+    const startSent = intent(showing(), 'START_MISSION', { missionId: 'm1' }, 20 + 300, 'q2');
+    setSystemTime(new Date(ms(21 + 300)));
+    const afterAck = {
+      phase: 'running',
+      currentMissionId: 'm1',
+      runId: 'run1',
+      requestIdLast: 'q2',
+      lastEventAt: ms(22),
+      updatedAt: at(22),
+    };
+
+    expect(merge(startSent, afterAck)?.phase).toBe('running');
+  });
+
+  test('a command that never reached the server stops blocking merges after 30 seconds', () => {
+    const startSent = intent(showing(), 'START_MISSION', { missionId: 'm1' }, 20, 'q2');
+    setSystemTime(new Date(ms(20 + 31)));
+    const serverNeverSawIt = {
+      phase: 'showing',
+      currentMissionId: 'm1',
+      requestIdLast: 'q1',
+      lastEventAt: ms(1),
+      updatedAt: at(40),
+    };
+
+    expect(merge(startSent, serverNeverSawIt)?.phase).toBe('showing');
+  });
+
+  test('a snapshot older than the robot events this client has seen is ignored', () => {
+    const progressed = event(
+      running(),
+      'WAYPOINT_ACK',
+      { runId: 'run2', waypointIndex: 1, time: at(5) },
+      5
+    );
+    const older = {
+      phase: 'paused',
+      currentMissionId: 'm1',
+      requestIdLast: 'q1',
+      lastEventAt: ms(3),
+      updatedAt: at(3),
+    };
+
+    expect(merge(progressed, older)?.phase).toBe('running');
   });
 });

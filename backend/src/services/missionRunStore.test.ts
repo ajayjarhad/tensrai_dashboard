@@ -28,13 +28,13 @@ const createStore = () => {
       findUnique: async ({ where }: any) => runs.find(run => run.id === where.id) ?? null,
       findFirst: async ({ where }: any) => latest(runs.filter(run => matches(run, where))),
       create: async ({ data }: any) => {
-        const run = { id: `run-${runs.length + 1}`, ...data };
+        const run = { id: `run-${runs.length + 1}`, ...data, updatedAt: new Date() };
         runs.push(run);
         return run;
       },
       update: async ({ where, data }: any) => {
         const run = runs.find(entry => entry.id === where.id);
-        Object.assign(run, data);
+        Object.assign(run, data, { updatedAt: new Date() });
         return run;
       },
     },
@@ -246,4 +246,20 @@ test('a restarted robot reusing runId 1 does not rewrite the old finished run', 
   expect(runs).toHaveLength(2);
   expect(runs[0]).toMatchObject({ status: 'COMPLETED', endedAt: finishedAt });
   expect(runs[1].status).toBe('FAILED');
+});
+
+test('a preview acked by a robot whose clock lags is still live, and one left alone expires', async () => {
+  const { store, runs } = createStore();
+  await store.recordCommandIntent(meta, 'SHOW_UP', { missionId: 1, requestId: 'q1' });
+  const robotClock = new Date(Date.now() - 40_000).toISOString();
+  await store.applyEvent(meta, 'MISSION_CONTROL_ACK', {
+    ...controlAck('SHOW_UP', 'Showing'),
+    missionId: 1,
+    requestId: 'q1',
+    timestamp: robotClock,
+  });
+  expect((await store.getCurrentRun(meta.robotId))?.status).toBe('SHOWING');
+
+  (runs[0] as { updatedAt: Date }).updatedAt = new Date(Date.now() - 31_000);
+  expect(await store.getCurrentRun(meta.robotId)).toBeNull();
 });
