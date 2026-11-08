@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 
 // Real auth plugin against a real Mongo replica set; see tenancy.integration.test.ts for how to run.
 const url = process.env['TEST_DATABASE_URL'];
@@ -48,6 +49,41 @@ if (url) {
   const cookieOf = (res: { headers: Record<string, unknown> }) =>
     String(res.headers['set-cookie']).split(';')[0] ?? '';
 
+  // better-auth used to answer session lookups from a cookie cache signed with its public default
+  // secret, so two hand-made cookies were an ADMIN session for any organization.
+  test('cookies forged with better-auth’s default secret are not a session', async () => {
+    const secret = 'better-auth-secret-123456789';
+    const token = 'forged-token';
+    const now = Date.now();
+    const sessionData = {
+      session: {
+        id: 'forged',
+        token,
+        userId: user.id,
+        expiresAt: new Date(now + 3_600_000).toISOString(),
+      },
+      user: { id: user.id, orgId: org.id, username: 'forged', role: 'ADMIN', isActive: true },
+      updatedAt: now,
+      version: '1',
+    };
+    const expiresAt = now + 3_600_000;
+    const signature = createHmac('sha256', secret)
+      .update(JSON.stringify({ ...sessionData, expiresAt }))
+      .digest('base64url');
+    const tokenCookie = `${token}.${createHmac('sha256', secret).update(token).digest('base64')}`;
+    const dataCookie = Buffer.from(
+      JSON.stringify({ session: sessionData, expiresAt, signature })
+    ).toString('base64url');
+    const cookie = `better-auth.session_token=${encodeURIComponent(tokenCookie)}; better-auth.session_data=${dataCookie}`;
+
+    for (const path of ['/api/auth/session', '/api/robots']) {
+      expect([
+        path,
+        (await app.inject({ method: 'GET', url: path, headers: { cookie } })).statusCode,
+      ]).toEqual([path, 401]);
+    }
+  });
+
   test('a signed-in session is recognized by /api/auth/session without leaking credentials', async () => {
     const login = await signIn();
     expect(login.statusCode).toBe(200);
@@ -85,6 +121,7 @@ if (url) {
       { authorization: `Bearer ${token}` },
       { 'x-session-token': token },
       { 'session-token': token },
+      { cookie: `session-token=${token}` },
     ]) {
       expect([headers, (await session(headers)).statusCode]).toEqual([headers, 401]);
     }

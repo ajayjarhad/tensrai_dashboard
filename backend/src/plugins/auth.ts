@@ -1,30 +1,19 @@
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
-import { runWithEndpointContext } from '@better-auth/core/context';
+import { randomBytes } from 'node:crypto';
+import type { IncomingHttpHeaders } from 'node:http';
 import { trace } from '@opentelemetry/api';
+import type { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
 import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
-import { auth, SESSION_TTL_SECONDS, SESSION_UPDATE_AGE_SECONDS } from '../config/auth.js';
 import { authMetrics } from '../metrics/index.js';
 import { actingOrgId } from '../middleware/auth.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
-const toFetchHeaders = (headers: IncomingHttpHeaders) => {
-  const converted = new Headers();
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (!key) continue;
-
-    if (typeof value === 'string') {
-      converted.set(key, value);
-    } else if (Array.isArray(value)) {
-      converted.set(key, value.join(','));
-    }
-  }
-
-  return converted;
-};
+// Named after the library that used to issue it; renaming it would sign everyone out.
+const SESSION_COOKIE = 'better-auth.session_token';
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 5;
+const SESSION_UPDATE_AGE_SECONDS = 60 * 60 * 12;
 
 type AuthMethod = 'password' | 'temporary';
 
@@ -246,18 +235,6 @@ const ensurePrisma = (fastify: AppFastifyInstance): RouteResult<any> => {
   return ok(fastify.prisma);
 };
 
-const initializeAuthInstance = (
-  fastify: AppFastifyInstance,
-  getAuthInstance: () => ReturnType<typeof auth>
-): RouteResult<ReturnType<typeof auth>> => {
-  try {
-    return ok(getAuthInstance());
-  } catch (error) {
-    fastify.log.error(error, 'Failed to initialize authentication service');
-    return err(createRouteError(500, 'AUTH_ERROR', 'Authentication service not available'));
-  }
-};
-
 type SessionUser = {
   orgId: string;
   email: string | null;
@@ -289,69 +266,26 @@ const fetchSessionUser = async (prisma: any, userId: string): Promise<RouteResul
   return ok(sessionUser);
 };
 
-type NormalizedSession = Record<string, unknown> & {
-  sessionToken?: string;
-  token?: string;
-  expiresAt?: Date;
-};
+const randomId = () => randomBytes(24).toString('base64url');
 
-const normalizeSession = (session: Record<string, unknown>): NormalizedSession => {
-  const normalized: NormalizedSession = { ...session };
-  const sessionToken = (session['sessionToken'] as string | undefined) ?? (session as any).token;
+type CreatedSession = { id: string; token: string; expiresAt: Date };
 
-  if (sessionToken !== undefined) {
-    normalized.sessionToken = sessionToken;
-  }
-
-  const token = session['token'];
-  if (typeof token === 'string') {
-    normalized.token = token;
-  }
-
-  const expiresAt = session['expiresAt'];
-  if (expiresAt instanceof Date) {
-    normalized.expiresAt = expiresAt;
-  }
-
-  return normalized;
-};
-
-const createSessionForUser = async (
-  fastify: AppFastifyInstance,
-  authInstance: ReturnType<typeof auth>,
+const createSessionForUser = (
+  prisma: PrismaClient,
   request: AppFastifyRequest,
   userId: string
-): Promise<RouteResult<NormalizedSession>> => {
-  const authContext = await authInstance.$context;
-
-  if (!authContext?.internalAdapter?.createSession) {
-    fastify.log.error('Better Auth context does not expose a session creator');
-    return err(createRouteError(500, 'AUTH_ERROR', 'Authentication service not available'));
-  }
-
-  const sessionHeaders = toFetchHeaders(request.headers);
-  const endpointContext = {
-    headers: sessionHeaders,
-    request: request.raw,
-    path: '/api/auth/sign-in',
-    context: {
-      ...authContext,
-      returned: undefined,
-      responseHeaders: undefined,
-      session: null,
+): Promise<CreatedSession> =>
+  prisma.session.create({
+    data: {
+      id: randomId(),
+      token: randomId(),
+      userId,
+      expiresAt: new Date(Date.now() + SESSION_TTL_SECONDS * 1000),
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent'] ?? '',
     },
-  } as any;
-
-  const session = await runWithEndpointContext(endpointContext, () =>
-    authContext.internalAdapter.createSession(userId)
-  );
-
-  if (!session) {
-    return err(createRouteError(500, 'SESSION_ERROR', 'Failed to create session'));
-  }
-
-  return ok(normalizeSession(session as Record<string, unknown>));
-};
+    select: { id: true, token: true, expiresAt: true },
+  });
 
 const fetchOrgName = async (prisma: any, orgId: string | null | undefined) => {
   if (!orgId) return null;
@@ -382,21 +316,10 @@ const buildEnhancedUser = (
   requiresPasswordSetup: authResult.requiresPasswordSetup,
 });
 
-const setSessionCookie = (reply: AppFastifyReply, session: NormalizedSession) => {
-  const sessionToken = session.sessionToken;
-  if (!sessionToken) {
-    return;
-  }
+const setSessionCookie = (reply: AppFastifyReply, sessionToken: string, expiresAt: Date) => {
+  const maxAge = Math.max(Math.floor((expiresAt.getTime() - Date.now()) / 1000), 0);
 
-  const expiresAt =
-    session.expiresAt instanceof Date
-      ? session.expiresAt
-      : new Date(Date.now() + 60 * 60 * 24 * 7 * 1000);
-
-  const maxAge =
-    Math.max(Math.floor((expiresAt.getTime() - Date.now()) / 1000), 0) || 60 * 60 * 24 * 7;
-
-  const serializedCookie = cookie.serialize('better-auth.session_token', sessionToken, {
+  const serializedCookie = cookie.serialize(SESSION_COOKIE, sessionToken, {
     path: '/',
     httpOnly: true,
     secure: process.env['NODE_ENV'] === 'production',
@@ -408,30 +331,17 @@ const setSessionCookie = (reply: AppFastifyReply, session: NormalizedSession) =>
   reply.header('Set-Cookie', serializedCookie);
 };
 
-const clearSessionCookie = (reply: AppFastifyReply) => {
-  reply.header(
-    'Set-Cookie',
-    cookie.serialize('better-auth.session_token', '', {
-      path: '/',
-      httpOnly: true,
-      secure: process.env['NODE_ENV'] === 'production',
-      sameSite: 'lax',
-      maxAge: 0,
-      expires: new Date(0),
-    })
-  );
-};
+const clearSessionCookie = (reply: AppFastifyReply) => setSessionCookie(reply, '', new Date(0));
 
 const finalizeAuthentication = async (
   fastify: AppFastifyInstance,
   request: AppFastifyRequest,
   reply: AppFastifyReply,
   prisma: any,
-  authResult: AuthSuccess,
-  getAuthInstance: () => ReturnType<typeof auth>
+  authResult: AuthSuccess
 ): Promise<
   RouteResult<{
-    session: NormalizedSession;
+    session: CreatedSession;
     user: ReturnType<typeof buildEnhancedUser>;
     authMethod: AuthMethod;
     requiresPasswordSetup: boolean;
@@ -443,25 +353,12 @@ const finalizeAuthentication = async (
     return err(createRouteError(500, 'AUTH_ERROR', 'Authentication service error'));
   }
 
-  const authInstanceResult = initializeAuthInstance(fastify, getAuthInstance);
-  if (!authInstanceResult.ok) {
-    return authInstanceResult;
-  }
-
   const sessionUserResult = await fetchSessionUser(prisma, authenticatedUser.id);
   if (!sessionUserResult.ok) {
     return sessionUserResult;
   }
 
-  const sessionResult = await createSessionForUser(
-    fastify,
-    authInstanceResult.value,
-    request,
-    authenticatedUser.id
-  );
-  if (!sessionResult.ok) {
-    return sessionResult;
-  }
+  const session = await createSessionForUser(prisma, request, authenticatedUser.id);
 
   const enhancedUser = buildEnhancedUser(
     sessionUserResult.value,
@@ -470,10 +367,10 @@ const finalizeAuthentication = async (
     await fetchOrgName(prisma, sessionUserResult.value.orgId)
   );
 
-  setSessionCookie(reply, sessionResult.value);
+  setSessionCookie(reply, session.token, session.expiresAt);
 
   return ok({
-    session: sessionResult.value,
+    session,
     user: enhancedUser,
     authMethod: authResult.authMethod,
     requiresPasswordSetup: authResult.requiresPasswordSetup,
@@ -501,7 +398,7 @@ const extractSessionToken = (headers: IncomingHttpHeaders): string | null => {
     return null;
   }
 
-  return parsedCookies['better-auth.session_token'] ?? parsedCookies['session-token'] ?? null;
+  return parsedCookies[SESSION_COOKIE] ?? null;
 };
 
 const querySession = async (fastify: AppFastifyInstance, token: string) => {
@@ -540,60 +437,14 @@ const querySession = async (fastify: AppFastifyInstance, token: string) => {
   };
 };
 
-const fetchSessionFromDatabase = async (fastify: AppFastifyInstance, token: string) => {
-  try {
-    return await querySession(fastify, token);
-  } catch (error) {
-    fastify.log.error(error, 'Failed to fetch session from database');
-    return null;
-  }
-};
-
 const authPlugin = async (fastify: AppFastifyInstance) => {
-  // Initialize auth with the shared Prisma client (will access prisma when needed)
-  let authInstance: any = null;
-  fastify.decorate('auth', null as unknown as ReturnType<typeof auth>);
-
-  // Lazy initialization - only create auth instance when needed
-  const getAuthInstance = () => {
-    if (!authInstance) {
-      if (!fastify.prisma) {
-        throw new Error('Prisma not available for auth instance creation');
-      }
-      authInstance = auth(fastify.prisma);
-      (fastify as any).auth = authInstance;
-    }
-    return authInstance;
-  };
-
-  // Custom auth service now handled directly in routes
-
-  const lookupSession = async (request: AppFastifyRequest) => {
-    try {
-      const authInstance = getAuthInstance();
-      const session = await authInstance.api.getSession({
-        headers: toFetchHeaders(request.headers),
-      });
-
-      if (session?.user) {
-        return session;
-      }
-    } catch (error) {
-      fastify.log.debug({ error }, 'Primary session lookup failed, attempting database fallback');
-    }
-
-    const token = extractSessionToken(request.headers);
-    if (!token) {
-      return null;
-    }
-
-    return fetchSessionFromDatabase(fastify, token);
-  };
-
   // One lookup per request, however many guards and handlers ask for the session.
   fastify.decorateRequest('sessionLookup', null);
   fastify.decorateRequest('getUserSession', function (this: any) {
-    this.sessionLookup ??= lookupSession(this);
+    this.sessionLookup ??= this.readFreshSession().catch((error: unknown) => {
+      fastify.log.error(error, 'Failed to fetch session from database');
+      return null;
+    });
     return this.sessionLookup;
   });
 
@@ -619,7 +470,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
           where: { token: session.token },
           data: { expiresAt },
         });
-        setSessionCookie(reply, { sessionToken: session.token, expiresAt });
+        setSessionCookie(reply, session.token, expiresAt);
       } catch (error) {
         fastify.log.error(error, 'Failed to renew session');
       }
@@ -641,73 +492,9 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     return user?.role === role;
   });
 
-  // Register Better Auth handler with proper URL handling
-  const getHandler = () => {
-    const instance = getAuthInstance();
-    return instance.handler as unknown as (
-      req: IncomingMessage,
-      res: ServerResponse
-    ) => Promise<void>;
-  };
-
-  const localDevOrigins = Array.from({ length: 10 }, (_, idx) => `http://localhost:${5001 + idx}`);
-  const fallbackAllowedOrigins = [
-    process.env['FRONTEND_URL'],
-    'http://localhost:5000',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    ...localDevOrigins,
-  ].filter(Boolean) as string[];
-  const fallbackAllowedOriginSet = new Set(
-    fallbackAllowedOrigins.map(origin => origin.toLowerCase())
-  );
-  const nodeEnv = process.env['NODE_ENV'] ?? 'development';
-
-  const isFallbackAllowedOrigin = (origin?: string | null) => {
-    if (!origin) return false;
-    if (nodeEnv !== 'production') return true;
-    return fallbackAllowedOriginSet.has(origin.toLowerCase());
-  };
-
-  const applyCorsHeaders = (request: AppFastifyRequest, reply: AppFastifyReply) => {
-    const origin = request.headers.origin;
-    const sharedCors = (fastify as any).applyCorsHeaders;
-    if (typeof sharedCors === 'function') {
-      sharedCors(reply, origin ?? null);
-      return;
-    }
-
-    if (!isFallbackAllowedOrigin(origin)) {
-      reply.removeHeader('Access-Control-Allow-Origin');
-      reply.raw?.removeHeader?.('Access-Control-Allow-Origin');
-    } else if (origin) {
-      reply.header('Access-Control-Allow-Origin', origin);
-    }
-
-    const credentials = 'true';
-    const allowHeaders =
-      'Origin, X-Requested-With, Accept, Authorization, Content-Type, Cache-Control, Pragma';
-    const allowMethods = 'GET, POST, PUT, DELETE, PATCH, OPTIONS';
-    reply.header('Access-Control-Allow-Credentials', credentials);
-    reply.header('Access-Control-Allow-Headers', allowHeaders);
-    reply.header('Access-Control-Allow-Methods', allowMethods);
-    reply.header('Access-Control-Expose-Headers', 'Set-Cookie');
-    reply.header('Vary', 'Origin');
-  };
-
-  fastify.options('/api/auth/*', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
-    applyCorsHeaders(request, reply);
-    reply.header('Content-Length', '0');
-    reply.status(204).send();
-  });
-
   // Session validation endpoint for frontend
   fastify.get('/api/auth/session', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
     try {
-      applyCorsHeaders(request, reply);
-
-      // Better Auth first, then the sessions table: sessions made by the custom sign-in carry
-      // an unsigned cookie that Better Auth alone cannot resolve.
       const session = await request.getUserSession();
 
       if (!session?.user) {
@@ -718,7 +505,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         });
       }
 
-      // Allow-list: the Better Auth user also carries credential fields such as tempPasswordHash.
+      // Allow-list: only these user fields leave the server.
       const {
         id,
         orgId: homeOrgId,
@@ -756,11 +543,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     }
   });
 
-  // Better Auth's own sign-out cannot find sessions created by the custom sign-in (unsigned
-  // cookie), so it answered 200 and left the session usable until it expired.
   fastify.post('/api/auth/sign-out', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
-    applyCorsHeaders(request, reply);
-
     const user = await request.getCurrentUser();
     const token = extractSessionToken(request.headers);
     if (token) {
@@ -823,8 +606,6 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       });
 
       try {
-        applyCorsHeaders(request, reply);
-
         const credentialsResult = extractCredentials(request.body);
         if (!credentialsResult.ok) {
           span.setAttributes({
@@ -882,8 +663,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
           request,
           reply,
           prismaResult.value,
-          authResult,
-          getAuthInstance
+          authResult
         );
 
         if (!finalResult.ok) {
@@ -941,7 +721,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
           user: finalResult.value.user,
           // Allow-list, the same as /api/auth/session: the session row carries the token.
           session: {
-            sessionId: finalResult.value.session['id'],
+            sessionId: finalResult.value.session.id,
             expiresAt: finalResult.value.session.expiresAt,
           },
           authMethod: finalResult.value.authMethod,
@@ -968,63 +748,6 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
       }
     }
   );
-
-  // Register auth routes with CORS (excluding sign-in which we handle separately)
-  fastify.route({
-    method: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    url: '/api/auth/*',
-    handler: async (request: AppFastifyRequest, reply: AppFastifyReply) => {
-      try {
-        applyCorsHeaders(request, reply);
-
-        // Skip sign-in endpoint - we handle it with custom logic above
-        if (request.url?.includes('/api/auth/sign-in') && request.method === 'POST') {
-          reply.code(404).send({
-            success: false,
-            error: 'Not found',
-            code: 'NOT_FOUND',
-          });
-          return;
-        }
-
-        // Set proper host for Better Auth
-        const originalHost = request.headers.host;
-        const host = originalHost || 'localhost:5001';
-        const protocolHeader = request.headers['x-forwarded-proto'];
-        const protocol = Array.isArray(protocolHeader)
-          ? protocolHeader[0]
-          : protocolHeader?.split(',')[0];
-        const scheme = protocol?.trim() || 'http';
-
-        // Ensure Better Auth has the correct base URL
-        const currentAuthInstance = getAuthInstance();
-        if (!currentAuthInstance.options.baseURL) {
-          currentAuthInstance.options.baseURL = `http://${host}`;
-        }
-
-        const rawNodeRequest = request.raw;
-        const originalUrl = rawNodeRequest.url ?? '/';
-
-        // Strip the /api/auth prefix so Better Auth receives the path it expects
-        const rewrittenPath = originalUrl.replace(/^\/api\/auth/, '') || '/';
-        const normalizedPath = rewrittenPath.startsWith('/') ? rewrittenPath : `/${rewrittenPath}`;
-        const absoluteUrl = `${scheme}://${host}${normalizedPath}`;
-        rawNodeRequest.url = absoluteUrl;
-
-        await getHandler()(rawNodeRequest, reply.raw);
-
-        // Restore original URL in case downstream hooks rely on it
-        rawNodeRequest.url = originalUrl;
-      } catch (error) {
-        fastify.log.error(error, 'Better Auth handler error');
-        reply.status(500).send({
-          success: false,
-          error: 'Authentication service error',
-          code: 'AUTH_ERROR',
-        });
-      }
-    },
-  });
 };
 
 export default fp(authPlugin, {

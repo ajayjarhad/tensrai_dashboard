@@ -1,6 +1,5 @@
 import type { PrismaClient, User as PrismaUser } from '@prisma/client';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { Auth } from '../config/auth.js';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
 import type { MissionRegistry } from '../services/missionRegistry.js';
 import type { ScopedPrisma } from '../services/orgScope.js';
@@ -27,7 +26,6 @@ export interface AppSession {
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient;
-    auth: Auth;
     emergencyRegistry?: EmergencyRegistry;
     missionRegistry?: MissionRegistry;
     audit(event: AuditEvent): Promise<void>;
