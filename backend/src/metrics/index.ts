@@ -1,6 +1,8 @@
 import { metrics } from '@opentelemetry/api';
-import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
-import { MeterProvider } from '@opentelemetry/sdk-metrics';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { parsePositiveMs } from '../utils/env.js';
+import { isMetricsEnabled, otlpUrl } from '../utils/telemetryConfig.js';
 
 type CounterLike = { add: (value: number, attributes?: Record<string, unknown>) => void };
 type HistogramLike = { record: (value: number, attributes?: Record<string, unknown>) => void };
@@ -13,13 +15,7 @@ const createNoopMeter = () => ({
   createHistogram: () => createNoopHistogram(),
 });
 
-const isBunRuntime =
-  typeof (globalThis as any).Bun !== 'undefined' || typeof process.versions?.['bun'] === 'string';
-const metricsEnabledEnv = process.env['OTEL_METRICS_ENABLED'] ?? process.env['METRICS_ENABLED'];
-const metricsEnabled =
-  metricsEnabledEnv !== undefined
-    ? metricsEnabledEnv === 'true' || metricsEnabledEnv === '1'
-    : !isBunRuntime;
+const metricsEnabled = isMetricsEnabled();
 
 let meter: {
   createCounter: (name: string, options?: Record<string, unknown>) => CounterLike;
@@ -28,16 +24,13 @@ let meter: {
 
 if (metricsEnabled) {
   try {
-    const port = Number(process.env['OTEL_PROMETHEUS_PORT'] ?? 9464);
-    const prometheusExporter = new PrometheusExporter({
-      port,
-      endpoint: '/metrics',
-    });
-
+    // Pushed to the same collector as traces: SigNoz runs on its own host, so nothing could scrape.
     const meterProvider = new MeterProvider({
-      // Exporter package versions can drift in monorepos; cast keeps runtime resilient.
       readers: [
-        prometheusExporter as unknown as import('@opentelemetry/sdk-metrics').IMetricReader,
+        new PeriodicExportingMetricReader({
+          exporter: new OTLPMetricExporter({ url: otlpUrl('metrics') }),
+          exportIntervalMillis: parsePositiveMs('OTEL_METRIC_EXPORT_INTERVAL', 60_000),
+        }),
       ],
     });
 

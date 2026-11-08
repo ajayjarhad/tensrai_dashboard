@@ -1,20 +1,36 @@
-import { trace } from '@opentelemetry/api';
+import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import fp from 'fastify-plugin';
 import { apiMetrics } from '../metrics/index.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
+import {
+  isBunRuntime,
+  isMetricsEnabled,
+  isTracingEnabled,
+  otlpUrl,
+} from '../utils/telemetryConfig.js';
 
-/**
- * Observability plugin for Fastify
- * Enhanced logging with OpenTelemetry/SigNoz integration
- */
+const tracer = trace.getTracer('http');
+
 const observabilityPlugin = async (fastify: AppFastifyInstance) => {
-  if ((process.env['NODE_ENV'] ?? 'development') === 'production') {
-    fastify.log.level = 'warn';
-  } else {
-    fastify.log.level = 'info';
-  }
+  fastify.decorateRequest('requestSpan', null);
 
-  fastify.addHook('onRequest', async (request: AppFastifyRequest) => {
+  fastify.addHook('onRequest', (request: AppFastifyRequest, _reply, done) => {
     request.startTime = Date.now();
+    // Bun's HTTP server can't be auto-instrumented, so each request opens its own server span and
+    // makes it the active context, which nests the routes' own spans inside it. Under Node the http
+    // instrumentation does this, and sockets have a span of their own.
+    if (!isBunRuntime || request.headers.upgrade) return done();
+    const route = request.routeOptions.url ?? 'unmatched route';
+    const span = tracer.startSpan(`${request.method} ${route}`, {
+      kind: SpanKind.SERVER,
+      attributes: {
+        'http.method': request.method,
+        'http.route': route,
+        'http.target': request.url.split('?')[0] ?? request.url,
+      },
+    });
+    request.requestSpan = span;
+    context.with(trace.setSpan(context.active(), span), done);
   });
 
   fastify.addHook('onResponse', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
@@ -35,6 +51,13 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
     });
 
     // Record errors separately
+    const span = request.requestSpan;
+    if (span) {
+      span.setAttribute('http.status_code', reply.statusCode);
+      if (reply.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+      span.end();
+    }
+
     if (reply.statusCode >= 400) {
       apiMetrics.errorRate.add(1, {
         'http.method': request.method,
@@ -44,7 +67,7 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
       });
     }
 
-    fastify.log.info(
+    fastify.log.debug(
       {
         method: request.method,
         url: request.url,
@@ -61,7 +84,7 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
   fastify.addHook(
     'onError',
     async (request: AppFastifyRequest, _reply: AppFastifyReply, error: Error) => {
-      const span = trace.getActiveSpan();
+      const span = request.requestSpan ?? trace.getActiveSpan();
 
       if (span) {
         span.recordException(error);
@@ -88,27 +111,14 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
   fastify.get('/health/observability', async () => ({
     status: 'healthy',
     observability: {
-      logging: 'enabled',
-      auditLogging: 'enabled',
-      tracing: 'enabled',
-      metrics: {
-        enabled: true,
-        endpoint: 'http://localhost:9464/metrics',
-        exporter: 'prometheus',
-      },
-      openTelemetry: {
-        service: process.env['OTEL_SERVICE_NAME'] ?? 'tensrai-dashboard',
-        endpoint: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4318',
-        exporter: 'otlp-http',
-        instrumentation: 'auto',
-      },
-      sigNoz: {
-        dashboard: 'http://localhost:3302',
-        collector: 'http://localhost:4318',
-      },
+      logLevel: fastify.log.level,
+      tracing: { enabled: isTracingEnabled(), exporter: 'otlp-http', endpoint: otlpUrl('traces') },
+      metrics: { enabled: isMetricsEnabled(), exporter: 'otlp-http', endpoint: otlpUrl('metrics') },
+      service: process.env['OTEL_SERVICE_NAME'] || 'tensrai-backend',
       timestamp: new Date().toISOString(),
     },
   }));
 };
 
-export default observabilityPlugin;
+// Without fastify-plugin its hooks would only see its own route, so no other request was measured.
+export default fp(observabilityPlugin, { name: 'observability' });

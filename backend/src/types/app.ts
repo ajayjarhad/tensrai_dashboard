@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import type { PrismaClient, User as PrismaUser } from '@prisma/client';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
@@ -33,6 +34,7 @@ declare module 'fastify' {
 
   interface FastifyRequest {
     startTime?: number;
+    requestSpan: Span | null;
     // Set by requireActiveSession; db is a Prisma client confined to this organization.
     orgId: string | null;
     db: ScopedPrisma;
