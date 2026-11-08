@@ -17,6 +17,13 @@ export const TEST_USERS = {
   user: { ...baseUser, id: 'u-user', role: 'USER' },
   disabled: { ...baseUser, id: 'u-disabled', role: 'USER', isActive: false },
   needsReset: { ...baseUser, id: 'u-reset', role: 'USER', mustResetPassword: true },
+  disabledNeedsReset: {
+    ...baseUser,
+    id: 'u-disabled-reset',
+    role: 'USER',
+    isActive: false,
+    mustResetPassword: true,
+  },
   noOrg: { ...baseUser, id: 'u-no-org', role: 'USER', orgId: null },
   otherOrgUser: { ...baseUser, id: 'u-other', role: 'USER', orgId: ORG_B },
   otherOrgAdmin: { ...baseUser, id: 'u-other-admin', role: 'ADMIN', orgId: ORG_B },

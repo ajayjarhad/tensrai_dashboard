@@ -106,7 +106,6 @@ const databasePlugin = async (fastify: AppFastifyInstance) => {
       return {
         status: 'unhealthy',
         database: 'disconnected',
-        error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: new Date().toISOString(),
       };
     }

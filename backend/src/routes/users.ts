@@ -69,11 +69,14 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: 'User created successfully. Share the temporary password with the user.',
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to create user');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to create user',
+          error: 'Failed to create user',
         });
       }
     }
@@ -323,6 +326,14 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           });
         }
 
+        if (!currentUser.isActive) {
+          return reply.code(403).send({
+            success: false,
+            error: 'Account is disabled',
+            code: 'ACCOUNT_DISABLED',
+          });
+        }
+
         if (!currentUser.mustResetPassword) {
           return reply.code(400).send({
             success: false,
@@ -338,11 +349,14 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
           message: result.message,
         });
       } catch (error) {
+        if (error instanceof ServiceError) {
+          return reply.code(error.status).send({ success: false, error: error.message });
+        }
         fastify.log.error(error, 'Failed to complete first-time setup');
 
         return reply.code(400).send({
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to complete first-time setup',
+          error: 'Failed to complete first-time setup',
         });
       }
     }

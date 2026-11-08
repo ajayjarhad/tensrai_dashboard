@@ -615,6 +615,62 @@ if (url) {
     expect((await signIn(adminB.username)).statusCode).toBe(200);
   });
 
+  test('setting a password ends every session the account had', async () => {
+    const tempPassword = `temp-${run}-password`;
+    const newPassword = `new-${run}-password`;
+    const user = await prisma.user.create({
+      data: {
+        orgId: orgA.id,
+        role: 'USER',
+        username: `setup-${run}`,
+        email: `setup-${run}@example.test`,
+        passwordHash: '',
+        mustResetPassword: true,
+        tempPasswordHash: await bcrypt.hash(tempPassword, 4),
+        tempPasswordExpiry: new Date(Date.now() + 60_000),
+      },
+    });
+    const thisDevice = cookieOf(await signIn(user.username, tempPassword));
+    const otherDevice = cookieOf(await signIn(user.username, tempPassword));
+
+    const setup = await call(thisDevice, 'POST', '/api/auth/first-time-setup', {
+      tempPassword,
+      newPassword,
+      confirmPassword: newPassword,
+    });
+    expect(setup.statusCode).toBe(200);
+
+    for (const cookie of [thisDevice, otherDevice]) {
+      expect((await call(cookie, 'GET', '/api/auth/session')).statusCode).toBe(401);
+    }
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+
+    const fresh = cookieOf(await signIn(user.username, newPassword));
+    expect((await call(fresh, 'GET', '/api/robots')).statusCode).toBe(200);
+  });
+
+  test('audit events record whom they acted on, whichever way they are written', async () => {
+    const created = await call(adminACookie, 'POST', '/api/users', {
+      username: `audited-${run}`,
+      email: `audited-${run}@example.test`,
+      role: 'USER',
+    });
+    const targetUserId = created.json().data.user.id;
+    await call(adminACookie, 'DELETE', `/api/users/${targetUserId}`);
+    await app.audit({
+      orgId: orgA.id,
+      userId: adminA.id,
+      role: 'ADMIN',
+      action: 'PLUGIN_AUDIT_PROBE',
+      targetUserId,
+    });
+
+    for (const action of ['TEMP_PASSWORD_CREATED', 'USER_DELETED', 'PLUGIN_AUDIT_PROBE']) {
+      const rows = await prisma.auditLog.count({ where: { action, targetUserId, orgId: orgA.id } });
+      expect([action, rows]).toEqual([action, 1]);
+    }
+  });
+
   test('requests a client got wrong are answered as 4xx, not as server errors', async () => {
     const invalid = await call(adminACookie, 'PUT', `/api/users/${operatorA.id}`, {
       role: 'STAFF',

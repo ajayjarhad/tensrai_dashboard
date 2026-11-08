@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import cors from '@fastify/cors';
+import bcrypt from 'bcryptjs';
 import { asStaffIn, asUser, createTestApp, fakeRobotModel, ORG_A } from '../testing/authStub.js';
 
 const { default: mapRoutes } = await import('./maps.js');
@@ -16,6 +17,21 @@ type RouteInfo = { method: string; url: string };
 
 const userUpdates: any[] = [];
 
+const TEMP_PASSWORD = 'temporary-password';
+const pendingSetupRow = async (id: string) => ({
+  id,
+  role: 'USER',
+  displayName: null,
+  tempPasswordHash: await bcrypt.hash(TEMP_PASSWORD, 4),
+  tempPasswordExpiry: new Date(Date.now() + 60_000),
+});
+
+const DATABASE_FAILURE =
+  'Invalid `prisma.user.findFirst()` invocation: could not reach mongodb://10.0.0.5:27017';
+const failWithDatabaseError = async () => {
+  throw new Error(DATABASE_FAILURE);
+};
+
 const prisma = {
   robot: {
     ...fakeRobotModel([{ id: 'r1', orgId: ORG_A }]),
@@ -26,7 +42,9 @@ const prisma = {
   user: {
     findMany: async () => [],
     groupBy: async () => [],
-    findUnique: async ({ where }: any) => {
+    findFirst: async (_args: any): Promise<unknown> => null,
+    findUnique: async ({ where }: any): Promise<unknown> => {
+      if (where.id.endsWith('reset')) return pendingSetupRow(where.id);
       if (where.id === 'colleague') return { id: 'colleague', role: 'USER', username: 'colleague' };
       if (where.id === 'staff-member') return { id: 'staff-member', role: 'STAFF' };
       return null;
@@ -329,4 +347,81 @@ test('an unknown user is a 404 with no database detail in the response', async (
     expect([method, url, res.statusCode]).toEqual([method, url, 404]);
     expect(res.body).not.toMatch(/prisma|invocation/i);
   }
+});
+
+const setupPayload = (overrides: object = {}) => ({
+  tempPassword: TEMP_PASSWORD,
+  newPassword: 'chosen-password',
+  confirmPassword: 'chosen-password',
+  ...overrides,
+});
+const firstTimeSetup = (who: 'needsReset' | 'disabledNeedsReset', payload = setupPayload()) =>
+  app.inject({ method: 'POST', url: SELF_GUARDED, headers: asUser(who), payload });
+
+test('a disabled account cannot complete first-time setup, even with the right password', async () => {
+  userUpdates.length = 0;
+  const res = await firstTimeSetup('disabledNeedsReset');
+  expect(res.statusCode).toBe(403);
+  expect(res.json().code).toBe('ACCOUNT_DISABLED');
+  expect(userUpdates).toEqual([]);
+});
+
+const withUserLookup = async (
+  method: 'findFirst' | 'findUnique',
+  replacement: (args: any) => Promise<unknown>,
+  run: () => Promise<void>
+) => {
+  const original = prisma.user[method];
+  prisma.user[method] = replacement;
+  try {
+    await run();
+  } finally {
+    prisma.user[method] = original;
+  }
+};
+
+const createUser = () =>
+  app.inject({
+    method: 'POST',
+    url: '/api/users',
+    headers: asUser('admin'),
+    payload: { username: 'new-user', email: 'new-user@example.com', role: 'USER' },
+  });
+
+test('a database failure while creating a user reveals nothing about the database', async () => {
+  await withUserLookup('findFirst', failWithDatabaseError, async () => {
+    const res = await createUser();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('Failed to create user');
+  });
+});
+
+test('creating a user who already exists still says why it failed', async () => {
+  await withUserLookup(
+    'findFirst',
+    async () => ({ id: 'taken' }),
+    async () => {
+      const res = await createUser();
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('User with this email or username already exists');
+    }
+  );
+});
+
+test('a database failure during first-time setup reveals nothing about the database', async () => {
+  await withUserLookup('findUnique', failWithDatabaseError, async () => {
+    const res = await firstTimeSetup('needsReset');
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('Failed to complete first-time setup');
+  });
+});
+
+test('first-time setup still explains a mistake the user can correct', async () => {
+  const wrongTemp = await firstTimeSetup('needsReset', setupPayload({ tempPassword: 'not-it' }));
+  expect(wrongTemp.statusCode).toBe(400);
+  expect(wrongTemp.json().error).toBe('Invalid temporary password');
+
+  const mismatch = await firstTimeSetup('needsReset', setupPayload({ confirmPassword: 'other' }));
+  expect(mismatch.statusCode).toBe(400);
+  expect(mismatch.json().error).toBe('Passwords do not match');
 });

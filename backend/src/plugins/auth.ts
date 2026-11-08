@@ -3,6 +3,7 @@ import { runWithEndpointContext } from '@better-auth/core/context';
 import { trace } from '@opentelemetry/api';
 import bcrypt from 'bcryptjs';
 import cookie from 'cookie';
+import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
 import { auth, SESSION_TTL_SECONDS, SESSION_UPDATE_AGE_SECONDS } from '../config/auth.js';
 import { authMetrics } from '../metrics/index.js';
@@ -493,19 +494,8 @@ const parseCookieHeader = (cookieHeader: string | string[] | undefined) => {
   }
 };
 
+// Cookies only: the session cookie is HttpOnly, so a token here is one no page script ever held.
 const extractSessionToken = (headers: IncomingHttpHeaders): string | null => {
-  const authHeader = headers['authorization'];
-  if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
-    return authHeader.slice(7).trim() || null;
-  }
-
-  const headerToken =
-    (typeof headers['x-session-token'] === 'string' && headers['x-session-token']) ||
-    (typeof headers['session-token'] === 'string' && headers['session-token']);
-  if (headerToken) {
-    return headerToken;
-  }
-
   const parsedCookies = parseCookieHeader(headers['cookie']);
   if (!parsedCookies) {
     return null;
@@ -789,8 +779,25 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
     return reply.send({ success: true });
   });
 
+  // The account limit below sees one username at a time, so alone it lets an address try a few
+  // passwords against every username. This one counts successful sign-ins too, so it is set well
+  // above what a whole site behind one address needs. It can't be a second config.rateLimit or
+  // fastify.rateLimit: the plugin runs only the first of those on a request.
+  const signInAddressLimit = fastify.createRateLimit({ max: 100, timeWindow: '15 minutes' });
+
   // Custom sign-in route that handles both regular and temporary passwords
   const signInRateLimit = {
+    onRequest: async (request: FastifyRequest, reply: AppFastifyReply) => {
+      const limit = await signInAddressLimit(request);
+      if (limit.isAllowed || !limit.isExceeded) return;
+
+      reply.header('retry-after', limit.ttlInSeconds);
+      return reply.code(429).send({
+        success: false,
+        error: 'Too many sign-in attempts from this address. Try again later.',
+        code: 'RATE_LIMITED',
+      });
+    },
     config: {
       rateLimit: {
         max: 10,
@@ -932,7 +939,11 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         return reply.send({
           success: true,
           user: finalResult.value.user,
-          session: finalResult.value.session,
+          // Allow-list, the same as /api/auth/session: the session row carries the token.
+          session: {
+            sessionId: finalResult.value.session['id'],
+            expiresAt: finalResult.value.session.expiresAt,
+          },
           authMethod: finalResult.value.authMethod,
           requiresPasswordSetup: finalResult.value.requiresPasswordSetup,
         });
@@ -1018,4 +1029,6 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
 
 export default fp(authPlugin, {
   name: 'auth-plugin',
+  // Without it the sign-in limits would silently not exist.
+  dependencies: ['@fastify/rate-limit'],
 });

@@ -5,6 +5,8 @@ import rateLimit from '@fastify/rate-limit';
 import fp from 'fastify-plugin';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
+export const TRUSTED_PROXIES = 'loopback,uniquelocal';
+
 /**
  * Security plugin for Fastify
  * Sets up security headers, CORS, and rate limiting

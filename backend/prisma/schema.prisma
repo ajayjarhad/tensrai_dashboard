@@ -86,6 +86,8 @@ model AuditLog {
   userId    String   @db.ObjectId
   role      String
   action    String
+  // Whom the action was done to, when it was done to another user.
+  targetUserId String? @db.ObjectId
   timestamp DateTime @default(now())
   metadata  Json?
 
