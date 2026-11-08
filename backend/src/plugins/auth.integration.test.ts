@@ -6,6 +6,7 @@ const url = process.env['TEST_DATABASE_URL'];
 
 if (url) {
   const { default: fastify } = await import('fastify');
+  const { default: rateLimit } = await import('@fastify/rate-limit');
   const { PrismaClient } = await import('@prisma/client');
   const { default: bcrypt } = await import('bcryptjs');
   const { default: authPlugin } = await import('./auth.js');
@@ -32,6 +33,7 @@ if (url) {
 
   const app = createFastify();
   app.decorate('prisma', prisma);
+  await app.register(rateLimit, { global: false });
   await app.register(authPlugin);
   await app.register(tenantPlugin);
   await app.register(robotRoutes, { prefix: '/api' });
@@ -58,6 +60,34 @@ if (url) {
     expect(body.session.sessionId).toBeTruthy();
     expect(res.body).not.toMatch(/passwordHash|tempPasswordHash|"token"|sessionToken/);
     expect((await app.inject({ method: 'GET', url: '/api/auth/session' })).statusCode).toBe(401);
+  });
+
+  const tokenIn = (cookie: string) => decodeURIComponent(cookie.split('=')[1] ?? '');
+
+  test('signing in answers with the session id and expiry, and keeps the token in the cookie', async () => {
+    const login = await signIn();
+    const token = tokenIn(cookieOf(login));
+
+    expect(token).not.toBe('');
+    expect(String(login.headers['set-cookie'])).toContain('HttpOnly');
+    expect(Object.keys(login.json().session).sort()).toEqual(['expiresAt', 'sessionId']);
+    expect(login.body).not.toContain(token);
+  });
+
+  test('a session token is only accepted as a cookie', async () => {
+    const cookie = cookieOf(await signIn());
+    const token = tokenIn(cookie);
+    const session = (headers: Record<string, string>) =>
+      app.inject({ method: 'GET', url: '/api/auth/session', headers });
+
+    expect((await session({ cookie })).statusCode).toBe(200);
+    for (const headers of [
+      { authorization: `Bearer ${token}` },
+      { 'x-session-token': token },
+      { 'session-token': token },
+    ]) {
+      expect([headers, (await session(headers)).statusCode]).toEqual([headers, 401]);
+    }
   });
 
   test('sign-out revokes the session on the server, not just in the browser', async () => {

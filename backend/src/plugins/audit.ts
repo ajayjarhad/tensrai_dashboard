@@ -13,6 +13,7 @@ const auditPlugin = async (fastify: AppFastifyInstance) => {
           userId: event.userId,
           role: event.role,
           action: event.action,
+          targetUserId: event.targetUserId ?? null,
           timestamp: new Date(),
           metadata: (event.metadata ?? null) as Prisma.InputJsonValue | null,
         },
