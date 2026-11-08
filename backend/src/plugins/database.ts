@@ -2,17 +2,16 @@ import { type Prisma, PrismaClient } from '@prisma/client';
 import fp from 'fastify-plugin';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
-const databaseUrl = process.env['DATABASE_URL'];
-
-if (!databaseUrl) {
-  throw new Error('DATABASE_URL is not configured');
-}
-
 /**
  * Database plugin for Fastify
  * Sets up Prisma client with proper configuration
  */
 const databasePlugin = async (fastify: AppFastifyInstance) => {
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is not configured');
+  }
+
   const prisma = new PrismaClient({
     datasources: {
       db: {

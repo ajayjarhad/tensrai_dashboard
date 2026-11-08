@@ -78,10 +78,6 @@ const MAX_MISSION_FRAME_CHARS = 64 * 1024;
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 
-const MISSION_CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
-const MISSION_HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_INTERVAL_MS', 30_000);
-const MISSION_HEARTBEAT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_TIMEOUT_MS', 10_000);
-
 const formatError = (error: unknown) =>
   error instanceof Error
     ? { message: error.message, name: error.name, stack: error.stack }
@@ -146,6 +142,13 @@ export class MissionRegistry extends EventEmitter {
   private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
+  // Read per instance, not at import, so the settings never depend on which module loaded first.
+  private readonly connectTimeoutMs = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
+  private readonly heartbeatIntervalMs = parsePositiveMs(
+    'ROS_MISSION_HEARTBEAT_INTERVAL_MS',
+    30_000
+  );
+  private readonly heartbeatTimeoutMs = parsePositiveMs('ROS_MISSION_HEARTBEAT_TIMEOUT_MS', 10_000);
   private runStore: MissionRunStore;
   private rememberNonEmergencyStatus:
     | ((robotId: string, status: 'TELEOP' | 'AUTONOMOUS') => void)
@@ -294,7 +297,7 @@ export class MissionRegistry extends EventEmitter {
         url,
         readyState: connection.socket.readyState,
         connectingAgeMs: Date.now() - connection.startedAt,
-        timeoutMs: MISSION_CONNECT_TIMEOUT_MS,
+        timeoutMs: this.connectTimeoutMs,
       },
       'Mission bridge connection is stale during reload; reconnecting'
     );
@@ -434,9 +437,9 @@ export class MissionRegistry extends EventEmitter {
         connection,
         'connect_timeout',
         'Mission bridge connect timed out; scheduling reconnect',
-        { timeoutMs: MISSION_CONNECT_TIMEOUT_MS }
+        { timeoutMs: this.connectTimeoutMs }
       );
-    }, MISSION_CONNECT_TIMEOUT_MS);
+    }, this.connectTimeoutMs);
 
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
@@ -517,7 +520,7 @@ export class MissionRegistry extends EventEmitter {
   private isStaleConnecting(connection: ActiveConnection, now = Date.now()) {
     return (
       connection.socket.readyState === WebSocket.CONNECTING &&
-      now - connection.startedAt >= MISSION_CONNECT_TIMEOUT_MS
+      now - connection.startedAt >= this.connectTimeoutMs
     );
   }
 
@@ -574,8 +577,8 @@ export class MissionRegistry extends EventEmitter {
           'heartbeat_missed_pong',
           'Mission bridge heartbeat missed pong; scheduling reconnect',
           {
-            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
-            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+            timeoutMs: this.heartbeatTimeoutMs,
+            intervalMs: this.heartbeatIntervalMs,
           }
         );
         return;
@@ -604,12 +607,12 @@ export class MissionRegistry extends EventEmitter {
           'heartbeat_missed_pong',
           'Mission bridge heartbeat missed pong; scheduling reconnect',
           {
-            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
-            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+            timeoutMs: this.heartbeatTimeoutMs,
+            intervalMs: this.heartbeatIntervalMs,
           }
         );
-      }, MISSION_HEARTBEAT_TIMEOUT_MS);
-    }, MISSION_HEARTBEAT_INTERVAL_MS);
+      }, this.heartbeatTimeoutMs);
+    }, this.heartbeatIntervalMs);
   }
 
   private resetConnection(

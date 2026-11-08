@@ -34,9 +34,6 @@ type RobotEmergencyBridgeEvent =
 const MAX_EMERGENCY_FRAME_CHARS = 16 * 1024;
 const DEFAULT_EMERGENCY_BRIDGE_PORT = Number(process.env['ROS_EMERGENCY_BRIDGE_PORT'] ?? 8766);
 const SNAPSHOT_TIMEOUT_MS = 5_000;
-const CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_EMERGENCY_CONNECT_TIMEOUT_MS', 5_000);
-// Much tighter than the mission bridge because an operator's e-stop depends on this socket.
-const HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS', 3_000);
 
 type LoggerLike = {
   info: (obj: Record<string, unknown>, msg: string) => void;
@@ -174,6 +171,13 @@ export class EmergencyRegistry {
   private states = new Map<string, RobotEmergencyState>();
   private lastNonEmergencyStatusByRobot = new Map<string, RobotMode>();
   private robotEventListeners = new Map<string, Set<RobotEventListener>>();
+  // Read per instance, not at import, so the settings never depend on which module loaded first.
+  private readonly connectTimeoutMs = parsePositiveMs('ROS_EMERGENCY_CONNECT_TIMEOUT_MS', 5_000);
+  // Much tighter than the mission bridge because an operator's e-stop depends on this socket.
+  private readonly heartbeatIntervalMs = parsePositiveMs(
+    'ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS',
+    3_000
+  );
 
   constructor(prisma: PrismaClient, log: LoggerLike) {
     this.prisma = prisma;
@@ -367,13 +371,13 @@ export class EmergencyRegistry {
 
     connection.connectTimeout = setTimeout(() => {
       this.dropDeadConnection(robotId, connection, 'Emergency bridge connect timed out');
-    }, CONNECT_TIMEOUT_MS);
+    }, this.connectTimeoutMs);
     connection.connectTimeout.unref?.();
 
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
       clearTimeout(connection.connectTimeout);
-      connection.heartbeat = startPingHeartbeat(socket, HEARTBEAT_INTERVAL_MS, reason =>
+      connection.heartbeat = startPingHeartbeat(socket, this.heartbeatIntervalMs, reason =>
         this.dropDeadConnection(robotId, connection, `Emergency bridge ${reason}`)
       );
       this.reconnects.connected(robotId);

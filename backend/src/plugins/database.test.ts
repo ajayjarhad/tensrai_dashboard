@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import fastify from 'fastify';
+import databasePlugin from './database.js';
 
 const createFastify = fastify as unknown as () => any;
 
@@ -7,7 +8,6 @@ test('the public database health check does not say why the database is unreacha
   const previousUrl = process.env['DATABASE_URL'];
   process.env['DATABASE_URL'] =
     'mongodb://127.0.0.1:1/unreachable?directConnection=true&serverSelectionTimeoutMS=100';
-  const { default: databasePlugin } = await import('./database.js');
   const app = createFastify();
   try {
     await app.register(databasePlugin);

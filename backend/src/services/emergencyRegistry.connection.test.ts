@@ -1,20 +1,26 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
+import { EmergencyRegistry } from './emergencyRegistry.js';
 
-process.env['ROS_EMERGENCY_CONNECT_TIMEOUT_MS'] = '50';
-process.env['ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS'] = '50';
-
-const { EmergencyRegistry } = await import('./emergencyRegistry.js');
 type Registry = InstanceType<typeof EmergencyRegistry>;
 
 const ROBOT_ID = 'robot-1';
 const NOT_CONNECTED = { ok: false, error: 'Emergency bridge not connected' };
+const SHORT_TIMEOUTS = {
+  ROS_EMERGENCY_CONNECT_TIMEOUT_MS: '50',
+  ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS: '50',
+};
 const cleanups: Array<() => void> = [];
 
+beforeEach(() => {
+  Object.assign(process.env, SHORT_TIMEOUTS);
+});
+
 afterEach(() => {
+  for (const name of Object.keys(SHORT_TIMEOUTS)) delete process.env[name];
   while (cleanups.length > 0) cleanups.pop()?.();
 });
 
