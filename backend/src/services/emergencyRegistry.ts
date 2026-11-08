@@ -2,6 +2,7 @@ import type { PrismaClient, RobotMode } from '@prisma/client';
 import WebSocket from 'ws';
 import { emergencyMetrics } from '../metrics/index.js';
 import { parsePositiveMs } from '../utils/env.js';
+import { ReconnectSchedule, startPingHeartbeat } from './bridgeSocket.js';
 import { deriveRobotModeFromMissionState } from './missionStatus.js';
 import { withApprovedAddress } from './robotAddress.js';
 
@@ -33,12 +34,8 @@ type RobotEmergencyBridgeEvent =
 const MAX_EMERGENCY_FRAME_CHARS = 16 * 1024;
 const DEFAULT_EMERGENCY_BRIDGE_PORT = Number(process.env['ROS_EMERGENCY_BRIDGE_PORT'] ?? 8766);
 const SNAPSHOT_TIMEOUT_MS = 5_000;
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 10_000;
 const CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_EMERGENCY_CONNECT_TIMEOUT_MS', 5_000);
-// A half-open socket still reads OPEN and accepts sends, so only a missing pong reveals a dead
-// bridge. An unanswered ping fails on the next tick: detection takes one to two intervals. Much
-// tighter than the mission bridge because an operator's e-stop depends on this socket.
+// Much tighter than the mission bridge because an operator's e-stop depends on this socket.
 const HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS', 3_000);
 
 type LoggerLike = {
@@ -69,7 +66,6 @@ type RobotEmergencyState = {
 type ActiveConnection = {
   socket: WebSocket;
   manualClose: boolean;
-  awaitingPong: boolean;
   connectTimeout?: NodeJS.Timeout;
   heartbeat?: NodeJS.Timeout;
 };
@@ -173,9 +169,8 @@ export class EmergencyRegistry {
   private stopped = false;
   private robotConfigs = new Map<string, RobotEmergencyConfig>();
   private connections = new Map<string, ActiveConnection>();
-  private reconnectTimers = new Map<string, NodeJS.Timeout>();
+  private reconnects = new ReconnectSchedule();
   private snapshotTimers = new Map<string, NodeJS.Timeout>();
-  private reconnectAttempts = new Map<string, number>();
   private states = new Map<string, RobotEmergencyState>();
   private lastNonEmergencyStatusByRobot = new Map<string, RobotMode>();
   private robotEventListeners = new Map<string, Set<RobotEventListener>>();
@@ -251,7 +246,7 @@ export class EmergencyRegistry {
       this.lastNonEmergencyStatusByRobot.delete(robotId);
       this.states.delete(robotId);
       this.disconnectRobot(robotId);
-      this.clearReconnectTimer(robotId);
+      this.reconnects.cancel(robotId);
       this.clearSnapshotTimer(robotId);
     }
   }
@@ -259,9 +254,7 @@ export class EmergencyRegistry {
   stop() {
     this.stopped = true;
 
-    for (const robotId of Array.from(this.reconnectTimers.keys())) {
-      this.clearReconnectTimer(robotId);
-    }
+    this.reconnects.cancelAll();
     for (const robotId of Array.from(this.snapshotTimers.keys())) {
       this.clearSnapshotTimer(robotId);
     }
@@ -361,14 +354,13 @@ export class EmergencyRegistry {
     if (!config?.url || this.stopped) return;
 
     this.disconnectRobot(robotId);
-    this.clearReconnectTimer(robotId);
+    this.reconnects.cancel(robotId);
     this.setConnectionStatus(robotId, 'connecting');
 
     const socket = new WebSocket(config.url);
     const connection: ActiveConnection = {
       socket,
       manualClose: false,
-      awaitingPong: false,
     };
 
     this.connections.set(robotId, connection);
@@ -381,8 +373,10 @@ export class EmergencyRegistry {
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
       clearTimeout(connection.connectTimeout);
-      this.startHeartbeat(robotId, connection);
-      this.reconnectAttempts.set(robotId, 0);
+      connection.heartbeat = startPingHeartbeat(socket, HEARTBEAT_INTERVAL_MS, reason =>
+        this.dropDeadConnection(robotId, connection, `Emergency bridge ${reason}`)
+      );
+      this.reconnects.connected(robotId);
       emergencyMetrics.connectionEvents.add(1, {
         'robot.id': robotId,
         'connection.status': 'connected',
@@ -403,10 +397,6 @@ export class EmergencyRegistry {
           'Failed to process emergency bridge payload'
         );
       });
-    });
-
-    socket.on('pong', () => {
-      connection.awaitingPong = false;
     });
 
     socket.on('error', error => {
@@ -431,22 +421,6 @@ export class EmergencyRegistry {
     });
   }
 
-  private startHeartbeat(robotId: string, connection: ActiveConnection) {
-    connection.heartbeat = setInterval(() => {
-      if (connection.awaitingPong) {
-        this.dropDeadConnection(robotId, connection, 'Emergency bridge stopped answering pings');
-        return;
-      }
-      connection.awaitingPong = true;
-      try {
-        connection.socket.ping();
-      } catch {
-        this.dropDeadConnection(robotId, connection, 'Emergency bridge ping failed');
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-    connection.heartbeat.unref?.();
-  }
-
   private clearConnectionTimers(connection: ActiveConnection) {
     clearTimeout(connection.connectTimeout);
     clearInterval(connection.heartbeat);
@@ -466,7 +440,7 @@ export class EmergencyRegistry {
       'connection.status': 'disconnected',
     });
     this.setConnectionStatus(robotId, 'disconnected');
-    this.scheduleReconnect(robotId);
+    this.reconnects.schedule(robotId, () => this.connectRobot(robotId));
     this.log.warn({ robotId, url }, reason);
   }
 
@@ -491,30 +465,11 @@ export class EmergencyRegistry {
     } catch {}
   }
 
-  private clearReconnectTimer(robotId: string) {
-    const timer = this.reconnectTimers.get(robotId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.reconnectTimers.delete(robotId);
-  }
-
   private clearSnapshotTimer(robotId: string) {
     const timer = this.snapshotTimers.get(robotId);
     if (!timer) return;
     clearTimeout(timer);
     this.snapshotTimers.delete(robotId);
-  }
-
-  private scheduleReconnect(robotId: string) {
-    if (this.reconnectTimers.has(robotId) || this.stopped) return;
-    const attempts = this.reconnectAttempts.get(robotId) ?? 0;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempts, RECONNECT_MAX_MS);
-    this.reconnectAttempts.set(robotId, attempts + 1);
-    const timer = setTimeout(() => {
-      this.reconnectTimers.delete(robotId);
-      this.connectRobot(robotId);
-    }, delay);
-    this.reconnectTimers.set(robotId, timer);
   }
 
   private scheduleSnapshotTimeout(robotId: string) {

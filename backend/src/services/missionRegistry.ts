@@ -2,6 +2,7 @@ import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
 import WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
+import { ReconnectSchedule } from './bridgeSocket.js';
 import { MissionRunStore } from './missionRunStore.js';
 import {
   hydrateMissionStateFromPersistedRun,
@@ -76,8 +77,6 @@ type ActiveConnection = {
 const MAX_MISSION_FRAME_CHARS = 64 * 1024;
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 10_000;
 
 const MISSION_CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
 const MISSION_HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_INTERVAL_MS', 30_000);
@@ -143,8 +142,7 @@ export class MissionRegistry extends EventEmitter {
   private stopped = false;
   private robotConfigs = new Map<string, RobotMissionConfig>();
   private connections = new Map<string, ActiveConnection>();
-  private reconnectTimers = new Map<string, NodeJS.Timeout>();
-  private reconnectAttempts = new Map<string, number>();
+  private reconnects = new ReconnectSchedule();
   private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
@@ -187,7 +185,7 @@ export class MissionRegistry extends EventEmitter {
         status,
         readyState,
         connectingAgeMs,
-        reconnectAttempt: this.reconnectAttempts.get(config.id) ?? 0,
+        reconnectAttempt: this.reconnects.attempt(config.id),
         connectedAt: connection?.connectedAt
           ? new Date(connection.connectedAt).toISOString()
           : null,
@@ -311,15 +309,13 @@ export class MissionRegistry extends EventEmitter {
       this.statuses.delete(robotId);
       this.lastConnectionErrors.delete(robotId);
       this.disconnectRobot(robotId);
-      this.clearReconnectTimer(robotId);
+      this.reconnects.cancel(robotId);
     }
   }
 
   stop() {
     this.stopped = true;
-    for (const robotId of Array.from(this.reconnectTimers.keys())) {
-      this.clearReconnectTimer(robotId);
-    }
+    this.reconnects.cancelAll();
     for (const robotId of Array.from(this.connections.keys())) {
       this.disconnectRobot(robotId);
     }
@@ -405,7 +401,7 @@ export class MissionRegistry extends EventEmitter {
     if (!config?.url || this.stopped) return;
 
     this.disconnectRobot(robotId);
-    this.clearReconnectTimer(robotId);
+    this.reconnects.cancel(robotId);
     this.statuses.set(robotId, 'connecting');
 
     this.log.info({ robotId, url: config.url }, 'Connecting to mission bridge');
@@ -448,7 +444,7 @@ export class MissionRegistry extends EventEmitter {
       connection.connectedAt = Date.now();
       connection.awaitingPong = false;
       connection.lastPongAt = Date.now();
-      this.reconnectAttempts.set(robotId, 0);
+      this.reconnects.connected(robotId);
       this.statuses.set(robotId, 'connected');
       this.lastConnectionErrors.delete(robotId);
       this.log.info({ robotId, url: config.url }, 'Connected to mission bridge');
@@ -675,28 +671,14 @@ export class MissionRegistry extends EventEmitter {
   }
 
   private scheduleReconnect(robotId: string) {
-    if (this.stopped || this.reconnectTimers.has(robotId)) return;
-    if (!this.robotConfigs.get(robotId)?.url) return;
-    const attempt = this.reconnectAttempts.get(robotId) ?? 0;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
-    this.reconnectAttempts.set(robotId, attempt + 1);
-    const config = this.robotConfigs.get(robotId);
+    const url = this.robotConfigs.get(robotId)?.url;
+    if (this.stopped || !url) return;
+    const delay = this.reconnects.schedule(robotId, () => this.connectRobot(robotId));
+    if (delay === undefined) return;
     this.log.warn(
-      { robotId, url: config?.url ?? null, attempt: attempt + 1, delay },
+      { robotId, url, attempt: this.reconnects.attempt(robotId), delay },
       'Scheduled mission bridge reconnect'
     );
-    const timer = setTimeout(() => {
-      this.reconnectTimers.delete(robotId);
-      this.connectRobot(robotId);
-    }, delay);
-    this.reconnectTimers.set(robotId, timer);
-  }
-
-  private clearReconnectTimer(robotId: string) {
-    const timer = this.reconnectTimers.get(robotId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.reconnectTimers.delete(robotId);
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {

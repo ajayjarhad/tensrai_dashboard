@@ -2,6 +2,7 @@ import EventEmitter from 'node:events';
 import ROSLIB from 'roslib';
 import type WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
+import { startPingHeartbeat } from './bridgeSocket.js';
 
 const toReadableError = (error: unknown, url: string) => {
   if (error instanceof Error) return error;
@@ -245,30 +246,19 @@ export class RosBridgeConnection extends EventEmitter {
     };
   }
 
-  // A half-open socket stays OPEN and accepts sends, so commands vanish with no error. Only a
-  // missing pong reveals it, and an unanswered ping fails on the next tick: detection takes one to
-  // two intervals. rosbridge's Tornado server answers pings on its own.
+  // Without it, commands sent into a half-open socket vanish with no error. rosbridge's Tornado
+  // server answers pings on its own.
   private startHeartbeat(ros: RosRuntime) {
     const socket = ros.socket;
-    let pingSentAt: number | undefined;
-    socket.on('pong', () => {
-      if (pingSentAt !== undefined) this.confirmedThrough = pingSentAt;
-      pingSentAt = undefined;
-    });
     clearInterval(this.heartbeat);
-    this.heartbeat = setInterval(() => {
-      if (pingSentAt !== undefined) {
-        this.dropDeadSocket(socket, 'stopped answering pings');
-        return;
+    this.heartbeat = startPingHeartbeat(
+      socket,
+      this.heartbeatIntervalMs,
+      reason => this.dropDeadSocket(socket, reason),
+      pingSentAt => {
+        this.confirmedThrough = pingSentAt;
       }
-      pingSentAt = Date.now();
-      try {
-        socket.ping();
-      } catch {
-        this.dropDeadSocket(socket, 'ping failed');
-      }
-    }, this.heartbeatIntervalMs);
-    this.heartbeat.unref?.();
+    );
   }
 
   // terminate rather than close: there is nobody left to finish a close handshake with. The socket's
