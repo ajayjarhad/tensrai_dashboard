@@ -25,8 +25,10 @@ ENV VITE_WS_URL=${VITE_WS_URL}
 ENV VITE_CLOUD_DASHBOARD=${VITE_CLOUD_DASHBOARD}
 ENV VITE_ROS_TELEOP_RATE_HZ=${VITE_ROS_TELEOP_RATE_HZ}
 
-# Produces /app/frontend/dist
-RUN bun run --cwd frontend build
+# Produces /app/frontend/dist, plus .gz copies that nginx's gzip_static serves without recompressing.
+RUN bun run --cwd frontend build \
+  && find frontend/dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \) \
+    -exec gzip -9 -k {} +
 
 FROM nginx:1.27-alpine
 
