@@ -2,6 +2,7 @@
 import EventEmitter from 'node:events';
 import ROSLIB from 'roslib';
 import WebSocket from 'ws';
+import { parsePositiveMs } from '../utils/env.js';
 
 const toReadableError = (error: unknown, url: string) => {
   if (error instanceof Error) return error;
@@ -59,12 +60,16 @@ export class RosBridgeConnection extends EventEmitter {
   private publishers = new Map<TopicKey, ROSLIB.Topic>();
   private reconnectTimer?: NodeJS.Timeout;
   private connecting = false;
+  private heartbeatIntervalMs: number;
+  private heartbeat?: NodeJS.Timeout;
+  private confirmedThrough = 0;
 
   constructor(private readonly options: RosBridgeConnectionOptions) {
     super();
     this.reconnectDelayMs = options.reconnectDelayMs ?? 1000;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 10000;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 8000;
+    this.heartbeatIntervalMs = parsePositiveMs('ROS_BRIDGE_HEARTBEAT_INTERVAL_MS', 3000);
   }
 
   async connect(): Promise<void> {
@@ -99,6 +104,7 @@ export class RosBridgeConnection extends EventEmitter {
         this.connecting = false;
         this.reconnectDelayMs = this.options.reconnectDelayMs ?? 1000;
         this.clearReconnectTimer();
+        this.startHeartbeat(ros);
         this.emit('connected');
         resolve();
       };
@@ -129,6 +135,7 @@ export class RosBridgeConnection extends EventEmitter {
         const wasConnected = this.ros === ros;
         if (this.ros === ros) {
           this.ros = null;
+          clearInterval(this.heartbeat);
         }
         this.publishers.clear();
         this.emit('disconnected');
@@ -153,6 +160,7 @@ export class RosBridgeConnection extends EventEmitter {
   disconnect() {
     this.closed = true;
     this.clearReconnectTimer();
+    clearInterval(this.heartbeat);
     if (this.ros) {
       this.ros.close();
       this.ros = null;
@@ -187,7 +195,9 @@ export class RosBridgeConnection extends EventEmitter {
     };
   }
 
-  publish<T>(topicName: string, messageType: string, message: T) {
+  // Returns true when this publish had to advertise first: rosbridge has only just created that
+  // publisher, so subscribers may not have matched it yet and the message can be lost.
+  publish<T>(topicName: string, messageType: string, message: T): boolean {
     if (!this.isConnected()) {
       this.closeStaleRos();
       this.scheduleReconnect();
@@ -196,6 +206,7 @@ export class RosBridgeConnection extends EventEmitter {
 
     const key: TopicKey = `${topicName}:${messageType}`;
     let topic = this.publishers.get(key);
+    const advertised = !topic;
 
     if (!topic) {
       const shouldLatch = topicName === '/initialpose_ui';
@@ -211,6 +222,7 @@ export class RosBridgeConnection extends EventEmitter {
 
     const rosMessage = new ROSLIB.Message(message as Record<string, unknown>);
     topic.publish(rosMessage);
+    return advertised;
   }
 
   get url() {
@@ -219,6 +231,11 @@ export class RosBridgeConnection extends EventEmitter {
 
   isConnected() {
     return Boolean(this.ros && (this.ros as any).isConnected === true);
+  }
+
+  // Frames arrive in order, so a pong to a ping sent after a publish proves the bridge received it.
+  hasConfirmedSince(sentAt: number) {
+    return this.confirmedThrough > sentAt;
   }
 
   getDebugStatus() {
@@ -249,14 +266,50 @@ export class RosBridgeConnection extends EventEmitter {
     };
   }
 
+  // A half-open socket stays OPEN and accepts sends, so commands vanish with no error. Only a
+  // missing pong reveals it, and an unanswered ping fails on the next tick: detection takes one to
+  // two intervals. rosbridge's Tornado server answers pings on its own.
+  private startHeartbeat(ros: ROSLIB.Ros) {
+    const socket = (ros as any).socket;
+    let pingSentAt: number | undefined;
+    socket.on('pong', () => {
+      if (pingSentAt !== undefined) this.confirmedThrough = pingSentAt;
+      pingSentAt = undefined;
+    });
+    clearInterval(this.heartbeat);
+    this.heartbeat = setInterval(() => {
+      if (pingSentAt !== undefined) {
+        this.dropDeadSocket(socket, 'stopped answering pings');
+        return;
+      }
+      pingSentAt = Date.now();
+      try {
+        socket.ping();
+      } catch {
+        this.dropDeadSocket(socket, 'ping failed');
+      }
+    }, this.heartbeatIntervalMs);
+    this.heartbeat.unref?.();
+  }
+
+  // terminate rather than close: there is nobody left to finish a close handshake with. The socket's
+  // close event then clears the connection and schedules the reconnect.
+  private dropDeadSocket(socket: { terminate: () => void }, reason: string) {
+    clearInterval(this.heartbeat);
+    this.emit('error', new Error(`ROS connection ${this.options.id} ${reason}; dropping socket`));
+    socket.terminate();
+  }
+
+  // Every teleop command lands here while disconnected, so an attempt already scheduled must stay
+  // scheduled, or an operator holding the stick postpones the reconnect indefinitely.
   private scheduleReconnect() {
-    if (this.closed || this.connecting || this.isConnected()) return;
+    if (this.closed || this.connecting || this.isConnected() || this.reconnectTimer) return;
 
     const delay = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
     this.reconnectDelayMs = delay;
 
-    this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
       this.connect().catch(() => {
         // swallow; errors are emitted via 'error'
       });
@@ -274,6 +327,7 @@ export class RosBridgeConnection extends EventEmitter {
     if (!this.ros) return;
     const staleRos = this.ros;
     this.ros = null;
+    clearInterval(this.heartbeat);
     this.publishers.clear();
     this.emit(
       'error',

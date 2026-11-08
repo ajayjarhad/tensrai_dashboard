@@ -39,6 +39,8 @@ const POSE_ODOM_AMCL_MAX_DELTA_M = (() => {
 const TELEOP_MAX_LINEAR = 0.5; // m/s
 const TELEOP_MAX_ANGULAR = 0.8; // rad/s
 const TELEOP_WATCHDOG_MS = 750; // send zero if idle
+const TELEOP_STOP_RETRY_MS = 250;
+const TELEOP_STOP_REPEATS = 4;
 const POSE_EPS = 1e-3;
 const MAX_LASER_POINTS = (() => {
   const raw = Number(process.env['ROS_MAX_LASER_POINTS'] ?? 450);
@@ -212,6 +214,8 @@ export class RosRobotManager extends EventEmitter {
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
   private teleopConnectionId?: string;
+  private teleopStopSent?: { connectionId: string; at: number };
+  private teleopStopRetry?: NodeJS.Timeout;
   private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
 
   constructor(readonly config: RosRobotConfig) {
@@ -292,6 +296,7 @@ export class RosRobotManager extends EventEmitter {
   }
 
   stop() {
+    this.started = false;
     this.sendZeroTeleopIfNeeded();
     this.cleanupTfSubscriptions();
     this.clearPendingLaserScans();
@@ -302,7 +307,6 @@ export class RosRobotManager extends EventEmitter {
     for (const connection of this.connections.values()) {
       connection.disconnect();
     }
-    this.started = false;
   }
 
   handleCommand(channelName: string, payload: unknown): { ok: boolean; error?: string } {
@@ -337,6 +341,9 @@ export class RosRobotManager extends EventEmitter {
     const published = this.publishToChannel(channelName, runtime, outgoing);
     if (channelName === 'teleop' && published.ok) {
       this.teleopConnectionId = published.connectionId;
+      // The watchdog armed above owes the next stop, so an earlier one no longer matters.
+      this.teleopStopSent = undefined;
+      this.clearTeleopStopRetry();
     }
     return published;
   }
@@ -525,6 +532,22 @@ export class RosRobotManager extends EventEmitter {
 
   private handleConnectionDisconnected(connectionId: string) {
     this.cleanupTfSubscriptions(connectionId);
+    this.resendTeleopStopIfUnconfirmed(connectionId);
+  }
+
+  // Writing into a half-open socket succeeds, so the last stop may be gone if the bridge never
+  // answered a ping sent after it.
+  private resendTeleopStopIfUnconfirmed(connectionId: string) {
+    const sent = this.teleopStopSent;
+    const teleop = this.channels.get('teleop');
+    if (!this.started || !teleop || sent?.connectionId !== connectionId) return;
+    if (this.connections.get(connectionId)?.hasConfirmedSince(sent.at)) return;
+    this.teleopStopSent = undefined;
+    this.emit(
+      'error',
+      new Error(`Teleop stop unconfirmed when ${connectionId} dropped; re-sending`)
+    );
+    this.sendTeleopStopUntilDelivered(teleop.config, true);
   }
 
   private getConnectionForChannel(config: RosChannelConfig) {
@@ -540,17 +563,18 @@ export class RosRobotManager extends EventEmitter {
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.teleopTimers.delete(channelName);
-      this.publishTeleopStop(config, true);
+      this.sendTeleopStopUntilDelivered(config, true);
     }, timeoutMs);
     this.teleopTimers.set(channelName, timer);
   }
 
   private sendZeroTeleopIfNeeded() {
-    const motionPending = this.teleopTimers.size > 0;
+    const motionPending = this.teleopTimers.size > 0 || this.teleopStopRetry !== undefined;
     for (const timer of this.teleopTimers.values()) {
       clearTimeout(timer);
     }
     this.teleopTimers.clear();
+    this.clearTeleopStopRetry();
     const teleop = this.channels.get('teleop');
     if (!teleop || teleop.config.direction !== 'publish') return;
     this.publishTeleopStop(teleop.config, motionPending);
@@ -558,9 +582,10 @@ export class RosRobotManager extends EventEmitter {
 
   // Teleop may be running on the default connection while control is down, and a publisher that has
   // only just advertised can lose its first message, so the stop goes where teleop last went.
-  // ponytail: a stop nothing could carry is reported, not retried on reconnect. Keep it pending if
-  // a robot base turns out to have no cmd_vel timeout of its own.
-  private publishTeleopStop(config: RosChannelConfig, motionPending: boolean) {
+  private publishTeleopStop(
+    config: RosChannelConfig,
+    motionPending: boolean
+  ): 'established' | 'new-publisher' | 'undelivered' {
     const candidates = new Set([
       this.teleopConnectionId,
       config.connectionId ?? 'default',
@@ -571,8 +596,9 @@ export class RosRobotManager extends EventEmitter {
       const connection = this.connections.get(id);
       if (!connection) continue;
       try {
-        connection.publish(config.topic, config.msgType, zeroTwist());
-        return;
+        const advertised = connection.publish(config.topic, config.msgType, zeroTwist());
+        this.teleopStopSent = { connectionId: id, at: Date.now() };
+        return advertised ? 'new-publisher' : 'established';
       } catch (error) {
         failures.push((error as Error).message);
       }
@@ -583,6 +609,29 @@ export class RosRobotManager extends EventEmitter {
         new Error(`Teleop stop not delivered: ${failures.join('; ') || 'no connection'}`)
       );
     }
+    return 'undelivered';
+  }
+
+  // A stop stays pending with no expiry until a connection returns: a base with no cmd_vel timeout
+  // of its own keeps its last velocity until one arrives, and a late zero costs little. Once a
+  // connection takes it, a few repeats cover a publisher too new to have matched its subscribers.
+  // ponytail: the pending stop dies with this manager; stop() reports it. Hand it to the replacement
+  // manager if reloads during an outage turn out to matter.
+  private sendTeleopStopUntilDelivered(config: RosChannelConfig, motionPending: boolean) {
+    if (this.publishTeleopStop(config, motionPending) === 'established') return;
+    if (this.teleopStopRetry) return;
+    let repeats = TELEOP_STOP_REPEATS;
+    this.teleopStopRetry = setInterval(() => {
+      if (this.publishTeleopStop(config, false) === 'undelivered') return;
+      repeats -= 1;
+      if (repeats === 0) this.clearTeleopStopRetry();
+    }, TELEOP_STOP_RETRY_MS);
+    this.teleopStopRetry.unref?.();
+  }
+
+  private clearTeleopStopRetry() {
+    clearInterval(this.teleopStopRetry);
+    this.teleopStopRetry = undefined;
   }
 
   private emitChannelData(channelName: string, processed: unknown) {

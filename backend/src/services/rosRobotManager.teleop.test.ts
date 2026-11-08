@@ -229,6 +229,53 @@ test('reports a stop that no connection could carry', async () => {
   ]);
 });
 
+test('a stop no connection could carry goes out when a connection comes back', async () => {
+  const { manager, control, fallback, errors } = createTeleopManager({ controlUp: true });
+
+  drive(manager);
+  control.connected = false;
+  fallback.connected = false;
+  await watchdogFires();
+  expect(errors).toHaveLength(1);
+
+  fallback.connected = true;
+  await sleep(300);
+
+  expect(fallback.published).toContainEqual(STOP);
+  expect(errors).toHaveLength(1);
+});
+
+test('a new command replaces a stop that was still pending', async () => {
+  const { manager, control, errors } = createTeleopManager({ controlUp: false, defaultUp: false });
+
+  drive(manager);
+  await watchdogFires();
+  expect(errors.at(-1)?.message).toContain('Teleop stop not delivered');
+  (manager as any).teleopLimits.watchdogMs = 60_000;
+
+  control.connected = true;
+  expect(drive(manager)).toMatchObject({ ok: true, connectionId: 'control' });
+  await sleep(300);
+
+  expect(control.published).toEqual([MOTION]);
+});
+
+test('stopping the manager gives up a pending stop and reports it', async () => {
+  const { manager, fallback, errors } = createTeleopManager({ controlUp: false, defaultUp: false });
+
+  drive(manager);
+  await watchdogFires();
+  const reported = errors.length;
+
+  manager.stop();
+  expect(errors).toHaveLength(reported + 1);
+  expect(errors.at(-1)?.message).toContain('Teleop stop not delivered');
+
+  fallback.connected = true;
+  await sleep(300);
+  expect(fallback.published).toEqual([]);
+});
+
 test('stopping an idle manager with nothing connected reports nothing', () => {
   const { manager, errors } = createTeleopManager({ controlUp: false, defaultUp: false });
 
