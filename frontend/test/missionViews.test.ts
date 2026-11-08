@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import type { MissionStatus } from '@tensrai/shared';
 import { missionIsFresh, toDisplayWaypointIndex } from '@/features/robot-map/utils/missionRuntime';
 import { buildOngoingMissions, toMissionLogs } from '@/features/robot-map/utils/missionViews';
-import type { MissionStatus } from '@/stores/robotMission';
 import { type Robot, RobotMode } from '@/types/robot';
 
 const NOW = 1_000_000;

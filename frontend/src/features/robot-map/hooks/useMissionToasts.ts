@@ -1,5 +1,5 @@
+import type { MissionStatus } from '@tensrai/shared';
 import { useEffect, useRef } from 'react';
-import type { MissionStatus } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
 import type { ResolveMissionContext } from '../types';
 import { toastMissionEvent } from '../utils/missionToasts';

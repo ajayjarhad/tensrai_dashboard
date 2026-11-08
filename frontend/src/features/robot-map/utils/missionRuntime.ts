@@ -1,5 +1,4 @@
-import { isMissionActivePhase, isPreviewLikePhase } from '@/lib/missionPhases';
-import type { MissionStatus } from '@/stores/robotMission';
+import { isMissionActivePhase, isPreviewLikePhase, type MissionStatus } from '@tensrai/shared';
 import { type Robot, RobotMode } from '@/types/robot';
 
 const MISSION_STALE_MS = 120_000;

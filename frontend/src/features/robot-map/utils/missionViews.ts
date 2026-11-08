@@ -1,5 +1,4 @@
-import { isMissionActivePhase } from '@/lib/missionPhases';
-import type { MissionStatus } from '@/stores/robotMission';
+import { isMissionActivePhase, type MissionStatus } from '@tensrai/shared';
 import type { Robot } from '@/types/robot';
 import type { MissionRunRecord } from '../api/getMissionRuns';
 import type {

@@ -1,6 +1,6 @@
+import type { MissionStatus } from '@tensrai/shared';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { MissionStatus } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
 import { createTeleopPanel } from '../utils/teleopPanel';
 

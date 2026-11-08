@@ -1,7 +1,11 @@
-import { parseRobotMissionCommand, withMissionCommandId } from '@tensrai/shared';
+import {
+  isRobotMissionCommandEvent,
+  parseRobotMissionCommand,
+  withMissionCommandId,
+} from '@tensrai/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { websocketMetrics } from '../metrics/index.js';
-import { buildMissionFailureAck, isMissionControlEvent } from '../services/missionStatus.js';
+import { buildMissionFailureAck } from '../services/missionStatus.js';
 import {
   auditRobotCommand,
   clientFrameText,
@@ -81,7 +85,7 @@ export const createMissionSocketHandler =
 
       const parsed = parseRobotMissionCommand(rawMessage);
 
-      if (parsed?.event && isMissionControlEvent(parsed.event)) {
+      if (parsed?.event && isRobotMissionCommandEvent(parsed.event)) {
         fastify.log.info(
           { robotId, event: parsed.event, commandId: parsed.commandId ?? null },
           'Forwarding dashboard mission command to mission bridge'

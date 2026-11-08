@@ -1,3 +1,4 @@
+import { isPreviewLikePhase, type MissionStatus } from '@tensrai/shared';
 import {
   type Dispatch,
   type SetStateAction,
@@ -7,8 +8,6 @@ import {
   useState,
 } from 'react';
 import { toast } from 'sonner';
-import { isPreviewLikePhase } from '@/lib/missionPhases';
-import type { MissionStatus } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
 import type {
   FocusedMission,

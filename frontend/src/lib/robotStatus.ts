@@ -1,6 +1,5 @@
-import type { RobotEmergencyConnectionStatus } from '@tensrai/shared';
+import { isMissionActivePhase, type RobotEmergencyConnectionStatus } from '@tensrai/shared';
 import { type Robot, RobotMode } from '@/types/robot';
-import { isMissionActivePhase } from './missionPhases';
 
 type EmergencyRuntimeSource = 'live' | 'fallback' | 'unknown';
 

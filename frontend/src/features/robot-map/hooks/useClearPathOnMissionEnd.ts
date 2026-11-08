@@ -1,5 +1,5 @@
+import type { MissionStatus } from '@tensrai/shared';
 import { useEffect, useRef } from 'react';
-import type { MissionStatus } from '@/stores/robotMission';
 import { useRobotTelemetryStore } from '@/stores/robotTelemetry';
 import { isMissionTerminalOrIdleStatus } from '../utils/missionRuntime';
 

@@ -1,5 +1,5 @@
 import type { MissionRunStatus, PrismaClient } from '@prisma/client';
-import { normalizeRequestType } from './missionStatus.js';
+import { normalizeMissionId, normalizeRequestId, normalizeRequestType } from '@tensrai/shared';
 
 const ACTIVE_STATUSES: MissionRunStatus[] = [
   'PREVIEW_PENDING',
@@ -12,18 +12,6 @@ const PREVIEW_STATUSES: MissionRunStatus[] = ['PREVIEW_PENDING', 'SHOWING', 'STA
 const PREVIEW_EXPIRY_MS = 30_000;
 const PREVIEW_EXPIRED_EVENT = 'SYSTEM_PREVIEW_EXPIRED';
 const PREVIEW_EXPIRED_MESSAGE = 'Mission preview expired without start confirmation';
-
-const normalizeMissionId = (value: unknown): string | undefined => {
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-  const text = String(value).trim();
-  return text.length ? text : undefined;
-};
-
-const normalizeRequestId = (value: unknown): string | undefined => {
-  if (typeof value !== 'string') return undefined;
-  const text = value.trim();
-  return text.length ? text : undefined;
-};
 
 const timestampMs = (value: unknown): number | undefined => {
   if (typeof value !== 'string' || !value.trim()) return undefined;

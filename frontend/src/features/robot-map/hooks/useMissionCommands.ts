@@ -1,6 +1,7 @@
+import type { MissionStatus } from '@tensrai/shared';
 import { useCallback } from 'react';
 import { toast } from 'sonner';
-import { type MissionStatus, useRobotMissionStore } from '@/stores/robotMission';
+import { useRobotMissionStore } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
 
 const MISSION_CONTROLS = {

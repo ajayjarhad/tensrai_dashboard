@@ -1,12 +1,12 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
+import { isRobotMissionStatusEvent } from '@tensrai/shared';
 import WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
 import { ReconnectSchedule } from './bridgeSocket.js';
 import { MissionRunStore } from './missionRunStore.js';
 import {
   hydrateMissionStateFromPersistedRun,
-  isMissionStatusEvent,
   recordMissionCommandIntent,
   updateMissionFromEvent,
 } from './missionStatus.js';
@@ -690,7 +690,7 @@ export class MissionRegistry extends EventEmitter {
       return;
     }
     const parsed = parseGatewayEvent(payloadText);
-    if (!parsed?.event || !isMissionStatusEvent(parsed.event)) {
+    if (!parsed?.event || !isRobotMissionStatusEvent(parsed.event)) {
       return;
     }
 
@@ -707,7 +707,7 @@ export class MissionRegistry extends EventEmitter {
 
     this.emit(`robot-event:${robotId}`, normalizedPayloadText);
 
-    updateMissionFromEvent(robotId, parsed.event, normalizedPayload);
+    updateMissionFromEvent(robotId, parsed.event, normalizedPayload, commandId);
 
     await this.inRobotOrder(robotId, async () => {
       if (parsed.event === 'ROBOT_STATUS_UPDATE') {
