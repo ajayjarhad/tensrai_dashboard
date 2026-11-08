@@ -135,6 +135,36 @@ check(
   tel.received
 );
 
+// Teleop is deliberately never blocked during an e-stop: an operator may still drive the robot.
+section('teleop during an e-stop');
+const estop = await openSocket(`/ws/robots/${a1}/emergency/e2e`, acmeOp.cookie);
+const isStill = (c: any) => c.msg.linear.x === 0 && c.msg.angular.z === 0;
+await ctl('a1', '/reset');
+estop.send({ event: 'SOFTWARE_EMERGENCY', payload: { status: true } });
+await estop.waitEvent('EMERGENCY_STATE', p => p.softwareEmergencyActive === true);
+tel.clear();
+tel.send({
+  type: 'command',
+  channel: 'teleop',
+  commandId: 'estop-move',
+  data: { linear: { x: 0.3, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } },
+});
+check(
+  'during an e-stop, teleop still reaches /cmd_vel_ui',
+  await waitFor(async () => (await stats('a1')).received.cmdVel.find((c: any) => !isStill(c))),
+  (await stats('a1')).received.cmdVel
+);
+check('and is not refused', !tel.received.some(m => m.type === 'error'), tel.received);
+// The watchdog stops the robot, so the next section starts from a standstill.
+await waitFor(async () => {
+  const sent = (await stats('a1')).received.cmdVel;
+  return sent.length > 1 && isStill(sent.at(-1));
+}, 3000);
+estop.clear();
+estop.send({ event: 'SOFTWARE_EMERGENCY', payload: { status: false } });
+await estop.waitEvent('EMERGENCY_STATE', p => p.softwareEmergencyActive === false);
+estop.close();
+
 section('initial pose');
 await ctl('a1', '/reset');
 const initial = {
