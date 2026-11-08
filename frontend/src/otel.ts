@@ -8,9 +8,7 @@ import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
 
-const otlpEndpoint = import.meta.env['VITE_OTEL_EXPORTER_OTLP_ENDPOINT'];
-
-if (otlpEndpoint) {
+export const startTracing = (otlpEndpoint: string) => {
   const serviceName = import.meta.env['VITE_OTEL_SERVICE_NAME'] ?? 'tensrai-frontend';
   const serviceVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0';
   const environment = import.meta.env.MODE ?? 'development';
@@ -44,4 +42,4 @@ if (otlpEndpoint) {
       new XMLHttpRequestInstrumentation(),
     ],
   });
-}
+};
