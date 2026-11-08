@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { availableMapId } from '../src/features/robot-map/hooks/useRobotSelection';
-import { resolveSelectionMap } from '../src/features/robot-map/utils/mapSelection';
+import { resolveFocus, resolveSelectionMap } from '../src/features/robot-map/utils/mapSelection';
 import type { Robot } from '../src/types/robot';
 
 const robot = (id: string, active: string | null, others: string[] = []) =>
@@ -78,4 +78,23 @@ test('a legacy robot with only a single mapId still resolves', () => {
   const legacy = { id: 'old', mapId: 'a' } as unknown as Robot;
 
   expect(resolveSelectionMap(legacy, 'on-active', missions).mapId).toBe('a');
+});
+
+// Mission ids restart on every map, so one id can name a mission on several maps.
+const repeated = [
+  { id: '2', mapId: 'b' },
+  { id: '2', mapId: 'a' },
+  { id: '2', mapId: 'z' },
+];
+
+test('an id the robot has on several maps resolves to its active map', () => {
+  expect(resolveSelectionMap(robot('first', 'a', ['b']), '2', repeated).mapId).toBe('a');
+});
+
+test('focusing a mission lands on the map the start flow will choose, so neither undoes the other', () => {
+  const missingIt = robot('first', 'c');
+  const focus = resolveFocus(missingIt, '2', repeated);
+
+  expect(focus).toEqual({ mapId: 'c', missionId: undefined });
+  expect(resolveSelectionMap(missingIt, focus.missionId ?? null, repeated).mapId).toBe(focus.mapId);
 });

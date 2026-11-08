@@ -15,7 +15,7 @@ import type {
   PendingMissionStart,
   ResolveMissionContext,
 } from '../types';
-import { resolveSelectionMap, robotHasMap } from '../utils/mapSelection';
+import { resolveFocus, resolveSelectionMap, robotHasMap } from '../utils/mapSelection';
 import { missionIsFresh } from '../utils/missionRuntime';
 
 const PENDING_MISSION_PHASES = [
@@ -94,13 +94,25 @@ export const useMissionStartFlow = ({
       startMissionId,
       prioritizedMissions
     );
-    if (desiredMapId && activeMapId !== desiredMapId) {
+    // Only one effect may own the map at a time, or two keep moving it between their answers and
+    // render forever: a focused mission owns it, and so does a selected robot other than this one.
+    const ownsMap = !focusedMission && (!selectedRobotId || selectedRobotId === startRobotId);
+    if (desiredMapId && ownsMap && activeMapId !== desiredMapId) {
       setActiveMapId(desiredMapId);
     }
     if (clearMission) {
       setStartMissionId(null);
     }
-  }, [activeMapId, prioritizedMissions, robots, setActiveMapId, startMissionId, startRobotId]);
+  }, [
+    activeMapId,
+    focusedMission,
+    prioritizedMissions,
+    robots,
+    selectedRobotId,
+    setActiveMapId,
+    startMissionId,
+    startRobotId,
+  ]);
 
   useEffect(() => {
     if (!startRobotId || !startMissionId) return;
@@ -370,24 +382,32 @@ export const useMissionStartFlow = ({
       if (robot) {
         handleSelectRobot(robot);
       }
-      const mission = resolveMissionContext(missionId, robot?.mapId);
-      const mapId = mission?.mapId ?? robot?.mapId;
-      if (!mapId) {
+      const focus = robot
+        ? resolveFocus(robot, missionId, prioritizedMissions)
+        : { mapId: resolveMissionContext(missionId)?.mapId ?? null, missionId };
+      if (!focus.mapId) {
         toast.error('Unable to resolve mission map');
         return;
       }
       setFocusedMission({
         robotId,
-        mapId,
-        ...(missionId ? { missionId } : {}),
+        mapId: focus.mapId,
+        ...(focus.missionId ? { missionId: focus.missionId } : {}),
       });
-      setActiveMapId(mapId);
-      if (missionId) {
+      setActiveMapId(focus.mapId);
+      if (focus.missionId) {
         setStartRobotId(robotId);
-        setStartMissionId(missionId);
+        setStartMissionId(focus.missionId);
       }
     },
-    [handleSelectRobot, resolveMissionContext, robots, setActiveMapId, setFocusedMission]
+    [
+      handleSelectRobot,
+      prioritizedMissions,
+      resolveMissionContext,
+      robots,
+      setActiveMapId,
+      setFocusedMission,
+    ]
   );
 
   const handleClearMissionFocus = useCallback(() => {
