@@ -34,7 +34,7 @@ test('frames a rosbridge should never send are errors, not the end of the proces
   await connection.connect();
 
   const received: any[] = [];
-  connection.subscribe<any>('/odom_ui', 'nav_msgs/msg/Odometry', message => {
+  connection.subscribe('/odom_ui', 'nav_msgs/msg/Odometry', message => {
     received.push(message);
     // A subscriber tripping over a message is the same failure, one level further in.
     if (message === null) throw new TypeError('null message');

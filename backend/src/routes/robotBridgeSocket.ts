@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import WebSocket from 'ws';
 import { websocketMetrics } from '../metrics/index.js';
 import type { RosRegistry } from '../services/rosRegistry.js';
+import type { RosRobotManager } from '../services/rosRobotManager.js';
 import {
   clientSocketOf,
   closeIfBacklogged,
@@ -140,10 +141,10 @@ export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: Ros
       }
     };
 
-    let attachedManager: any;
-    const attachManager = (nextManager: any) => {
+    let attachedManager: RosRobotManager | undefined;
+    const attachManager = (nextManager: RosRobotManager | undefined) => {
       if (attachedManager === nextManager) return;
-      attachedManager?.off?.('channel-data', forward);
+      attachedManager?.off('channel-data', forward);
       attachedManager = nextManager;
       if (!attachedManager) return;
       attachedManager.on('channel-data', forward);
@@ -246,7 +247,7 @@ export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: Ros
 
     socket.on('close', () => {
       stopFollowingManager();
-      attachedManager?.off?.('channel-data', forward);
+      attachedManager?.off('channel-data', forward);
 
       span.setAttributes({
         'websocket.connection.established': true,

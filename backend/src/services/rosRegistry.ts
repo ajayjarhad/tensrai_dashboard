@@ -1,23 +1,25 @@
-// @ts-nocheck
 import EventEmitter from 'node:events';
+import type { Prisma, PrismaClient } from '@prisma/client';
+import type { FastifyBaseLogger } from 'fastify';
 import { withApprovedAddress } from './robotAddress.js';
-import { RosRobotManager } from './rosRobotManager.js';
+import { type RosChannelConfig, type RosRobotConfig, RosRobotManager } from './rosRobotManager.js';
 
 const DEFAULT_PORT = Number(process.env['ROS_BRIDGE_PORT'] ?? 9090);
 const DEFAULT_MAPPING_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
 const DEFAULT_CONNECTION_ID = 'default';
 const CONTROL_CONNECTION_ID = 'control';
 
-const serializeConfig = (config: any) => {
-  const connections = Array.isArray(config?.connections)
-    ? [...config.connections].sort((a, b) => (a.id ?? '').localeCompare(b.id ?? ''))
-    : [];
-  const channels = Array.isArray(config?.channels)
-    ? [...config.channels].sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
-    : [];
+const serializeConfig = (config: RosRobotConfig) => {
+  const connections = [...(config.connections ?? [])].sort((a, b) =>
+    (a.id ?? '').localeCompare(b.id ?? '')
+  );
+  // Stored channels reach here through a cast from JSON, so a name is not guaranteed.
+  const channels = [...(config.channels ?? [])].sort((a, b) =>
+    (a.name ?? '').localeCompare(b.name ?? '')
+  );
 
   return JSON.stringify({
-    bridgeUrl: config?.bridgeUrl,
+    bridgeUrl: config.bridgeUrl,
     connections: connections.map(c => ({ id: c.id, url: c.url })),
     channels: channels.map(ch => ({
       name: ch.name,
@@ -66,36 +68,37 @@ const msgTypeOverrides: Record<string, string | undefined> = {
   scanPose: parseMsgTypeOverride('ROS_SCAN_POSE_MSG_TYPE'),
 };
 
-const normalizeChannels = (channels: any[] | undefined) => {
+// robots.ts validates channels against RosChannelSchema before storing them.
+const normalizeChannels = (channels: Prisma.JsonValue | null): RosChannelConfig[] | undefined => {
   if (!Array.isArray(channels) || channels.length === 0) return undefined;
-  return channels.map(ch => ({
+  return (channels as RosChannelConfig[]).map(ch => ({
     ...ch,
     msgType: msgTypeOverrides[ch.name] ?? (ch.msgType ? normalizeMsgType(ch.msgType) : ch.msgType),
     rateLimitHz: rateLimitOverrides[ch.name] ?? ch.rateLimitHz,
   }));
 };
 
-const defaultChannels = [
+const defaultChannels: RosChannelConfig[] = [
   {
     name: 'odom',
     topic: '/odom_ui',
     msgType: 'nav_msgs/msg/Odometry',
     direction: 'subscribe',
-    rateLimitHz: rateLimitOverrides.odom,
+    rateLimitHz: rateLimitOverrides['odom'],
   },
   {
     name: 'laser',
     topic: '/scan_ui',
-    msgType: msgTypeOverrides.laser ?? 'sensor_msgs/msg/LaserScan',
+    msgType: msgTypeOverrides['laser'] ?? 'sensor_msgs/msg/LaserScan',
     direction: 'subscribe',
-    rateLimitHz: rateLimitOverrides.laser,
+    rateLimitHz: rateLimitOverrides['laser'],
   },
   {
     name: 'scanPose',
     topic: '/scan_pose_ui',
-    msgType: msgTypeOverrides.scanPose ?? 'geometry_msgs/msg/PoseStamped',
+    msgType: msgTypeOverrides['scanPose'] ?? 'geometry_msgs/msg/PoseStamped',
     direction: 'subscribe',
-    rateLimitHz: rateLimitOverrides.scanPose,
+    rateLimitHz: rateLimitOverrides['scanPose'],
   },
   {
     name: 'waypoints',
@@ -116,7 +119,7 @@ const defaultChannels = [
     topic: '/amcl_pose_ui',
     msgType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
     direction: 'subscribe',
-    rateLimitHz: rateLimitOverrides.amcl,
+    rateLimitHz: rateLimitOverrides['amcl'],
   },
   {
     name: 'initialpose',
@@ -127,9 +130,9 @@ const defaultChannels = [
   },
 ];
 
-const _mergeChannels = (base: any[], custom: any[] | undefined) => {
-  if (!Array.isArray(custom) || custom.length === 0) return base;
-  const byName = new Map<string, any>();
+const mergeChannels = (base: RosChannelConfig[], custom: RosChannelConfig[] | undefined) => {
+  if (!custom?.length) return base;
+  const byName = new Map<string, RosChannelConfig>();
   for (const ch of base) {
     byName.set(ch.name, ch);
   }
@@ -140,17 +143,19 @@ const _mergeChannels = (base: any[], custom: any[] | undefined) => {
 };
 
 export class RosRegistry extends EventEmitter {
-  constructor(prisma, logger) {
+  private managers = new Map<string, RosRobotManager>();
+
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly logger: FastifyBaseLogger
+  ) {
     super();
     this.setMaxListeners(0);
-    this.prisma = prisma;
-    this.logger = logger;
-    this.managers = new Map();
   }
 
   // A reload stops a robot's manager and may start another. Anything forwarding its events has to
   // move with it, or it stays subscribed to a manager that will never emit again.
-  onManagerChange(robotId, listener) {
+  onManagerChange(robotId: string, listener: (manager: RosRobotManager | undefined) => void) {
     const event = `manager:${robotId}`;
     this.on(event, listener);
     return () => this.off(event, listener);
@@ -158,14 +163,14 @@ export class RosRegistry extends EventEmitter {
 
   async reloadFromDb() {
     const robots = await withApprovedAddress(this.prisma, await this.prisma.robot.findMany());
-    const desiredIds = new Set();
+    const desiredIds = new Set<string>();
 
     for (const robot of robots) {
       if (!robot.ipAddress) {
         continue;
       }
-      const bridgePort = (robot as any).bridgePort ?? DEFAULT_PORT;
-      const configuredMappingPort = (robot as any).mappingBridgePort;
+      const bridgePort = robot.bridgePort ?? DEFAULT_PORT;
+      const configuredMappingPort = robot.mappingBridgePort;
       const resolvedMappingPort =
         configuredMappingPort ??
         (process.env['ROS_MAPPING_BRIDGE_PORT'] ? DEFAULT_MAPPING_PORT : undefined);
@@ -182,11 +187,11 @@ export class RosRegistry extends EventEmitter {
           url: `ws://${robot.ipAddress}:${resolvedMappingPort}`,
         });
       }
-      const channels = _mergeChannels(defaultChannels, normalizeChannels((robot as any).channels));
+      const channels = mergeChannels(defaultChannels, normalizeChannels(robot.channels));
       const robotId = robot.id;
       desiredIds.add(robotId);
 
-      const nextConfig = {
+      const nextConfig: RosRobotConfig = {
         id: robotId,
         bridgeUrl,
         connections,
@@ -194,13 +199,13 @@ export class RosRegistry extends EventEmitter {
       };
 
       const existing = this.managers.get(robotId);
-      if (existing && serializeConfig((existing as any).config) === serializeConfig(nextConfig)) {
+      if (existing && serializeConfig(existing.config) === serializeConfig(nextConfig)) {
         continue;
       }
 
       existing?.stop();
       const manager = new RosRobotManager(nextConfig);
-      const formatErr = (e: any) =>
+      const formatErr = (e: unknown) =>
         e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
       const lastErrorLogAt = new Map<string, number>();
       const shouldLog = (key: string, intervalMs = 60_000) => {
@@ -232,7 +237,7 @@ export class RosRegistry extends EventEmitter {
     }
   }
 
-  getManager(robotId) {
+  getManager(robotId: string) {
     return this.managers.get(robotId);
   }
 

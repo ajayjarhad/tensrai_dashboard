@@ -1,19 +1,14 @@
-// @ts-nocheck
 import EventEmitter from 'node:events';
 import ROSLIB from 'roslib';
-import WebSocket from 'ws';
+import type WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
 
 const toReadableError = (error: unknown, url: string) => {
   if (error instanceof Error) return error;
 
   if (error && typeof error === 'object') {
-    const maybeMessage =
-      (error as any).message ??
-      (error as any).reason ??
-      (error as any).code ??
-      (error as any).type ??
-      undefined;
+    const fields = error as { message?: unknown; reason?: unknown; code?: unknown; type?: unknown };
+    const maybeMessage = fields.message ?? fields.reason ?? fields.code ?? fields.type;
     try {
       const json = JSON.stringify(error);
       return new Error(`ROS bridge ${url} error: ${maybeMessage ?? json}`);
@@ -25,10 +20,9 @@ const toReadableError = (error: unknown, url: string) => {
   return new Error(`ROS bridge ${url} error: ${String(error)}`);
 };
 
-// roslib expects a global WebSocket implementation when used in Node.
-if (!(globalThis as any).WebSocket) {
-  (globalThis as any).WebSocket = WebSocket as unknown as typeof WebSocket;
-}
+// roslib sets both at runtime and @types/roslib declares neither. Ros.js creates the socket with
+// the ws package as soon as it is given a url.
+type RosRuntime = ROSLIB.Ros & { isConnected: boolean; socket: WebSocket };
 
 type TopicKey = `${string}:${string}`;
 
@@ -41,18 +35,18 @@ export type RosBridgeConnectionOptions = {
 };
 
 type SubscribeOptions = {
-  throttleRateMs?: number;
+  throttleRateMs?: number | undefined;
   queueLength?: number;
 };
 
 export class RosBridgeConnection extends EventEmitter {
-  private ros: ROSLIB.Ros | null = null;
+  private ros: RosRuntime | null = null;
   private closed = false;
   private reconnectDelayMs: number;
   private maxReconnectDelayMs: number;
   private connectTimeoutMs: number;
   private publishers = new Map<TopicKey, ROSLIB.Topic>();
-  private reconnectTimer?: NodeJS.Timeout;
+  private reconnectTimer: NodeJS.Timeout | undefined;
   private connecting = false;
   private heartbeatIntervalMs: number;
   private heartbeat?: NodeJS.Timeout;
@@ -72,7 +66,7 @@ export class RosBridgeConnection extends EventEmitter {
     this.connecting = true;
 
     await new Promise<void>((resolve, reject) => {
-      const ros = new ROSLIB.Ros({ url: this.options.url });
+      const ros = new ROSLIB.Ros({ url: this.options.url }) as RosRuntime;
       this.guardIncomingFrames(ros);
       let settled = false;
       const timeout = setTimeout(() => {
@@ -162,42 +156,33 @@ export class RosBridgeConnection extends EventEmitter {
     this.publishers.clear();
   }
 
-  subscribe<T>(
+  subscribe(
     topicName: string,
     messageType: string,
-    handler: (message: T) => void,
+    handler: (message: unknown) => void,
     options?: SubscribeOptions
   ): () => void {
-    if (!this.isConnected()) {
-      this.closeStaleRos();
-      this.scheduleReconnect();
-      throw new Error(`ROS connection ${this.options.id} not ready`);
-    }
-
     const topic = new ROSLIB.Topic({
-      ros: this.ros,
+      ros: this.readyRos(),
       name: topicName,
       messageType,
-      throttle_rate: options?.throttleRateMs,
-      queue_length: options?.queueLength,
+      // roslib reads both with `|| 0`; @types/roslib just won't accept undefined.
+      throttle_rate: options?.throttleRateMs ?? 0,
+      queue_length: options?.queueLength ?? 0,
     });
 
     topic.subscribe(handler);
 
     return () => {
-      topic.unsubscribe(handler);
+      // @types/roslib leaves the message parameter off unsubscribe's callback.
+      topic.unsubscribe(handler as () => void);
     };
   }
 
   // Returns true when this publish had to advertise first: rosbridge has only just created that
   // publisher, so subscribers may not have matched it yet and the message can be lost.
-  publish<T>(topicName: string, messageType: string, message: T): boolean {
-    if (!this.isConnected()) {
-      this.closeStaleRos();
-      this.scheduleReconnect();
-      throw new Error(`ROS connection ${this.options.id} not ready`);
-    }
-
+  publish(topicName: string, messageType: string, message: object): boolean {
+    const ros = this.readyRos();
     const key: TopicKey = `${topicName}:${messageType}`;
     let topic = this.publishers.get(key);
     const advertised = !topic;
@@ -205,7 +190,7 @@ export class RosBridgeConnection extends EventEmitter {
     if (!topic) {
       const shouldLatch = topicName === '/initialpose_ui';
       topic = new ROSLIB.Topic({
-        ros: this.ros,
+        ros,
         name: topicName,
         messageType,
         latch: shouldLatch,
@@ -214,7 +199,7 @@ export class RosBridgeConnection extends EventEmitter {
       this.publishers.set(key, topic);
     }
 
-    const rosMessage = new ROSLIB.Message(message as Record<string, unknown>);
+    const rosMessage = new ROSLIB.Message(message);
     topic.publish(rosMessage);
     return advertised;
   }
@@ -224,7 +209,7 @@ export class RosBridgeConnection extends EventEmitter {
   }
 
   isConnected() {
-    return Boolean(this.ros && (this.ros as any).isConnected === true);
+    return this.ros?.isConnected === true;
   }
 
   // Frames arrive in order, so a pong to a ping sent after a publish proves the bridge received it.
@@ -233,7 +218,7 @@ export class RosBridgeConnection extends EventEmitter {
   }
 
   getDebugStatus() {
-    const socket = (this.ros as any)?.socket;
+    const socket = this.ros?.socket;
     return {
       id: this.options.id,
       url: this.options.url,
@@ -247,11 +232,11 @@ export class RosBridgeConnection extends EventEmitter {
 
   // A robot decides what it sends, and roslib parses frames inside the socket's event listener,
   // where an exception ends the process and every organization's robot connections with it.
-  private guardIncomingFrames(ros: ROSLIB.Ros) {
-    const socket = (ros as any).socket;
-    const handleFrame = socket?.onmessage;
-    if (!socket || typeof handleFrame !== 'function') return;
-    socket.onmessage = (frame: unknown) => {
+  private guardIncomingFrames(ros: RosRuntime) {
+    const socket = ros.socket;
+    const handleFrame = socket.onmessage;
+    if (typeof handleFrame !== 'function') return;
+    socket.onmessage = frame => {
       try {
         handleFrame.call(socket, frame);
       } catch (error) {
@@ -263,8 +248,8 @@ export class RosBridgeConnection extends EventEmitter {
   // A half-open socket stays OPEN and accepts sends, so commands vanish with no error. Only a
   // missing pong reveals it, and an unanswered ping fails on the next tick: detection takes one to
   // two intervals. rosbridge's Tornado server answers pings on its own.
-  private startHeartbeat(ros: ROSLIB.Ros) {
-    const socket = (ros as any).socket;
+  private startHeartbeat(ros: RosRuntime) {
+    const socket = ros.socket;
     let pingSentAt: number | undefined;
     socket.on('pong', () => {
       if (pingSentAt !== undefined) this.confirmedThrough = pingSentAt;
@@ -292,6 +277,15 @@ export class RosBridgeConnection extends EventEmitter {
     clearInterval(this.heartbeat);
     this.emit('error', new Error(`ROS connection ${this.options.id} ${reason}; dropping socket`));
     socket.terminate();
+  }
+
+  private readyRos() {
+    if (!this.ros || !this.isConnected()) {
+      this.closeStaleRos();
+      this.scheduleReconnect();
+      throw new Error(`ROS connection ${this.options.id} not ready`);
+    }
+    return this.ros;
   }
 
   // Every teleop command lands here while disconnected, so an attempt already scheduled must stay

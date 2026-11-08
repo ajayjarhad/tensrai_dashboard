@@ -11,6 +11,7 @@ import {
   reloadRobotConnections,
   requestRobotAddress,
 } from '../services/robotAddress.js';
+import { RosChannelSchema } from '../services/rosRobotManager.js';
 import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance, AppFastifyRequest, IdParams, SessionUser } from '../types/app.js';
 
@@ -39,18 +40,7 @@ const SharedRobotFields = {
   mappingBridgePort: BridgePortSchema,
   missionBridgePort: BridgePortSchema,
   emergencyBridgePort: BridgePortSchema,
-  channels: z
-    .array(
-      z.object({
-        name: z.string(),
-        topic: z.string(),
-        msgType: z.string(),
-        direction: z.union([z.literal('subscribe'), z.literal('publish')]),
-        rateLimitHz: z.number().positive().optional(),
-        connectionId: z.string().optional(),
-      })
-    )
-    .optional(),
+  channels: z.array(RosChannelSchema).optional(),
 };
 
 const CreateRobotSchema = z.object({

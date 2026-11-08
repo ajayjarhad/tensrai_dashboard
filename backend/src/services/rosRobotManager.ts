@@ -1,26 +1,80 @@
-// @ts-nocheck
 import EventEmitter from 'node:events';
-import type { RosChannelConfig, RosRobotConfig } from '../config/ros.js';
+import { z } from 'zod';
 import { createLatestThrottle } from '../utils/throttle.js';
 import { combineTransforms, type Pose2D, quaternionToYaw } from '../utils/transform.js';
 import { RosBridgeConnection } from './rosBridgeConnection.js';
 
+export const RosChannelSchema = z.object({
+  name: z.string(),
+  topic: z.string(),
+  msgType: z.string(),
+  direction: z.union([z.literal('subscribe'), z.literal('publish')]),
+  rateLimitHz: z.number().positive().optional(),
+  connectionId: z.string().optional(),
+});
+
+export type RosChannelConfig = z.infer<typeof RosChannelSchema>;
+
+type TeleopLimits = { maxLinear: number; maxAngular: number; watchdogMs: number };
+
+export type RosRobotConfig = {
+  id: string;
+  bridgeUrl?: string;
+  connections?: Array<{ id?: string; url?: string }>;
+  channels?: RosChannelConfig[];
+  laserOffset?: Partial<Pose2D>;
+  teleopLimits?: Partial<TeleopLimits>;
+};
+
+type StampedPose = Pose2D & { stampMs?: number | undefined };
+
 type ChannelRuntime = {
   config: RosChannelConfig;
-  unsubscribe?: () => void;
+  unsubscribe?: (() => void) | undefined;
   errorCount: number;
   lastMessageAt?: number;
 };
 
 type ScanPoseSource = 'firmware' | 'sidecar' | 'computed' | 'none';
 type ScanPose2D = { x: number; y: number; theta: number };
-type ScanPoseSidecar = ScanPose2D & { stampMs?: number; receivedAtMs: number };
-type PendingLaserScan = { raw: any; timeout: NodeJS.Timeout };
+type ScanPoseSidecar = ScanPose2D & { stampMs?: number | undefined; receivedAtMs: number };
+// The ROS messages read here. The robot decides what it sends, so every field is optional and each
+// read below keeps a default; casts to these happen only where a message first arrives.
+type RosStamp = { sec?: number; secs?: number; nanosec?: number; nsecs?: number };
+type RosHeader = { stamp?: RosStamp; frame_id?: string };
+type RosVector = { x?: number; y?: number; z?: number; w?: number };
+type RosPose = { position?: RosVector; orientation?: RosVector };
+type RosPoseMessage = { header?: RosHeader; pose?: { pose?: RosPose } };
+type ScanPoseFields = { x?: number; y?: number; theta?: number; yaw?: number };
+type RosScanPose = RosPose &
+  ScanPoseFields & { header?: RosHeader; pose?: RosPose & ScanPoseFields & { pose?: RosPose } };
+type RosLaserScan = {
+  header?: RosHeader;
+  ranges?: number[];
+  angle_min?: number;
+  angle_max?: number;
+  angle_increment?: number;
+  range_min?: number;
+  range_max?: number;
+  pose?: ScanPoseFields;
+  // Added by processLaser before the scan is sanitized and sent on.
+  laserOffset?: Pose2D;
+  scanPose?: ScanPose2D;
+  scanPoseSource?: ScanPoseSource;
+  frame?: string;
+  stampMs?: number;
+};
+type RosPath = { poses?: Array<{ pose?: RosPose }> };
+type RosTransform = {
+  header?: RosHeader;
+  child_frame_id?: string;
+  transform?: { translation?: RosVector; rotation?: RosVector };
+};
+type PendingLaserScan = { raw: RosLaserScan; timeout: NodeJS.Timeout };
 
 const DEFAULT_LASER_OFFSET = { x: 0.12, y: 0, yaw: 0 };
 const AMCL_MIN_DELTA_POS = 0.05;
 const AMCL_MIN_DELTA_YAW = 0.05;
-const _SCAN_POSE_MAX_DRIFT_MS = 100;
 const SCAN_POSE_BUFFER_MS = 60_000;
 const SCAN_POSE_MAX_BUFFER = 600;
 const SCAN_POSE_MATCH_TIMEOUT_MS = (() => {
@@ -50,7 +104,7 @@ const MAX_LASER_POINTS = (() => {
 // Nav plans can carry thousands of poses; the dashboard only draws a polyline.
 const MAX_PATH_POSES = 300;
 
-const rosStampToMs = (stamp: any): number | undefined => {
+const rosStampToMs = (stamp: RosStamp | undefined): number | undefined => {
   if (!stamp || typeof stamp !== 'object') return undefined;
   const sec =
     typeof stamp.sec === 'number'
@@ -69,7 +123,7 @@ const rosStampToMs = (stamp: any): number | undefined => {
   return Number.isFinite(ms) ? ms : undefined;
 };
 
-const rosStampToKey = (stamp: any): string | undefined => {
+const rosStampToKey = (stamp: RosStamp | undefined): string | undefined => {
   if (!stamp || typeof stamp !== 'object') return undefined;
   const sec =
     typeof stamp.sec === 'number'
@@ -90,7 +144,7 @@ const rosStampToKey = (stamp: any): string | undefined => {
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
-const pickPose = (pose: any) => {
+const pickPose = (pose: RosPose | undefined) => {
   if (!pose) return undefined;
   return {
     position: {
@@ -110,15 +164,15 @@ const pickPose = (pose: any) => {
 const sanitizeChannelPayload = (channelName: string, data: unknown) => {
   if (!data || typeof data !== 'object') return data;
   if (channelName === 'odom') {
-    const odom = data as any;
+    const odom = data as RosPoseMessage;
     return { pose: odom.pose ? { pose: pickPose(odom.pose.pose) } : undefined };
   }
   if (channelName === 'amcl') {
-    const amcl = data as any;
+    const amcl = data as RosPoseMessage;
     return { pose: amcl.pose ? { pose: pickPose(amcl.pose.pose) } : undefined };
   }
   if (channelName === 'laser') {
-    const scan = data as any;
+    const scan = data as RosLaserScan;
     return {
       angle_min: scan.angle_min,
       angle_max: scan.angle_max,
@@ -134,11 +188,11 @@ const sanitizeChannelPayload = (channelName: string, data: unknown) => {
     };
   }
   if (channelName === 'waypoints') {
-    const path = data as any;
-    const raw: any[] = Array.isArray(path.poses) ? path.poses : [];
+    const path = data as RosPath;
+    const raw = Array.isArray(path.poses) ? path.poses : [];
     const stride = Math.max(1, Math.ceil((raw.length - 1) / (MAX_PATH_POSES - 1)));
     const kept = raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
-    return { poses: kept.map((p: any) => ({ pose: pickPose(p.pose) })) };
+    return { poses: kept.map(p => ({ pose: pickPose(p.pose) })) };
   }
   return data;
 };
@@ -157,12 +211,13 @@ const clampNumber = (value: unknown, limit: number) => {
 const validateAndClampTeleop = (
   payload: unknown,
   limits?: { maxLinear?: number; maxAngular?: number }
-): { ok: boolean; value?: any; error?: string } => {
+): { ok: true; value: ReturnType<typeof zeroTwist> } | { ok: false; error: string } => {
   if (!payload || typeof payload !== 'object') {
     return { ok: false, error: 'teleop payload must be an object' };
   }
-  const linear = (payload as any).linear ?? {};
-  const angular = (payload as any).angular ?? {};
+  const fields = payload as { linear?: { x?: unknown } | null; angular?: { z?: unknown } | null };
+  const linear = fields.linear ?? {};
+  const angular = fields.angular ?? {};
   if (typeof linear !== 'object' || typeof angular !== 'object') {
     return { ok: false, error: 'teleop payload missing linear/angular' };
   }
@@ -191,12 +246,12 @@ export class RosRobotManager extends EventEmitter {
   private laserOffset = { ...DEFAULT_LASER_OFFSET };
   private mapPose?: Pose2D;
   // private mapPoseStampMs?: number;
-  private mapToOdom?: Pose2D & { stampMs?: number };
-  private mapToBase?: Pose2D & { stampMs?: number };
-  private odomToBase?: Pose2D & { stampMs?: number };
-  private lastPublishedPose?: Pose2D & { stampMs?: number; source?: string };
+  private mapToOdom?: StampedPose;
+  private mapToBase?: StampedPose;
+  private odomToBase?: StampedPose;
+  private lastPublishedPose?: StampedPose & { source?: string };
   private laserToBase?: Pose2D;
-  private odomPose?: Pose2D & { stampMs?: number };
+  private odomPose?: StampedPose;
   private mapToOdomHistory: Array<Pose2D & { stampMs: number }> = [];
   private odomToBaseHistory: Array<Pose2D & { stampMs: number }> = [];
   private mapPoseHistory: Array<Pose2D & { stampMs: number }> = [];
@@ -214,31 +269,26 @@ export class RosRobotManager extends EventEmitter {
   private baseFrames: string[] = ['base_link', 'base_footprint'];
   private teleopTimers = new Map<string, NodeJS.Timeout>();
   private teleopConnectionId?: string;
-  private teleopStopSent?: { connectionId: string; at: number };
-  private teleopStopRetry?: NodeJS.Timeout;
-  private teleopLimits: { maxLinear: number; maxAngular: number; watchdogMs: number };
+  private teleopStopSent: { connectionId: string; at: number } | undefined;
+  private teleopStopRetry: NodeJS.Timeout | undefined;
+  private teleopLimits: TeleopLimits;
 
   constructor(readonly config: RosRobotConfig) {
     super();
-    this.laserOffset = { ...DEFAULT_LASER_OFFSET, ...(config as any).laserOffset };
-    const userTeleop =
-      typeof (config as any).teleopLimits === 'object' ? (config as any).teleopLimits : {};
+    this.laserOffset = { ...DEFAULT_LASER_OFFSET, ...config.laserOffset };
     this.teleopLimits = {
       maxLinear: TELEOP_MAX_LINEAR,
       maxAngular: TELEOP_MAX_ANGULAR,
       watchdogMs: TELEOP_WATCHDOG_MS,
-      ...userTeleop,
+      ...config.teleopLimits,
     };
     this.initializeConnections();
     this.initializeChannels();
   }
 
   private initializeConnections() {
-    const rawConnections = Array.isArray((this.config as any).connections)
-      ? ((this.config as any).connections as Array<{ id?: string; url?: string }>)
-      : [];
-
-    const fallbackUrl = (this.config as any).bridgeUrl;
+    const rawConnections = this.config.connections ?? [];
+    const fallbackUrl = this.config.bridgeUrl;
     const connectionDefs = rawConnections.length
       ? rawConnections
       : fallbackUrl
@@ -264,12 +314,8 @@ export class RosRobotManager extends EventEmitter {
   }
 
   private initializeChannels() {
-    const configChannels = Array.isArray((this.config as any).channels)
-      ? ((this.config as any).channels as RosChannelConfig[])
-      : [];
-
-    for (const channel of configChannels) {
-      if (!channel?.name) continue;
+    for (const channel of this.config.channels ?? []) {
+      if (!channel.name) continue;
       const connectionId = channel.connectionId ?? 'default';
       if (!this.connections.has(connectionId)) {
         this.emit(
@@ -309,7 +355,7 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
-  handleCommand(channelName: string, payload: unknown): { ok: boolean; error?: string } {
+  handleCommand(channelName: string, payload: unknown) {
     const runtime = this.channels.get(channelName);
     if (!runtime) return { ok: false, error: `Unknown channel: ${channelName}`, channelName };
     if (runtime.config.direction !== 'publish')
@@ -368,10 +414,7 @@ export class RosRobotManager extends EventEmitter {
             msgType: runtime.config.msgType,
             connectionId: 'default',
             fallbackFromConnectionId: requestedConnectionId,
-            connection: fallbackConnection.getDebugStatus?.() ?? {
-              connected: fallbackConnection.isConnected(),
-              url: fallbackConnection.url,
-            },
+            connection: fallbackConnection.getDebugStatus(),
           };
         } catch (error) {
           runtime.errorCount += 1;
@@ -384,7 +427,7 @@ export class RosRobotManager extends EventEmitter {
             msgType: runtime.config.msgType,
             connectionId: 'default',
             fallbackFromConnectionId: requestedConnectionId,
-            connection: fallbackConnection.getDebugStatus?.(),
+            connection: fallbackConnection.getDebugStatus(),
           };
         }
       }
@@ -397,10 +440,6 @@ export class RosRobotManager extends EventEmitter {
         connectionId: requestedConnectionId,
       };
     }
-    const connectionStatusBefore = connection.getDebugStatus?.() ?? {
-      connected: connection.isConnected(),
-      url: connection.url,
-    };
     try {
       connection.publish(runtime.config.topic, runtime.config.msgType, outgoing as object);
       return {
@@ -409,7 +448,7 @@ export class RosRobotManager extends EventEmitter {
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
         connectionId: requestedConnectionId,
-        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+        connection: connection.getDebugStatus(),
       };
     } catch (error) {
       if (fallbackConnection) {
@@ -427,10 +466,7 @@ export class RosRobotManager extends EventEmitter {
             connectionId: 'default',
             fallbackFromConnectionId: requestedConnectionId,
             primaryError: (error as Error).message,
-            connection: fallbackConnection.getDebugStatus?.() ?? {
-              connected: fallbackConnection.isConnected(),
-              url: fallbackConnection.url,
-            },
+            connection: fallbackConnection.getDebugStatus(),
           };
         } catch (fallbackError) {
           runtime.errorCount += 1;
@@ -444,7 +480,7 @@ export class RosRobotManager extends EventEmitter {
             msgType: runtime.config.msgType,
             connectionId: 'default',
             fallbackFromConnectionId: requestedConnectionId,
-            connection: fallbackConnection.getDebugStatus?.(),
+            connection: fallbackConnection.getDebugStatus(),
           };
         }
       }
@@ -457,7 +493,7 @@ export class RosRobotManager extends EventEmitter {
         topic: runtime.config.topic,
         msgType: runtime.config.msgType,
         connectionId: requestedConnectionId,
-        connection: connection.getDebugStatus?.() ?? connectionStatusBefore,
+        connection: connection.getDebugStatus(),
       };
     }
   }
@@ -477,10 +513,10 @@ export class RosRobotManager extends EventEmitter {
       const throttled = createLatestThrottle(runtime.config.rateLimitHz, (data: unknown) => {
         runtime.lastMessageAt = Date.now();
         let processed = data;
-        if (name === 'laser') processed = this.processLaser(data as any);
-        else if (name === 'scanPose') processed = this.processScanPose(data as any);
-        else if (name === 'odom') processed = this.processOdom(data as any);
-        else if (name === 'amcl') processed = this.processAmcl(data as any);
+        if (name === 'laser') processed = this.processLaser(data as RosLaserScan);
+        else if (name === 'scanPose') processed = this.processScanPose(data as RosScanPose);
+        else if (name === 'odom') processed = this.processOdom(data as RosPoseMessage);
+        else if (name === 'amcl') processed = this.processAmcl(data as RosPoseMessage);
         if (processed === undefined) return;
         this.emitChannelData(name, processed);
       });
@@ -593,6 +629,7 @@ export class RosRobotManager extends EventEmitter {
     ]);
     const failures: string[] = [];
     for (const id of candidates) {
+      if (id === undefined) continue;
       const connection = this.connections.get(id);
       if (!connection) continue;
       try {
@@ -640,7 +677,7 @@ export class RosRobotManager extends EventEmitter {
     this.emit('channel-data', { channel: channelName, data: sanitized });
   }
 
-  private processOdom(raw: any) {
+  private processOdom(raw: RosPoseMessage) {
     if (!raw?.pose?.pose) return raw;
     const pos = raw.pose.pose.position ?? {};
     const ori = raw.pose.pose.orientation ?? {};
@@ -656,7 +693,7 @@ export class RosRobotManager extends EventEmitter {
     return raw;
   }
 
-  private processAmcl(raw: any) {
+  private processAmcl(raw: RosPoseMessage) {
     if (!raw?.pose?.pose) return raw;
     const pos = raw.pose.pose.position ?? {};
     const ori = raw.pose.pose.orientation ?? {};
@@ -682,7 +719,7 @@ export class RosRobotManager extends EventEmitter {
     return raw;
   }
 
-  private processScanPose(raw: any) {
+  private processScanPose(raw: RosScanPose) {
     const stampKey = rosStampToKey(raw?.header?.stamp);
     if (!stampKey) return undefined;
     const scanPose = this.extractScanPose(raw);
@@ -718,7 +755,7 @@ export class RosRobotManager extends EventEmitter {
     return undefined;
   }
 
-  private extractScanPose(raw: any): ScanPose2D | undefined {
+  private extractScanPose(raw: RosScanPose): ScanPose2D | undefined {
     return (
       this.pickScanPose(raw) ??
       this.pickScanPose(raw?.pose) ??
@@ -728,15 +765,17 @@ export class RosRobotManager extends EventEmitter {
     );
   }
 
-  private pickScanPose(value: any): ScanPose2D | undefined {
+  private pickScanPose(value: ScanPoseFields | undefined): ScanPose2D | undefined {
+    const x = value?.x;
+    const y = value?.y;
     const theta = value?.theta ?? value?.yaw;
-    if (isFiniteNumber(value?.x) && isFiniteNumber(value?.y) && isFiniteNumber(theta)) {
-      return { x: value.x, y: value.y, theta };
+    if (isFiniteNumber(x) && isFiniteNumber(y) && isFiniteNumber(theta)) {
+      return { x, y, theta };
     }
     return undefined;
   }
 
-  private pickPoseStamped(value: any): ScanPose2D | undefined {
+  private pickPoseStamped(value: RosPose | undefined): ScanPose2D | undefined {
     const pos = value?.position;
     const ori = value?.orientation;
     if (!pos || !isFiniteNumber(pos.x) || !isFiniteNumber(pos.y)) return undefined;
@@ -759,7 +798,7 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
-  private deferLaserUntilPose(raw: any, stampKey: string) {
+  private deferLaserUntilPose(raw: RosLaserScan, stampKey: string) {
     if (SCAN_POSE_MATCH_TIMEOUT_MS <= 0) return false;
     const previous = this.pendingLaserByStamp.get(stampKey);
     if (previous) clearTimeout(previous.timeout);
@@ -810,7 +849,7 @@ export class RosRobotManager extends EventEmitter {
     this.pendingLaserByStamp.clear();
   }
 
-  private processLaser(raw: any, options: { allowDefer?: boolean } = {}) {
+  private processLaser(raw: RosLaserScan, options: { allowDefer?: boolean } = {}) {
     if (!raw?.ranges || !Array.isArray(raw.ranges)) {
       if (!this.lastLoggedOffsetSource) {
         console.log(
@@ -825,7 +864,7 @@ export class RosRobotManager extends EventEmitter {
       return raw;
     }
 
-    const { ranges, angle_increment } = raw;
+    const ranges = raw.ranges;
     const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
     const downsampledRanges: number[] = [];
     for (let i = 0; i < ranges.length; i += stride) {
@@ -865,13 +904,13 @@ export class RosRobotManager extends EventEmitter {
     }
     const stampMs = rosStampToMs(raw?.header?.stamp);
     const stampKey = rosStampToKey(raw?.header?.stamp);
-    const fw = raw?.pose;
-    const fwValid = fw && isFiniteNumber(fw.x) && isFiniteNumber(fw.y) && isFiniteNumber(fw.theta);
+    const [fwX, fwY, fwTheta] = [raw?.pose?.x, raw?.pose?.y, raw?.pose?.theta];
+    const fwValid = isFiniteNumber(fwX) && isFiniteNumber(fwY) && isFiniteNumber(fwTheta);
     const sidecarPose = stampKey ? this.scanPoseByStamp.get(stampKey) : undefined;
     let scanPoseSource: ScanPoseSource = 'none';
     let scanPose: ScanPose2D | undefined;
     if (fwValid) {
-      scanPose = { x: fw.x, y: fw.y, theta: fw.theta };
+      scanPose = { x: fwX, y: fwY, theta: fwTheta };
       scanPoseSource = 'firmware';
     } else if (sidecarPose) {
       scanPose = { x: sidecarPose.x, y: sidecarPose.y, theta: sidecarPose.theta };
@@ -948,7 +987,7 @@ export class RosRobotManager extends EventEmitter {
     return {
       ...raw,
       ranges: downsampledRanges,
-      angle_increment: angle_increment * stride,
+      angle_increment: Number(raw.angle_increment) * stride,
       laserOffset: { x: offset.x, y: offset.y, yaw: offset.yaw },
       scanPose,
       scanPoseSource,
@@ -959,7 +998,7 @@ export class RosRobotManager extends EventEmitter {
 
   private subscribeTf(connectionId: string, connection: RosBridgeConnection) {
     this.cleanupTfSubscriptions(connectionId);
-    const handle = (msg: any) => this.handleTfMessage(msg);
+    const handle = (msg: unknown) => this.handleTfMessage(msg as { transforms?: RosTransform[] });
     try {
       const unsubscribeTf = connection.subscribe('/tf_ui', 'tf2_msgs/msg/TFMessage', handle);
       const unsubscribeTfStatic = connection.subscribe(
@@ -999,7 +1038,7 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
-  private handleTfMessage(msg: any) {
+  private handleTfMessage(msg: { transforms?: RosTransform[] } | undefined) {
     const transforms = msg?.transforms;
     if (!Array.isArray(transforms)) return;
     for (const t of transforms) {
@@ -1007,14 +1046,14 @@ export class RosRobotManager extends EventEmitter {
     }
   }
 
-  private processTransform(t: any) {
+  private processTransform(t: RosTransform) {
     const transformData = this.extractTransformData(t);
     if (!transformData) return;
 
     this.updateTransformValues(transformData);
   }
 
-  private extractTransformData(t: any) {
+  private extractTransformData(t: RosTransform) {
     const parent = t?.header?.frame_id;
     const child = t?.child_frame_id;
     const trans = t?.transform?.translation;
@@ -1034,9 +1073,9 @@ export class RosRobotManager extends EventEmitter {
   private updateTransformValues(transformData: {
     parent: string;
     child: string;
-    trans: any;
-    rot: any;
-    stamp: any;
+    trans: RosVector;
+    rot: RosVector;
+    stamp: RosStamp | undefined;
   }) {
     const { parent, child, trans, rot, stamp } = transformData;
 
@@ -1052,7 +1091,7 @@ export class RosRobotManager extends EventEmitter {
     this.maybeEmitBasePose();
   }
 
-  private getStampMs(stamp: any): number | undefined {
+  private getStampMs(stamp: RosStamp | undefined): number | undefined {
     const stampMsRaw = rosStampToMs(stamp);
     // Static transforms often carry stamp=0; treat them as timeless so they don't get flagged stale.
     return stampMsRaw === 0 ? undefined : stampMsRaw;
@@ -1061,7 +1100,7 @@ export class RosRobotManager extends EventEmitter {
   private updateTransformBasedOnFrame(
     parent: string,
     child: string,
-    trans: any,
+    trans: RosVector,
     yaw: number,
     stampMs?: number
   ) {
@@ -1204,14 +1243,16 @@ export class RosRobotManager extends EventEmitter {
     };
   }
 
-  private isTfStale(tf?: { stampMs?: number }, referenceMs?: number) {
+  private isTfStale(tf?: { stampMs?: number | undefined }, referenceMs?: number) {
     if (!tf) return true;
     if (tf.stampMs === undefined) return false; // static TF
     if (referenceMs === undefined) return false; // no reference clock; trust TF
     return Math.abs(referenceMs - tf.stampMs) > TF_STALE_MS;
   }
 
-  private computeMapBasePose(): { pose: Pose2D; source: string; stampMs?: number } | undefined {
+  private computeMapBasePose():
+    | { pose: Pose2D; source: string; stampMs?: number | undefined }
+    | undefined {
     const refMs = this.odomPose?.stampMs;
     // 1) direct map->base TF
     if (this.mapToBase && !this.isTfStale(this.mapToBase, refMs)) {
@@ -1295,14 +1336,9 @@ export class RosRobotManager extends EventEmitter {
 
   getStatus() {
     return {
-      id: (this.config as any).id,
+      id: this.config.id,
       started: this.started,
-      connections: Array.from(this.connections.entries()).map(([id, connection]) => ({
-        id,
-        url: connection.url,
-        connected: connection.isConnected(),
-        ...(connection.getDebugStatus?.() ?? {}),
-      })),
+      connections: Array.from(this.connections.values(), connection => connection.getDebugStatus()),
       channels: Array.from(this.channels.entries()).map(([name, runtime]) => ({
         name,
         topic: runtime.config.topic,
