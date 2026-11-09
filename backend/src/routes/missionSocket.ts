@@ -10,6 +10,7 @@ import { websocketMetrics } from '../metrics/index.js';
 import { buildMissionFailureAck } from '../services/missionStatus.js';
 import {
   auditRobotCommand,
+  type ClientConnection,
   clientFrameText,
   clientSocketOf,
   closeWhenAccessEnds,
@@ -18,7 +19,7 @@ import {
 } from './gatewaySocket.js';
 
 export const createMissionSocketHandler =
-  (fastify: FastifyInstance) => async (connection: any, request: FastifyRequest) => {
+  (fastify: FastifyInstance) => async (connection: ClientConnection, request: FastifyRequest) => {
     const { robotId } = request.params as { robotId: string };
     const missionRegistry = fastify.missionRegistry;
 

@@ -1,4 +1,5 @@
 import type {
+  AuthSession,
   AuthState,
   LoginCredentials,
   Permission,
@@ -62,346 +63,193 @@ export const authPersistOptions: PersistOptions<AuthStore, SavedAuth> = {
   partialize: savedAuth,
 };
 
+// What the auth endpoints send back.
+type SignInResponse =
+  | { success: true; user: User; session: AuthSession }
+  | { success?: false; error?: string };
+type SessionResponse = { user?: User; session?: AuthSession } | null;
+
+const authState = (
+  set: (partial: Partial<AuthStore>) => void,
+  get: () => AuthStore
+): AuthStore => ({
+  user: null,
+  isAuthenticated: false,
+  isLoading: false,
+  error: null,
+  session: null,
+  login: async (credentials: LoginCredentials) => {
+    set({ isLoading: true, error: null });
+
+    try {
+      const response = await apiClient.post<SignInResponse>('auth/sign-in', {
+        username: credentials.username,
+        password: credentials.password,
+      });
+
+      if (response?.success === true) {
+        // Set auth state directly from login response
+        set({
+          user: response.user,
+          isAuthenticated: true,
+          session: response.session,
+          isLoading: false,
+          error: null,
+        });
+
+        // Handle post-login navigation using navigation service
+        const state = get();
+        if (state.user) {
+          navigateAfterLogin(state.user);
+        }
+      } else {
+        const errorMessage = response?.error || 'Login failed';
+        set({ isLoading: false, error: errorMessage });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Login failed';
+      set({ isLoading: false, error: message });
+    }
+  },
+
+  logout: async () => {
+    set({ isLoading: true, error: null });
+
+    try {
+      await apiClient.post('auth/sign-out');
+
+      set({
+        user: null,
+        isAuthenticated: false,
+        session: null,
+        isLoading: false,
+        error: null,
+      });
+
+      // Navigate to login after successful logout
+      navigateToLogin();
+    } catch (error) {
+      set({
+        user: null,
+        isAuthenticated: false,
+        session: null,
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Logout failed',
+      });
+    }
+  },
+
+  firstTimeSetup: async (data: ResetPasswordInput) => {
+    set({ isLoading: true, error: null });
+
+    try {
+      await apiClient.post('auth/first-time-setup', {
+        tempPassword: data.tempPassword,
+        newPassword: data.newPassword,
+        confirmPassword: data.confirmPassword,
+        displayName: data.displayName,
+      });
+
+      try {
+        await apiClient.post('auth/sign-out');
+      } catch (logoutError) {
+        console.warn('Failed to sign out after password setup', logoutError);
+      }
+
+      set({
+        user: null,
+        isAuthenticated: false,
+        session: null,
+        isLoading: false,
+        error: null,
+      });
+
+      navigateToLogin();
+    } catch (error) {
+      set({
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Password setup failed',
+      });
+    }
+  },
+
+  checkAuth: async () => {
+    // Don't check auth if already authenticated to prevent race conditions
+    const currentState = get();
+    if (currentState.isAuthenticated && currentState.user) {
+      return;
+    }
+
+    set({ isLoading: true });
+
+    try {
+      const sessionResponse = await apiClient.get<SessionResponse>('auth/session');
+
+      if (sessionResponse?.user && sessionResponse?.session) {
+        set({
+          user: sessionResponse.user,
+          isAuthenticated: true,
+          session: sessionResponse.session,
+          isLoading: false,
+          error: null,
+        });
+      } else {
+        set({
+          user: null,
+          isAuthenticated: false,
+          session: null,
+          isLoading: false,
+          error: null,
+        });
+      }
+    } catch (_error) {
+      set({
+        user: null,
+        isAuthenticated: false,
+        session: null,
+        isLoading: false,
+        error: null,
+      });
+    }
+  },
+
+  clearError: () => {
+    set({ error: null });
+  },
+
+  hasPermission: (permission: Permission) => {
+    const { user } = get();
+    if (!user || !user.isActive) return false;
+
+    const userPermissions = ROLE_PERMISSIONS[user.role] || [];
+    return (userPermissions as readonly Permission[]).includes(permission);
+  },
+
+  isAdmin: () => {
+    const { user } = get();
+    return (user?.role === 'ADMIN' || user?.role === 'STAFF') && user.isActive;
+  },
+
+  checkIsAuthenticated: () => {
+    return get().isAuthenticated && !!get().user?.isActive;
+  },
+});
+
 export const useAuthStore = create<AuthStore>()(
   devtools(
     shouldPersist
-      ? persist(
-          (set, get) => ({
-            user: null,
-            isAuthenticated: false,
-            isLoading: false,
-            error: null,
-            session: null,
-            login: async (credentials: LoginCredentials) => {
-              set({ isLoading: true, error: null });
-
-              try {
-                const response = await apiClient.post<any>('auth/sign-in', {
-                  username: credentials.username,
-                  password: credentials.password,
-                });
-
-                if (response?.success === true) {
-                  // Set auth state directly from login response
-                  set({
-                    user: response.user as User,
-                    isAuthenticated: true,
-                    session: response.session,
-                    isLoading: false,
-                    error: null,
-                  });
-
-                  // Handle post-login navigation using navigation service
-                  const state = get();
-                  if (state.user) {
-                    navigateAfterLogin(state.user);
-                  }
-                } else {
-                  const errorMessage = response?.error || 'Login failed';
-                  set({ isLoading: false, error: errorMessage });
-                }
-              } catch (error) {
-                const message = error instanceof Error ? error.message : 'Login failed';
-                set({ isLoading: false, error: message });
-              }
-            },
-
-            logout: async () => {
-              set({ isLoading: true, error: null });
-
-              try {
-                await apiClient.post('auth/sign-out');
-
-                set({
-                  user: null,
-                  isAuthenticated: false,
-                  session: null,
-                  isLoading: false,
-                  error: null,
-                });
-
-                // Navigate to login after successful logout
-                navigateToLogin();
-              } catch (error) {
-                set({
-                  user: null,
-                  isAuthenticated: false,
-                  session: null,
-                  isLoading: false,
-                  error: error instanceof Error ? error.message : 'Logout failed',
-                });
-              }
-            },
-
-            firstTimeSetup: async (data: ResetPasswordInput) => {
-              set({ isLoading: true, error: null });
-
-              try {
-                await apiClient.post('auth/first-time-setup', {
-                  tempPassword: data.tempPassword,
-                  newPassword: data.newPassword,
-                  confirmPassword: data.confirmPassword,
-                  displayName: data.displayName,
-                });
-
-                try {
-                  await apiClient.post('auth/sign-out');
-                } catch (logoutError) {
-                  console.warn('Failed to sign out after password setup', logoutError);
-                }
-
-                set({
-                  user: null,
-                  isAuthenticated: false,
-                  session: null,
-                  isLoading: false,
-                  error: null,
-                });
-
-                navigateToLogin();
-              } catch (error) {
-                set({
-                  isLoading: false,
-                  error: error instanceof Error ? error.message : 'Password setup failed',
-                });
-              }
-            },
-
-            checkAuth: async () => {
-              // Don't check auth if already authenticated to prevent race conditions
-              const currentState = get();
-              if (currentState.isAuthenticated && currentState.user) {
-                return;
-              }
-
-              set({ isLoading: true });
-
-              try {
-                const sessionResponse = await apiClient.get<any>('auth/session');
-
-                if (sessionResponse?.user && sessionResponse?.session) {
-                  set({
-                    user: sessionResponse.user as User,
-                    isAuthenticated: true,
-                    session: sessionResponse.session,
-                    isLoading: false,
-                    error: null,
-                  });
-                } else {
-                  set({
-                    user: null,
-                    isAuthenticated: false,
-                    session: null,
-                    isLoading: false,
-                    error: null,
-                  });
-                }
-              } catch (_error) {
-                set({
-                  user: null,
-                  isAuthenticated: false,
-                  session: null,
-                  isLoading: false,
-                  error: null,
-                });
-              }
-            },
-
-            clearError: () => {
-              set({ error: null });
-            },
-
-            hasPermission: (permission: Permission) => {
-              const { user } = get();
-              if (!user || !user.isActive) return false;
-
-              const userPermissions = ROLE_PERMISSIONS[user.role] || [];
-              return userPermissions.includes(permission as any);
-            },
-
-            isAdmin: () => {
-              const { user } = get();
-              return (user?.role === 'ADMIN' || user?.role === 'STAFF') && user.isActive;
-            },
-
-            checkIsAuthenticated: () => {
-              return get().isAuthenticated && !!get().user?.isActive;
-            },
-          }),
-          {
-            ...authPersistOptions,
-            onRehydrateStorage: () => state => {
-              // Reset loading states on rehydration
-              if (state) {
-                state.isLoading = false;
-                state.error = null;
-              }
-            },
-          }
-        )
-      : (set, get) => ({
-          // Fallback store without persistence when localStorage is unavailable
-          user: null,
-          isAuthenticated: false,
-          isLoading: false,
-          error: null,
-          session: null,
-          login: async (credentials: LoginCredentials) => {
-            set({ isLoading: true, error: null });
-
-            try {
-              const response = await apiClient.post<any>('auth/sign-in', {
-                username: credentials.username,
-                password: credentials.password,
-              });
-
-              if (response?.success === true) {
-                // Set auth state directly from login response
-                set({
-                  user: response.user as User,
-                  isAuthenticated: true,
-                  session: response.session,
-                  isLoading: false,
-                  error: null,
-                });
-
-                // Handle post-login navigation using navigation service
-                const state = get();
-                if (state.user) {
-                  navigateAfterLogin(state.user);
-                }
-              } else {
-                const errorMessage = response?.error || 'Login failed';
-                set({ isLoading: false, error: errorMessage });
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : 'Login failed';
-              set({ isLoading: false, error: message });
+      ? persist((set, get) => authState(set, get), {
+          ...authPersistOptions,
+          onRehydrateStorage: () => state => {
+            // Reset loading states on rehydration
+            if (state) {
+              state.isLoading = false;
+              state.error = null;
             }
           },
-
-          logout: async () => {
-            set({ isLoading: true, error: null });
-
-            try {
-              await apiClient.post('auth/sign-out');
-
-              set({
-                user: null,
-                isAuthenticated: false,
-                session: null,
-                isLoading: false,
-                error: null,
-              });
-
-              // Navigate to login after successful logout
-              navigateToLogin();
-            } catch (error) {
-              set({
-                user: null,
-                isAuthenticated: false,
-                session: null,
-                isLoading: false,
-                error: error instanceof Error ? error.message : 'Logout failed',
-              });
-            }
-          },
-
-          firstTimeSetup: async (data: ResetPasswordInput) => {
-            set({ isLoading: true, error: null });
-
-            try {
-              await apiClient.post('auth/first-time-setup', {
-                tempPassword: data.tempPassword,
-                newPassword: data.newPassword,
-                confirmPassword: data.confirmPassword,
-                displayName: data.displayName,
-              });
-
-              try {
-                await apiClient.post('auth/sign-out');
-              } catch (logoutError) {
-                console.warn('Failed to sign out after password setup', logoutError);
-              }
-
-              set({
-                user: null,
-                isAuthenticated: false,
-                session: null,
-                isLoading: false,
-                error: null,
-              });
-
-              navigateToLogin();
-            } catch (error) {
-              set({
-                isLoading: false,
-                error: error instanceof Error ? error.message : 'Password setup failed',
-              });
-            }
-          },
-
-          checkAuth: async () => {
-            // Don't check auth if already authenticated to prevent race conditions
-            const currentState = get();
-            if (currentState.isAuthenticated && currentState.user) {
-              return;
-            }
-
-            set({ isLoading: true });
-
-            try {
-              const sessionResponse = await apiClient.get<any>('auth/session');
-
-              if (sessionResponse?.user && sessionResponse?.session) {
-                set({
-                  user: sessionResponse.user as User,
-                  isAuthenticated: true,
-                  session: sessionResponse.session,
-                  isLoading: false,
-                  error: null,
-                });
-              } else {
-                set({
-                  user: null,
-                  isAuthenticated: false,
-                  session: null,
-                  isLoading: false,
-                  error: null,
-                });
-              }
-            } catch (_error) {
-              set({
-                user: null,
-                isAuthenticated: false,
-                session: null,
-                isLoading: false,
-                error: null,
-              });
-            }
-          },
-
-          clearError: () => {
-            set({ error: null });
-          },
-
-          hasPermission: (permission: Permission) => {
-            const { user } = get();
-            if (!user || !user.isActive) return false;
-
-            const userPermissions = ROLE_PERMISSIONS[user.role] || [];
-            return userPermissions.includes(permission as any);
-          },
-
-          isAdmin: () => {
-            const { user } = get();
-            return (user?.role === 'ADMIN' || user?.role === 'STAFF') && user.isActive;
-          },
-
-          checkIsAuthenticated: () => {
-            return get().isAuthenticated && !!get().user?.isActive;
-          },
-        }),
+        })
+      : // Without localStorage, nothing is saved between visits.
+        (set, get) => authState(set, get),
     { name: 'auth-store' }
   )
 );
@@ -443,10 +291,10 @@ setSessionRejectedHandler(rejection => {
 // session" signs out: a network problem must not end the session of someone watching a robot.
 export const revalidateSession = async () => {
   try {
-    const response = await apiClient.get<any>('auth/session');
+    const response = await apiClient.get<SessionResponse>('auth/session');
     if (response?.user && response?.session) {
       useAuthStore.setState({
-        user: response.user as User,
+        user: response.user,
         session: response.session,
         isAuthenticated: true,
       });

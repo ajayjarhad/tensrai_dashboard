@@ -5,6 +5,7 @@ import {
   findLinkedMapId,
   findMapByContent,
   linkMapToRobot,
+  type MapSyncHost,
   orgIdOfRobot,
   upsertMapFromResponse,
   upsertSingleMap,
@@ -32,7 +33,10 @@ const DEFAULT_MAP_SYNC_CONNECT_TIMEOUT_MS = 15_000;
 const MAP_SYNC_FAILED = 'Map sync failed. Try again.';
 const BRIDGE_CONNECTION_FAILED = "Connection to the robot's mapping bridge failed";
 
-const resolveMapSyncConnectTimeoutMs = (fastify: any) => {
+// Tests shorten these; Fastify itself never sets them.
+type MapSyncOptions = MapSyncHost & { mapSyncConnectTimeoutMs?: number; maxMapImageBytes?: number };
+
+const resolveMapSyncConnectTimeoutMs = (fastify: MapSyncOptions) => {
   const configured = Number(
     fastify?.mapSyncConnectTimeoutMs ?? process.env['MAP_SYNC_CONNECT_TIMEOUT_MS']
   );
@@ -87,7 +91,7 @@ const syncFailureMessage = (error: unknown) =>
 
 // Connects to the mapping bridge, requests map data, and upserts it.
 export const fetchMapViaMappingBridge = async (
-  fastify: any,
+  fastify: MapSyncOptions,
   robot: {
     id: string;
     orgId?: string;
@@ -96,7 +100,7 @@ export const fetchMapViaMappingBridge = async (
   }
 ) => {
   const logger = fastify.log;
-  const prisma = fastify.prisma as any;
+  const { prisma } = fastify;
   const robotId = robot.id;
   if (!robot.ipAddress || !robot.mappingBridgePort) {
     logger.warn({ robotId }, 'Cannot fetch map: mapping bridge not configured');
@@ -168,7 +172,7 @@ export const fetchMapViaMappingBridge = async (
     }, MAP_TRANSFER_ACTIVITY_TIMEOUT_MS);
   };
 
-  const sendEvent = (event: string, payload: any) => {
+  const sendEvent = (event: string, payload: unknown) => {
     if (socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ event, payload }));
   };
@@ -179,7 +183,7 @@ export const fetchMapViaMappingBridge = async (
     if (isDefault) await designateActiveAfterSync(prisma, robotId, mapId);
   };
 
-  const updateExistingMapFeatures = async (mapId: string, manifest: any) => {
+  const updateExistingMapFeatures = async (mapId: string, manifest: unknown) => {
     if (!hasFeaturePayload(manifest)) return false;
     const features = normalizeFeatures(getFeaturePayload(manifest));
     await prisma.map.update({ where: { id: mapId }, data: { features } });
@@ -292,7 +296,8 @@ export const fetchMapViaMappingBridge = async (
         mapId: existing.id,
         filename,
         mapName: manifest.name,
-        contentHash: existing.contentHash,
+        // Found by contentHash, so never null here.
+        ...(existing.contentHash ? { contentHash: existing.contentHash } : {}),
         bytesReceived: 0,
         totalBytes: Number(manifest.gzip_size ?? 0),
         percent: 100,

@@ -27,19 +27,32 @@ const assertNoOrgChange = (data: unknown, orgId: string) => {
   }
 };
 
-export const scopeArgs = (model: string, operation: string, args: any, orgId: string) => {
+// The fields scoping reads and writes. Prisma types args as one union across every model and
+// operation, and hands the result straight back to the query, so the args type passes through.
+type ScopableArgs = { data?: unknown; update?: unknown; where?: object; create?: object };
+
+export const scopeArgs = <Args>(
+  model: string,
+  operation: string,
+  args: Args,
+  orgId: string
+): Args => {
   if (GLOBAL_MODELS.has(model)) return args;
+  const fields = args as ScopableArgs | undefined;
 
   if (FILTERED_OPERATIONS.has(operation)) {
-    assertNoOrgChange(args?.data, orgId);
-    assertNoOrgChange(args?.update, orgId);
-    const scoped = { ...args, where: { ...args?.where, orgId } };
-    if (operation === 'upsert') scoped.create = { ...args.create, orgId };
-    return scoped;
+    assertNoOrgChange(fields?.data, orgId);
+    assertNoOrgChange(fields?.update, orgId);
+    const scoped: ScopableArgs = { ...fields, where: { ...fields?.where, orgId } };
+    if (operation === 'upsert') scoped.create = { ...fields?.create, orgId };
+    return scoped as Args;
   }
-  if (operation === 'create') return { ...args, data: { ...args.data, orgId } };
+  if (operation === 'create') {
+    return { ...fields, data: { ...(fields?.data as object), orgId } } as Args;
+  }
   if (operation === 'createMany') {
-    return { ...args, data: [args.data].flat().map((row: object) => ({ ...row, orgId })) };
+    const rows = [fields?.data].flat() as object[];
+    return { ...fields, data: rows.map(row => ({ ...row, orgId })) } as Args;
   }
   // A new Prisma operation must be handled above before tenant models can use it.
   throw new Error(`${operation} is not allowed on ${model} through a scoped client`);

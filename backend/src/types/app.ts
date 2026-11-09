@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
 import type { MissionRegistry } from '../services/missionRegistry.js';
 import type { ScopedPrisma } from '../services/orgScope.js';
+import type { RosRegistry } from '../services/rosRegistry.js';
 
 export interface AuditEvent {
   orgId?: string | null;
@@ -27,13 +28,20 @@ export interface AppSession {
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient;
+    rosRegistry?: RosRegistry;
     emergencyRegistry?: EmergencyRegistry;
     missionRegistry?: MissionRegistry;
+    // Set by the security plugin, which tests can leave out.
+    isAllowedOrigin?(origin?: string | null): boolean;
+    // Tests shorten how often open sockets re-check access.
+    socketAccessRecheckMs?: number;
     audit(event: AuditEvent): Promise<void>;
   }
 
   interface FastifyRequest {
     startTime?: number;
+    // The auth plugin's per-request cache of the session read.
+    sessionLookup: Promise<AppSession | null> | null;
     requestSpan: Span | null;
     // Set by requireActiveSession; db is a Prisma client confined to this organization.
     orgId: string | null;

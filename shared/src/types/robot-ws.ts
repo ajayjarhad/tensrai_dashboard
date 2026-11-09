@@ -1,3 +1,5 @@
+import { isRecord } from '../utils/isRecord.js';
+
 export const ROBOT_MISSION_COMMAND_EVENTS = [
   'SHOW_UP',
   'START_MISSION',
@@ -110,9 +112,6 @@ export type RobotMissionEvent =
 
 const includes = (items: readonly string[], value: unknown): value is string =>
   typeof value === 'string' && items.includes(value);
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === 'object' && !Array.isArray(value);
 
 const normalizeOpaqueId = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;

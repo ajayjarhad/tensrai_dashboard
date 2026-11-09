@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { createServer, type Socket } from 'node:net';
 import { gzipSync } from 'node:zlib';
+import type { PrismaClient } from '@prisma/client';
 import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { asUser, createTestApp, ORG_A as ORG } from '../testing/authStub.js';
@@ -332,7 +333,7 @@ test('reuses the active map sync status instead of opening a duplicate socket', 
     },
     robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
-  const fastify = { log: createLogger(), prisma };
+  const fastify = { log: createLogger(), prisma: prisma as unknown as PrismaClient };
   const robot = {
     id: 'robot-duplicate-sync',
     orgId: ORG,
@@ -394,7 +395,7 @@ test('never connects to a robot whose address is not approved', async () => {
   const prisma = { robotAddress: { findFirst: async () => null } };
 
   const status = await fetchMapViaMappingBridge(
-    { log: createLogger(), prisma },
+    { log: createLogger(), prisma: prisma as unknown as PrismaClient },
     {
       id: 'robot-unapproved',
       orgId: ORG,
@@ -419,7 +420,11 @@ test('fails a map sync that cannot complete the websocket handshake', async () =
     },
     robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
-  const fastify = { log: createLogger(), prisma, mapSyncConnectTimeoutMs: 50 };
+  const fastify = {
+    log: createLogger(),
+    prisma: prisma as unknown as PrismaClient,
+    mapSyncConnectTimeoutMs: 50,
+  };
 
   await fetchMapViaMappingBridge(fastify, {
     id: 'robot-stalled-connect',
@@ -499,12 +504,12 @@ test('links the primary and every additional map, activating the primary on firs
   // Both the primary and the additional map are stored and linked (no orphaning).
   expect(maps).toHaveLength(2);
   expect(robotMaps).toHaveLength(2);
-  const primaryRow = robotMaps.find((r: any) => r.mapId === primary.id);
-  const extraRow = robotMaps.find((r: any) => r.mapId !== primary.id);
+  const primaryRow = robotMaps.find((r: any) => r.mapId === primary?.id);
+  const extraRow = robotMaps.find((r: any) => r.mapId !== primary?.id);
   expect(primaryRow).toMatchObject({ robotId: 'robot-multi', isActive: true });
   expect(extraRow).toMatchObject({ robotId: 'robot-multi', isActive: false });
   expect(robotUpdates).toHaveLength(1);
-  expect(robotUpdates[0]).toMatchObject({ data: { mapId: primary.id } });
+  expect(robotUpdates[0]).toMatchObject({ data: { mapId: primary?.id } });
 });
 
 test('does not override a pinned active map on re-sync', async () => {
@@ -612,7 +617,7 @@ test('a robot cannot replace a good floor with data nobody can use', async () =>
   }
 
   expect(state.maps).toHaveLength(1);
-  expect(state.maps[0].id).toBe(stored.id);
+  expect(state.maps[0].id).toBe(stored?.id);
   expect(state.maps[0].contentHash).toBe(before.contentHash);
 });
 

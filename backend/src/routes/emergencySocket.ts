@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { websocketMetrics } from '../metrics/index.js';
 import {
   auditRobotCommand,
+  type ClientConnection,
   clientFrameText,
   clientSocketOf,
   closeWhenAccessEnds,
@@ -13,7 +14,7 @@ const requestIdOf = (frame: { requestId?: unknown } | null | undefined) =>
   typeof frame?.requestId === 'string' ? frame.requestId : undefined;
 
 export const createEmergencySocketHandler =
-  (fastify: FastifyInstance) => async (connection: any, request: FastifyRequest) => {
+  (fastify: FastifyInstance) => async (connection: ClientConnection, request: FastifyRequest) => {
     const { robotId } = request.params as { robotId: string };
     const emergencyRegistry = fastify.emergencyRegistry;
 
@@ -77,7 +78,13 @@ export const createEmergencySocketHandler =
         'message.source': 'dashboard_client',
       });
 
-      let parsed: any;
+      // The client's JSON, read with optional chaining.
+      let parsed: {
+        event?: unknown;
+        type?: unknown;
+        requestId?: unknown;
+        payload?: { status?: unknown } | null;
+      } | null;
       try {
         parsed = JSON.parse(payloadText);
       } catch {

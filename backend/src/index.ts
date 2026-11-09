@@ -42,20 +42,20 @@ const server = createFastify({
 });
 
 const NOISE_PATTERNS = [/ROSLib uses utf8 encoding by default/];
-const isNoise = (chunk: any) => {
+const isNoise = (chunk: unknown) => {
   const text =
     typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
   return text.length > 0 && NOISE_PATTERNS.some(p => p.test(text));
 };
 const stderrWrite = process.stderr.write.bind(process.stderr);
 const stdoutWrite = process.stdout.write.bind(process.stdout);
-process.stderr.write = ((chunk: any, ...rest: any[]) =>
-  isNoise(chunk) ? true : stderrWrite(chunk, ...rest)) as typeof process.stderr.write;
-process.stdout.write = ((chunk: any, ...rest: any[]) =>
-  isNoise(chunk) ? true : stdoutWrite(chunk, ...rest)) as typeof process.stdout.write;
+process.stderr.write = ((...args: Parameters<typeof stderrWrite>) =>
+  isNoise(args[0]) ? true : stderrWrite(...args)) as typeof process.stderr.write;
+process.stdout.write = ((...args: Parameters<typeof stdoutWrite>) =>
+  isNoise(args[0]) ? true : stdoutWrite(...args)) as typeof process.stdout.write;
 const wrapConsole =
-  (orig: (...args: any[]) => void) =>
-  (...args: any[]) => {
+  (orig: (...args: unknown[]) => void) =>
+  (...args: unknown[]) => {
     if (args.some(a => isNoise(a))) return;
     orig(...args);
   };

@@ -16,6 +16,7 @@ import {
 import { RosChannelSchema } from '../services/rosRobotManager.js';
 import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance, AppFastifyRequest, IdParams, SessionUser } from '../types/app.js';
+import { errorCode } from '../utils/errorCode.js';
 
 const RobotModeSchema = z.enum([
   'MISSION',
@@ -85,15 +86,25 @@ const robotMapInclude = {
 
 // Collapse a robot's RobotMap rows into a flat `maps` array and expose the active
 // map id via the legacy `mapId` field for backward compatibility.
-const shapeRobotWithMaps = (robot: any) => {
-  const maps = (robot.robotMaps ?? []).map((rm: any) => ({
+type RobotMapRow = {
+  mapId: string;
+  isActive: boolean;
+  isPinned: boolean;
+  syncedAt: Date;
+  map?: { name: string } | null;
+};
+
+const shapeRobotWithMaps = <R extends { robotMaps?: RobotMapRow[]; mapId?: string | null }>(
+  robot: R
+) => {
+  const maps = (robot.robotMaps ?? []).map(rm => ({
     id: rm.mapId,
     name: rm.map?.name ?? null,
     isActive: rm.isActive,
     isPinned: rm.isPinned,
     syncedAt: rm.syncedAt,
   }));
-  const active = maps.find((m: any) => m.isActive);
+  const active = maps.find(m => m.isActive);
   const { robotMaps: _robotMaps, ...rest } = robot;
   return { ...rest, maps, mapId: active?.id ?? robot.mapId ?? null };
 };
@@ -152,6 +163,8 @@ const recordStatusChange = (
 };
 
 const updateFailureReason = (code: unknown) => (code === 'P2025' ? 'not_found' : 'database_error');
+
+const asException = (error: unknown) => (error instanceof Error ? error : String(error));
 
 const respondWithSavedRobot = async (
   server: AppFastifyInstance,
@@ -301,6 +314,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
       ]);
 
       const robot = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
+      if (!robot) throw new Error(`Robot ${id} was deleted during the update`);
       return { success: true, data: shapeRobotWithMaps(robot).maps };
     }
   );
@@ -318,6 +332,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
     await prisma.robotMap.updateMany({ where: { robotId: id }, data: { isPinned: false } });
 
     const updated = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
+    if (!updated) throw new Error(`Robot ${id} was deleted during the update`);
     return { success: true, data: shapeRobotWithMaps(updated).maps };
   });
 
@@ -407,12 +422,14 @@ const robotRoutes = async (server: AppFastifyInstance) => {
             status: data.status || 'UNKNOWN',
             channels: channels ?? undefined,
             mapId,
-          } as any,
+            // The org-scoped client adds orgId, and zod leaves unset optional fields as undefined,
+            // which Prisma skips.
+          } as unknown as Prisma.RobotUncheckedCreateInput,
         });
         await activateInitialMap(prisma, robot.id, mapId);
         return await respondWithSavedRobot(server, request, robot);
-      } catch (error: any) {
-        if (error.code === 'P2002') {
+      } catch (error) {
+        if (errorCode(error) === 'P2002') {
           return reply
             .status(409)
             .send({ success: false, error: 'Robot with this name already exists' });
@@ -472,7 +489,8 @@ const robotRoutes = async (server: AppFastifyInstance) => {
             ...rest,
             channels: channels ?? undefined,
             lastSeen: new Date(),
-          } as any,
+            // zod leaves unset optional fields as undefined, which Prisma skips.
+          } as Prisma.RobotUncheckedUpdateInput,
         });
 
         recordStatusChange(span, id, currentRobot, robot);
@@ -497,7 +515,8 @@ const robotRoutes = async (server: AppFastifyInstance) => {
         span.end();
 
         return await respondWithSavedRobot(server, request, robot);
-      } catch (error: any) {
+      } catch (error) {
+        const code = errorCode(error);
         databaseMetrics.queryDuration.record(Date.now() - startTime, {
           'db.operation': 'update',
           'db.collection': 'robots',
@@ -506,22 +525,22 @@ const robotRoutes = async (server: AppFastifyInstance) => {
 
         span.setAttributes({
           'robot.update.success': false,
-          'robot.update.reason': updateFailureReason(error.code),
+          'robot.update.reason': updateFailureReason(code),
         });
 
-        if (error.code === 'P2025') {
+        if (code === 'P2025') {
           span.end();
           return reply.status(404).send({ success: false, error: 'Robot not found' });
         }
 
-        if (error.code === 'P2002') {
+        if (code === 'P2002') {
           span.end();
           return reply
             .status(409)
             .send({ success: false, error: 'Robot with this name already exists' });
         }
 
-        span.recordException(error);
+        span.recordException(asException(error));
         span.end();
         throw error;
       }
@@ -538,8 +557,8 @@ const robotRoutes = async (server: AppFastifyInstance) => {
       });
       reloadRobotConnections(server);
       return { success: true, message: 'Robot deleted successfully' };
-    } catch (error: any) {
-      if (error.code === 'P2025') {
+    } catch (error) {
+      if (errorCode(error) === 'P2025') {
         return reply.status(404).send({ success: false, error: 'Robot not found' });
       }
       throw error;

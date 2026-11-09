@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { trace } from '@opentelemetry/api';
+import type { Map as MapRecord } from '@prisma/client';
 import { databaseMetrics, mapMetrics } from '../metrics/index.js';
 import { requireActiveSession } from '../middleware/auth.js';
 import type { AppFastifyInstance, AppFastifyReply, IdParams } from '../types/app.js';
@@ -20,7 +21,17 @@ const sendBinaryAsset = (
   return reply.send(bytes);
 };
 
-const displayFieldsForMap = (map: any) => ({
+const displayFieldsForMap = (
+  map: Pick<
+    MapRecord,
+    | 'displayWebpSizeBytes'
+    | 'displayPngSizeBytes'
+    | 'previewWebp'
+    | 'previewPng'
+    | 'previewSizeBytes'
+    | 'displayGenerationError'
+  >
+) => ({
   webp: Boolean(map.displayWebpSizeBytes),
   png: Boolean(map.displayPngSizeBytes),
   previewWebp: Boolean(map.previewWebp),
@@ -194,12 +205,11 @@ const mapRoutes = async (server: AppFastifyInstance) => {
       async (request, reply) => {
         const { id, format } = request.params;
         const column = ASSET_COLUMNS[kind][format];
-        // Prisma can't type a select chosen at runtime.
-        const prisma = request.db as any;
-        const map = await prisma.map.findUnique({
+        // Prisma can't type a select chosen at runtime; the column is one of the four above.
+        const map = (await request.db.map.findUnique({
           where: { id },
           select: { [column]: true, contentHash: true },
-        });
+        })) as Pick<MapRecord, typeof column | 'contentHash'> | null;
 
         const asset = map?.[column];
         if (!asset) {

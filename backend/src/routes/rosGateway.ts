@@ -11,7 +11,7 @@ import { createRobotBridgeHandler } from './robotBridgeSocket.js';
 // port on this host, so a page has to be this dashboard (or an allowed origin) to drive a robot.
 const refuseForeignOrigin = async (request: FastifyRequest, reply: FastifyReply) => {
   const origin: string | undefined = request.headers.origin;
-  if (!origin || (request.server as any).isAllowedOrigin?.(origin)) return;
+  if (!origin || request.server.isAllowedOrigin?.(origin)) return;
   const host = request.headers['x-forwarded-host'] ?? request.headers.host;
   if (URL.canParse(origin) && new URL(origin).host === host) return;
   request.log.warn({ origin }, 'Refused a robot socket from another origin');
@@ -42,7 +42,7 @@ const rosGateway = async (fastify: FastifyInstance) => {
   fastify.get('/health/ros', { onRequest: requireActiveSession }, async request => {
     const robots = await request.db.robot.findMany({ select: { id: true } });
     const owned = new Set<string>(robots.map((robot: { id: string }) => robot.id));
-    const missions: { robotId: string }[] = (fastify as any).missionRegistry?.getStatuses?.() ?? [];
+    const missions = fastify.missionRegistry?.getStatuses() ?? [];
     return {
       robots: registry.getStatuses().filter((status: { id: string }) => owned.has(status.id)),
       missions: missions.filter(status => owned.has(status.robotId)),

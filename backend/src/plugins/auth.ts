@@ -179,7 +179,7 @@ const handlePrimaryPassword = async (
 
 // Direct authentication function that works with prisma
 export async function authenticateUserWithPrisma(
-  prisma: any,
+  prisma: PrismaClient,
   username: string,
   password: string
 ): Promise<AuthResult> {
@@ -227,7 +227,7 @@ const extractCredentials = (body: unknown): RouteResult<{ username: string; pass
   return ok({ username, password });
 };
 
-const ensurePrisma = (fastify: AppFastifyInstance): RouteResult<any> => {
+const ensurePrisma = (fastify: AppFastifyInstance): RouteResult<PrismaClient> => {
   if (!fastify.prisma) {
     return err(createRouteError(500, 'DATABASE_ERROR', 'Database not available'));
   }
@@ -245,7 +245,10 @@ type SessionUser = {
   mustResetPassword: boolean;
 };
 
-const fetchSessionUser = async (prisma: any, userId: string): Promise<RouteResult<SessionUser>> => {
+const fetchSessionUser = async (
+  prisma: PrismaClient,
+  userId: string
+): Promise<RouteResult<SessionUser>> => {
   const sessionUser = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -287,7 +290,7 @@ const createSessionForUser = (
     select: { id: true, token: true, expiresAt: true },
   });
 
-const fetchOrgName = async (prisma: any, orgId: string | null | undefined) => {
+const fetchOrgName = async (prisma: PrismaClient, orgId: string | null | undefined) => {
   if (!orgId) return null;
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
@@ -337,7 +340,7 @@ const finalizeAuthentication = async (
   fastify: AppFastifyInstance,
   request: AppFastifyRequest,
   reply: AppFastifyReply,
-  prisma: any,
+  prisma: PrismaClient,
   authResult: AuthSuccess
 ): Promise<
   RouteResult<{
@@ -440,7 +443,7 @@ const querySession = async (fastify: AppFastifyInstance, token: string) => {
 const authPlugin = async (fastify: AppFastifyInstance) => {
   // One lookup per request, however many guards and handlers ask for the session.
   fastify.decorateRequest('sessionLookup', null);
-  fastify.decorateRequest('getUserSession', function (this: any) {
+  fastify.decorateRequest('getUserSession', function (this: AppFastifyRequest) {
     this.sessionLookup ??= this.readFreshSession().catch((error: unknown) => {
       fastify.log.error(error, 'Failed to fetch session from database');
       return null;
@@ -689,7 +692,7 @@ const authPlugin = async (fastify: AppFastifyInstance) => {
         });
 
         // Create audit log entry (guard in case observability plugin is disabled)
-        if (typeof (fastify as any).audit === 'function') {
+        if (typeof fastify.audit === 'function') {
           await fastify.audit({
             orgId: finalResult.value.user.orgId,
             userId: finalResult.value.user.id,

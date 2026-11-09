@@ -12,10 +12,12 @@ const missionsOfMap = (
   if (!features?.missions?.length) return [];
   const locationTags = features.locationTags ?? [];
   return features.missions.map(mission => {
-    const steps = Array.isArray((mission as any).steps)
-      ? (mission as any).steps
-      : Array.isArray((mission as any).locationTagId)
-        ? (mission as any).locationTagId.map((id: any) => String(id))
+    // Maps stored before steps existed list a mission's tags as locationTagId.
+    const stored: { steps?: unknown; locationTagId?: unknown } = mission;
+    const steps = Array.isArray(stored.steps)
+      ? mission.steps
+      : Array.isArray(stored.locationTagId)
+        ? stored.locationTagId.map((id: unknown) => String(id))
         : [];
     return {
       id: String(mission.id),

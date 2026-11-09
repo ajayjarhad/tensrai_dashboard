@@ -1,5 +1,10 @@
-import type { MissionRun, MissionRunStatus, PrismaClient } from '@prisma/client';
-import { normalizeMissionId, normalizeRequestId, normalizeRequestType } from '@tensrai/shared';
+import type { MissionRun, MissionRunStatus, Prisma, PrismaClient } from '@prisma/client';
+import {
+  isRecord,
+  normalizeMissionId,
+  normalizeRequestId,
+  normalizeRequestType,
+} from '@tensrai/shared';
 
 const ACTIVE_STATUSES: MissionRunStatus[] = [
   'PREVIEW_PENDING',
@@ -9,6 +14,7 @@ const ACTIVE_STATUSES: MissionRunStatus[] = [
   'PAUSED',
 ];
 const PREVIEW_STATUSES: MissionRunStatus[] = ['PREVIEW_PENDING', 'SHOWING', 'START_PENDING'];
+const FAILED_STATUSES: MissionRunStatus[] = ['FAILED', 'UNKNOWN_TERMINATION'];
 const PREVIEW_EXPIRY_MS = 30_000;
 const PREVIEW_EXPIRED_EVENT = 'SYSTEM_PREVIEW_EXPIRED';
 const PREVIEW_EXPIRED_MESSAGE = 'Mission preview expired without start confirmation';
@@ -19,7 +25,7 @@ const timestampMs = (value: unknown): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
-const eventTimestamp = (event: string, payload: any) => {
+const eventTimestamp = (event: string, payload: MissionEventPayload) => {
   if (event === 'ROBOT_STATUS_UPDATE') return timestampMs(payload?.timestamp) ?? Date.now();
   if (event === 'MISSION_COMPLETED') return timestampMs(payload?.completionTime) ?? Date.now();
   if (event === 'WAYPOINT_ACK') return timestampMs(payload?.time) ?? Date.now();
@@ -46,8 +52,16 @@ type RuntimeMissionReport = {
   totalWaypoints?: unknown;
 };
 
+// The robot's JSON, read with optional chaining; a payload that is not an object reads as empty.
 type MissionEventPayload =
   | {
+      missionId?: unknown;
+      missionID?: unknown;
+      requestId?: unknown;
+      runId?: unknown;
+      timestamp?: unknown;
+      completionTime?: unknown;
+      time?: unknown;
       requestType?: unknown;
       status?: unknown;
       message?: unknown;
@@ -85,14 +99,14 @@ type MissionRunWrites = {
   update(args: { where: { id: string }; data: Record<string, unknown> }): Promise<MissionRun>;
 };
 
-const runStatusFilter = (status: string) => {
+const runStatusFilter = (status: string): Prisma.MissionRunWhereInput['status'] => {
   switch (status.toLowerCase()) {
     case 'active':
       return { in: ACTIVE_STATUSES };
     case 'completed':
       return 'COMPLETED';
     case 'failed':
-      return { in: ['FAILED', 'UNKNOWN_TERMINATION'] };
+      return { in: FAILED_STATUSES };
     case 'cancelled':
       return 'CANCELLED';
     default:
@@ -131,7 +145,7 @@ export class MissionRunStore {
     return this.prisma.missionRun as unknown as MissionRunWrites;
   }
 
-  private isStalePreviewRun(run: any, nowMs = Date.now()) {
+  private isStalePreviewRun(run: MissionRun | null, nowMs = Date.now()) {
     if (!run || !PREVIEW_STATUSES.includes(run.status)) return false;
     // updatedAt is the server's clock, like nowMs; lastEventAt can carry the robot's.
     const ts =
@@ -141,9 +155,8 @@ export class MissionRunStore {
     return nowMs - (ts as number) > PREVIEW_EXPIRY_MS;
   }
 
-  private async expirePreviewRun(run: any, now = new Date()) {
-    const prisma = this.prisma as any;
-    const expired = await prisma.missionRun.update({
+  private async expirePreviewRun(run: MissionRun, now = new Date()) {
+    const expired = await this.prisma.missionRun.update({
       where: { id: run.id },
       data: {
         status: 'CANCELLED',
@@ -165,7 +178,7 @@ export class MissionRunStore {
   }
 
   private async orgIdOf(robotId: string): Promise<string> {
-    const robot = await (this.prisma as any).robot.findUnique({
+    const robot = await this.prisma.robot.findUnique({
       where: { id: robotId },
       select: { orgId: true },
     });
@@ -174,8 +187,7 @@ export class MissionRunStore {
   }
 
   async hydrateActiveRuns() {
-    const prisma = this.prisma as any;
-    const runs = await prisma.missionRun.findMany({
+    const runs = await this.prisma.missionRun.findMany({
       where: { status: { in: ACTIVE_STATUSES } },
       orderBy: { updatedAt: 'desc' },
     });
@@ -193,16 +205,15 @@ export class MissionRunStore {
   }
 
   async listRuns(options: { orgId?: string; robotId?: string; status?: string; limit?: number }) {
-    const prisma = this.prisma as any;
-    const where: Record<string, unknown> = {};
-    if (options.orgId) where['orgId'] = options.orgId;
-    if (options.robotId) where['robotId'] = options.robotId;
+    const where: Prisma.MissionRunWhereInput = {};
+    if (options.orgId) where.orgId = options.orgId;
+    if (options.robotId) where.robotId = options.robotId;
     if (options.status) {
       const statusFilter = runStatusFilter(String(options.status));
-      if (statusFilter) where['status'] = statusFilter;
+      if (statusFilter) where.status = statusFilter;
     }
 
-    const runs = await prisma.missionRun.findMany({
+    const runs = await this.prisma.missionRun.findMany({
       where,
       orderBy: { updatedAt: 'desc' },
       take: Math.max(1, Math.min(options.limit ?? 50, 200)),
@@ -225,10 +236,9 @@ export class MissionRunStore {
   }
 
   async getCurrentRun(robotId: string) {
-    const prisma = this.prisma as any;
     const activeId = this.activeRunIdsByRobot.get(robotId);
     if (activeId) {
-      const byId = await prisma.missionRun.findUnique({ where: { id: activeId } });
+      const byId = await this.prisma.missionRun.findUnique({ where: { id: activeId } });
       if (byId) {
         if (this.isStalePreviewRun(byId)) {
           await this.expirePreviewRun(byId);
@@ -239,7 +249,7 @@ export class MissionRunStore {
       this.activeRunIdsByRobot.delete(robotId);
     }
 
-    const latest = await prisma.missionRun.findFirst({
+    const latest = await this.prisma.missionRun.findFirst({
       where: {
         robotId,
         status: { in: ACTIVE_STATUSES },
@@ -260,8 +270,7 @@ export class MissionRunStore {
   // EMERGENCY_AUTO_RESUME on every run, and matching a finished run would reopen it.
   private async findRunByRequest(robotId: string, requestId: string | undefined) {
     if (!requestId) return null;
-    const prisma = this.prisma as any;
-    return prisma.missionRun.findFirst({
+    return this.prisma.missionRun.findFirst({
       where: {
         robotId,
         requestIdLast: requestId,
@@ -273,8 +282,7 @@ export class MissionRunStore {
 
   private async findRunByRunId(robotId: string, runId: string | undefined) {
     if (!runId) return null;
-    const prisma = this.prisma as any;
-    return prisma.missionRun.findFirst({
+    return this.prisma.missionRun.findFirst({
       where: {
         robotId,
         runId,
@@ -283,8 +291,9 @@ export class MissionRunStore {
     });
   }
 
-  async recordCommandIntent(meta: RobotMissionMeta, event: string, payload: any) {
+  async recordCommandIntent(meta: RobotMissionMeta, event: string, raw: unknown) {
     if (event !== 'SHOW_UP' && event !== 'START_MISSION') return;
+    const payload = raw as MissionEventPayload;
 
     const missionId = normalizeMissionId(payload?.missionId ?? payload?.missionID);
     const requestId = normalizeRequestId(payload?.requestId);
@@ -380,7 +389,8 @@ export class MissionRunStore {
     return null;
   }
 
-  async applyEvent(meta: RobotMissionMeta, event: string, payload: any) {
+  async applyEvent(meta: RobotMissionMeta, event: string, raw: unknown) {
+    const payload = raw as MissionEventPayload;
     const current: MissionRun | null = await this.getCurrentRun(meta.robotId);
     const context: MissionEventContext = {
       meta,
@@ -782,18 +792,22 @@ export class MissionRunStore {
   // maps, and the robot loads that map to run it.
   private async missionSnapshot(robotId: string, missionId: string | undefined) {
     try {
-      const rows = await (this.prisma as any).robotMap.findMany({
+      const rows = await this.prisma.robotMap.findMany({
         where: { robotId },
         select: { mapId: true, isActive: true, map: { select: { features: true } } },
       });
-      const active = rows.find((row: any) => row.isActive);
+      const active = rows.find(row => row.isActive);
       for (const row of active ? [active, ...rows] : rows) {
-        const missions = row.map?.features?.missions;
+        const features = row.map?.features;
+        const missions = isRecord(features) ? features['missions'] : undefined;
+        // Entries are the robot's JSON, read with optional chaining.
         const match = Array.isArray(missions)
-          ? missions.find((mission: any) => String(mission?.id ?? mission?.missionId) === missionId)
+          ? (missions as Array<Record<string, unknown> | null>).find(
+              mission => String(mission?.['id'] ?? mission?.['missionId']) === missionId
+            )
           : undefined;
         if (match) {
-          const name = typeof match.name === 'string' ? match.name.trim() : '';
+          const name = typeof match['name'] === 'string' ? match['name'].trim() : '';
           return { mapId: row.mapId, missionNameSnapshot: name || null };
         }
       }

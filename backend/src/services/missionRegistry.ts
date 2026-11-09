@@ -1,6 +1,10 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
-import { isRobotMissionStatusEvent } from '@tensrai/shared';
+import {
+  extractMissionCommandId,
+  isRobotMissionStatusEvent,
+  withMissionCommandId,
+} from '@tensrai/shared';
 import WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
 import { LatestCall } from '../utils/latestCall.js';
@@ -93,44 +97,6 @@ const parseGatewayEvent = (payload: string): { event: string; payload?: unknown 
   } catch {
     return null;
   }
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === 'object' && !Array.isArray(value);
-
-const normalizeOpaqueId = (value: unknown): string | undefined => {
-  if (typeof value !== 'string') return undefined;
-  const next = value.trim();
-  return next.length > 0 ? next : undefined;
-};
-
-const extractMissionCommandId = (raw: unknown): string | undefined => {
-  if (!isRecord(raw)) return undefined;
-  const payload = isRecord(raw['payload']) ? raw['payload'] : undefined;
-  return (
-    normalizeOpaqueId(raw['commandId']) ??
-    normalizeOpaqueId(raw['requestId']) ??
-    normalizeOpaqueId(payload?.['requestId'])
-  );
-};
-
-const withMissionCommandId = (
-  payload: unknown,
-  commandId: string | undefined
-): Record<string, unknown> | undefined => {
-  if (!isRecord(payload)) {
-    return commandId ? { requestId: commandId } : undefined;
-  }
-
-  const requestId = normalizeOpaqueId(payload['requestId']) ?? commandId;
-  if (!requestId || requestId === payload['requestId']) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    requestId,
-  };
 };
 
 export class MissionRegistry extends EventEmitter {
@@ -329,7 +295,7 @@ export class MissionRegistry extends EventEmitter {
     }
   }
 
-  async recordCommandIntent(robotId: string, event: string, payload: any) {
+  async recordCommandIntent(robotId: string, event: string, payload: unknown) {
     const config = this.robotConfigs.get(robotId);
     if (!config) return;
     recordMissionCommandIntent(robotId, event, payload);

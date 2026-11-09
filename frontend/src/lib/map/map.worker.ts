@@ -15,7 +15,8 @@ export type MapWorkerResponse = {
   error?: string;
 };
 
-const ctx: Worker = self as any;
+// The DOM lib types self as a window; in this file it is the worker's own scope.
+const ctx = self as unknown as Worker;
 
 ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
   const { requestId, pgmBuffer, yaml } = e.data;

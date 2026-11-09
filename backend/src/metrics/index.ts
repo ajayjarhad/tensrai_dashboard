@@ -1,11 +1,11 @@
-import { metrics } from '@opentelemetry/api';
+import { type Attributes, type MetricOptions, metrics } from '@opentelemetry/api';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { parsePositiveMs } from '../utils/env.js';
 import { isMetricsEnabled, otlpUrl } from '../utils/telemetryConfig.js';
 
-type CounterLike = { add: (value: number, attributes?: Record<string, unknown>) => void };
-type HistogramLike = { record: (value: number, attributes?: Record<string, unknown>) => void };
+type CounterLike = { add: (value: number, attributes?: Attributes) => void };
+type HistogramLike = { record: (value: number, attributes?: Attributes) => void };
 
 const createNoopCounter = (): CounterLike => ({ add: () => {} });
 const createNoopHistogram = (): HistogramLike => ({ record: () => {} });
@@ -18,8 +18,8 @@ const createNoopMeter = () => ({
 const metricsEnabled = isMetricsEnabled();
 
 let meter: {
-  createCounter: (name: string, options?: Record<string, unknown>) => CounterLike;
-  createHistogram: (name: string, options?: Record<string, unknown>) => HistogramLike;
+  createCounter: (name: string, options?: MetricOptions) => CounterLike;
+  createHistogram: (name: string, options?: MetricOptions) => HistogramLike;
 } = createNoopMeter();
 
 if (metricsEnabled) {
@@ -35,7 +35,7 @@ if (metricsEnabled) {
     });
 
     metrics.setGlobalMeterProvider(meterProvider);
-    meter = metrics.getMeter('robot-dashboard-backend') as any;
+    meter = metrics.getMeter('robot-dashboard-backend');
   } catch (error) {
     // Fall back to no-op metrics if the SDK fails (prevents dev crash in Bun/OTEL combos).
     console.warn('Metrics disabled due to OpenTelemetry error:', error);
@@ -44,7 +44,7 @@ if (metricsEnabled) {
 }
 
 let metricsErrorLogged = false;
-const safeCounter = (name: string, options?: Record<string, unknown>): CounterLike => {
+const safeCounter = (name: string, options?: MetricOptions): CounterLike => {
   if (!metricsEnabled) return createNoopCounter();
   try {
     return meter.createCounter(name, options);
@@ -57,7 +57,7 @@ const safeCounter = (name: string, options?: Record<string, unknown>): CounterLi
   }
 };
 
-const safeHistogram = (name: string, options?: Record<string, unknown>): HistogramLike => {
+const safeHistogram = (name: string, options?: MetricOptions): HistogramLike => {
   if (!metricsEnabled) return createNoopHistogram();
   try {
     return meter.createHistogram(name, options);

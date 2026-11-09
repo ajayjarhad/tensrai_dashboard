@@ -35,7 +35,7 @@ const observabilityPlugin = async (fastify: AppFastifyInstance) => {
 
   fastify.addHook('onResponse', async (request: AppFastifyRequest, reply: AppFastifyReply) => {
     const duration = request.startTime ? Date.now() - request.startTime : 0;
-    const routePath = (request as any).routeOptions?.config?.url ?? request.url;
+    const routePath = request.routeOptions?.config?.url ?? request.url;
 
     // Record API metrics
     apiMetrics.requestDuration.record(duration, {

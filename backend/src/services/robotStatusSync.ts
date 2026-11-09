@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { isRecord } from '@tensrai/shared';
 import { z } from 'zod';
 
 const LAST_SEEN_STALE_MS = 90_000;
@@ -66,27 +67,34 @@ const resolveActiveMapFromStatus = async (
       include: { map: { select: { id: true, filename: true, features: true } } },
     });
     if (rows.length === 0) return;
-    if (rows.some((row: any) => row.isPinned)) return;
+    if (rows.some(row => row.isPinned)) return;
 
     let targetMapId: string | null = null;
 
     if (currentMap) {
       const candidates = stemToFilenames(currentMap);
-      const match = rows.find((row: any) => candidates.includes(row.map?.filename));
+      const match = rows.find(row => candidates.includes(row.map?.filename));
       targetMapId = match?.mapId ?? null;
     }
 
     if (!targetMapId && currentMissionId != null && currentMissionId !== '') {
       const missionKey = String(currentMissionId);
-      const match = rows.find((row: any) => {
-        const missions = row.map?.features?.missions;
-        return Array.isArray(missions) && missions.some((m: any) => String(m?.id) === missionKey);
+      const match = rows.find(row => {
+        const features = row.map?.features;
+        const missions = isRecord(features) ? features['missions'] : undefined;
+        // Entries are the robot's JSON, read with optional chaining.
+        return (
+          Array.isArray(missions) &&
+          (missions as Array<Record<string, unknown> | null>).some(
+            m => String(m?.['id']) === missionKey
+          )
+        );
       });
       targetMapId = match?.mapId ?? null;
     }
 
     if (!targetMapId) return;
-    const active = rows.find((row: any) => row.isActive);
+    const active = rows.find(row => row.isActive);
     if (active?.mapId === targetMapId) return;
 
     await prisma.$transaction([

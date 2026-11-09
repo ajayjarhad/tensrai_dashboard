@@ -1,27 +1,16 @@
-/**
- * Retrieves an environment variable safely.
- *
- * @param key The environment variable key.
- * @param fallback A fallback value if the variable is missing.
- * @returns The environment variable value or the fallback.
- * @throws Error if the variable is missing and no fallback is provided.
- */
+// Vite adds env to import.meta at build time; Node has no such property.
+type ViteImportMeta = ImportMeta & { env?: Record<string, string | undefined> };
+
 export const getEnv = (key: string, fallback?: string): string => {
   let value: string | undefined;
 
-  // Node.js environment
   if (typeof process !== 'undefined' && process.env) {
     value = process.env[key];
   }
-
-  // Browser/Vite environment
-  // Note: Vite replaces import.meta.env.KEY at build time.
-  // Dynamic access like import.meta.env[key] works in development but might not in production
-  // if not explicitly configured. However, for a shared utility, we can try accessing it
-  // if the environment supports it.
-  // We use a safe check for import.meta
-  else if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
-    value = (import.meta as any).env[key] || (import.meta as any).env[`VITE_${key}`];
+  // Vite replaces the literal import.meta.env, so it must stay written out in full here.
+  else if (typeof import.meta !== 'undefined' && (import.meta as ViteImportMeta).env) {
+    const viteEnv = (import.meta as ViteImportMeta).env;
+    value = viteEnv?.[key] || viteEnv?.[`VITE_${key}`];
   }
 
   if (value !== undefined && value !== '') {

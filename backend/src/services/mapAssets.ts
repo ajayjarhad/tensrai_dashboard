@@ -1,7 +1,8 @@
+import type { NonSharedBuffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { PNG } from 'pngjs';
 
-type MapMetadata = Record<string, unknown>;
+export type MapMetadata = Record<string, unknown>;
 
 export type ParsedPgmImage = {
   width: number;
@@ -15,14 +16,14 @@ export type GeneratedMapAssets = {
   pixelWidth?: number;
   pixelHeight?: number;
   imageSizeBytes: number;
-  displayWebp?: Buffer;
+  displayWebp?: NonSharedBuffer;
   displayWebpSizeBytes?: number;
   displayWebpGeneratedAt?: Date;
-  displayPng?: Buffer;
+  displayPng?: NonSharedBuffer;
   displayPngSizeBytes?: number;
   displayPngGeneratedAt?: Date;
-  previewWebp?: Buffer;
-  previewPng?: Buffer;
+  previewWebp?: NonSharedBuffer;
+  previewPng?: NonSharedBuffer;
   previewSizeBytes?: number;
   displayGenerationError?: string;
 };
@@ -187,17 +188,19 @@ const downsampleRgba = (rgba: Uint8ClampedArray, width: number, height: number) 
 const encodePng = (rgba: Uint8ClampedArray, width: number, height: number) => {
   const png = new PNG({ width, height });
   png.data = Buffer.from(rgba);
-  return PNG.sync.write(png);
+  // pngjs writes into an ordinary Buffer; its type only leaves room for shared memory.
+  return PNG.sync.write(png) as NonSharedBuffer;
 };
 
 const encodeWebp = async (rgba: Uint8ClampedArray, width: number, height: number) => {
   const webp = await import('@jsquash/webp');
   const encoded = await webp.encode(
+    // The encoder reads only these fields, and Node has no ImageData to construct.
     {
       data: rgba,
       width,
       height,
-    } as any,
+    } as Parameters<typeof webp.encode>[0],
     { lossless: 1, quality: 100, exact: 1, near_lossless: 100 }
   );
   return Buffer.from(encoded);

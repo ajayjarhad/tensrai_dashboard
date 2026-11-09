@@ -12,4 +12,5 @@ export {
 } from './types/robot-ws.js';
 export * from './types/user.js';
 export * from './utils/env.js';
+export * from './utils/isRecord.js';
 export * from './utils/missionReducer.js';

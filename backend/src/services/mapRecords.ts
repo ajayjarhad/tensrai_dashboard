@@ -1,13 +1,19 @@
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { generateMapAssets } from './mapAssets.js';
 import {
+  asMapFiles,
   extractMapContent,
   getMapDetails,
   looksLikeFilename,
+  type MapSyncLogger,
   parseMapMetadata,
   UNSAFE_MAP_FILENAME,
 } from './mapSyncPayload.js';
 
-export const orgIdOfRobot = async (prisma: any, robotId: string): Promise<string> => {
+// What map syncing needs from Fastify; tests pass a plain object.
+export type MapSyncHost = { log: MapSyncLogger; prisma: PrismaClient };
+
+export const orgIdOfRobot = async (prisma: PrismaClient, robotId: string): Promise<string> => {
   const robot = await prisma.robot.findUnique({ where: { id: robotId }, select: { orgId: true } });
   if (!robot?.orgId) throw new Error(`Robot ${robotId} has no organization`);
   return robot.orgId;
@@ -17,14 +23,19 @@ export const orgIdOfRobot = async (prisma: any, robotId: string): Promise<string
 // filename stays in the identity because robotStatusSync finds a robot's map by that filename.
 // ponytail: features live on the record, so robots sharing one share missions and the last sync
 // wins. Fork on differing features if robots on one floor ever need different missions.
-export const findMapByContent = (prisma: any, orgId: string, filename: string, hashes: string[]) =>
+export const findMapByContent = (
+  prisma: PrismaClient,
+  orgId: string,
+  filename: string,
+  hashes: string[]
+) =>
   prisma.map.findFirst({
     where: { orgId, filename, contentHash: { in: hashes } },
     select: { id: true, contentHash: true },
   });
 
 // A robot holds one map per filename, and syncing that filename again replaces it.
-export const findLinkedMapId = async (prisma: any, robotId: string, filename: string) => {
+export const findLinkedMapId = async (prisma: PrismaClient, robotId: string, filename: string) => {
   const link = await prisma.robotMap.findFirst({
     where: { robotId, map: { filename } },
     select: { mapId: true },
@@ -32,14 +43,14 @@ export const findLinkedMapId = async (prisma: any, robotId: string, filename: st
   return link?.mapId ?? null;
 };
 
-const isLinkedToAnotherRobot = async (prisma: any, mapId: string, robotId: string) =>
+const isLinkedToAnotherRobot = async (prisma: PrismaClient, mapId: string, robotId: string) =>
   (await prisma.robotMap.count({ where: { mapId, robotId: { not: robotId } } })) > 0;
 
 // Link a map to a robot via the RobotMap join, refreshing syncedAt. A map replacing another takes
 // over its link, keeping the active and pinned state. Otherwise does not touch isActive — active
 // designation is centralized in designateActiveAfterSync.
 export const linkMapToRobot = async (
-  prisma: any,
+  prisma: PrismaClient,
   robotId: string,
   mapId: string,
   replacedMapId: string | null
@@ -74,13 +85,13 @@ export const linkMapToRobot = async (
 // respect a pinned row, keep any existing active map, and only fall back to the
 // primary when the robot has no active assignment yet (first sync / active gone).
 export const designateActiveAfterSync = async (
-  prisma: any,
+  prisma: PrismaClient,
   robotId: string,
   primaryMapId: string
 ) => {
   const rows = await prisma.robotMap.findMany({ where: { robotId } });
-  if (rows.some((row: any) => row.isPinned)) return;
-  if (rows.some((row: any) => row.isActive)) return;
+  if (rows.some(row => row.isPinned)) return;
+  if (rows.some(row => row.isActive)) return;
 
   await prisma.$transaction([
     prisma.robotMap.updateMany({ where: { robotId }, data: { isActive: false } }),
@@ -92,15 +103,20 @@ export const designateActiveAfterSync = async (
   ]);
 };
 
-export const upsertSingleMap = async (fastify: any, robotId: string, files: any) => {
-  const logger = fastify.log;
-  const prisma = fastify.prisma as any;
+export const upsertSingleMap = async (host: MapSyncHost, robotId: string, input: unknown) => {
+  const logger = host.log;
+  const { prisma } = host;
+  const files = asMapFiles(input);
 
   if (!files?.map_yaml || !files?.map_pgm) {
-    logger.warn({ robotId, files }, 'MAP_DATA_RESPONSE missing map files');
+    logger.warn({ robotId, files: input }, 'MAP_DATA_RESPONSE missing map files');
     return null;
   }
-  if (looksLikeFilename(files.map_yaml, '.yaml') && UNSAFE_MAP_FILENAME.test(files.map_yaml)) {
+  if (
+    typeof files.map_yaml === 'string' &&
+    looksLikeFilename(files.map_yaml, '.yaml') &&
+    UNSAFE_MAP_FILENAME.test(files.map_yaml)
+  ) {
     logger.warn({ robotId, filename: files.map_yaml }, 'Refusing map with an unsafe filename');
     return null;
   }
@@ -156,7 +172,14 @@ export const upsertSingleMap = async (fastify: any, robotId: string, files: any)
         : null;
     const targetMapId = sameContent?.id ?? ownMapId;
 
-    const content = { name, image: pgmBytes, metadata, features, ...generatedAssets };
+    const content = {
+      name,
+      image: pgmBytes,
+      // Parsed from the robot's map.yaml, so it is plain data.
+      metadata: metadata as Prisma.InputJsonObject,
+      features,
+      ...generatedAssets,
+    };
     // ponytail: robots first syncing one new map in the same instant race on the unique index. The
     // loser's sync fails visibly and its next sync joins the winner's record.
     const map = targetMapId
@@ -174,22 +197,22 @@ export const upsertSingleMap = async (fastify: any, robotId: string, files: any)
 };
 
 // files: { map_yaml, map_pgm, map_yaml_content?, map_pgm_content?, metadata_json?, additional_maps? }
-export const upsertMapFromResponse = async (fastify: any, robotId: string, files: any) => {
-  if (!files) return;
-  const prisma = fastify.prisma as any;
+export const upsertMapFromResponse = async (host: MapSyncHost, robotId: string, input: unknown) => {
+  if (!input) return;
 
   // Link the primary map and every additional map to the robot via RobotMap.
-  const primaryMap = await upsertSingleMap(fastify, robotId, files);
+  const primaryMap = await upsertSingleMap(host, robotId, input);
 
-  if (Array.isArray(files.additional_maps)) {
-    for (const extra of files.additional_maps) {
-      await upsertSingleMap(fastify, robotId, extra);
+  const additionalMaps = asMapFiles(input)?.additional_maps;
+  if (Array.isArray(additionalMaps)) {
+    for (const extra of additionalMaps) {
+      await upsertSingleMap(host, robotId, extra);
     }
   }
 
   // Designate the primary as active without clobbering a pinned / existing choice.
   if (primaryMap) {
-    await designateActiveAfterSync(prisma, robotId, primaryMap.id);
+    await designateActiveAfterSync(host.prisma, robotId, primaryMap.id);
   }
 
   return primaryMap;

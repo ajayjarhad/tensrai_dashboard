@@ -44,7 +44,7 @@ export function UserManagement() {
     try {
       await updateUserMutation.mutateAsync({
         userId,
-        userData: { isActive } as any, // Type assertion due to mismatch between UpdateUserRequest and Partial<User>
+        userData: { isActive },
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to update user';

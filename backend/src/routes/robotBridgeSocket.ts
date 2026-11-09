@@ -5,6 +5,7 @@ import { websocketMetrics } from '../metrics/index.js';
 import type { RosRegistry } from '../services/rosRegistry.js';
 import type { RosRobotManager } from '../services/rosRobotManager.js';
 import {
+  type ClientConnection,
   clientSocketOf,
   closeIfBacklogged,
   closeWhenAccessEnds,
@@ -104,7 +105,7 @@ export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: Ros
     );
   };
 
-  return (connection: any, request: FastifyRequest) => {
+  return (connection: ClientConnection, request: FastifyRequest) => {
     const { robotId } = request.params as { robotId: string };
     const tracer = trace.getTracer('ros-gateway');
     const span = tracer.startSpan('websocket.robot.connection', {

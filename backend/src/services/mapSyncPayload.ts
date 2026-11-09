@@ -1,5 +1,29 @@
+import type { NonSharedBuffer } from 'node:buffer';
 import { gunzipSync } from 'node:zlib';
+import type { Prisma } from '@prisma/client';
+import { isRecord } from '@tensrai/shared';
+import type { FastifyBaseLogger } from 'fastify';
 import yaml from 'js-yaml';
+import type { MapMetadata } from './mapAssets.js';
+
+export type MapSyncLogger = Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
+
+// One map as the robot sends it. Every field is the robot's, so each is checked where it is read.
+export type MapFiles = {
+  name?: unknown;
+  map_yaml?: unknown;
+  map_pgm?: unknown;
+  map_yaml_content?: unknown;
+  map_pgm_content?: unknown;
+  metadata_json?: unknown;
+  additional_maps?: unknown;
+};
+
+export const asMapFiles = (value: unknown): MapFiles | undefined =>
+  isRecord(value) ? value : undefined;
+
+// The robot's JSON, read field by field with optional chaining like the untyped reads before it.
+type RawRecord = Record<string, unknown> | null | undefined;
 
 export const UNREADABLE_MAP_FILES = 'Robot map files could not be read';
 
@@ -20,8 +44,9 @@ const isBase64 = (value: string) => {
   return normalized.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
 };
 
-const decodeToBuffer = (raw: unknown): Buffer | null => {
-  if (raw instanceof Buffer) return raw;
+const decodeToBuffer = (raw: unknown): NonSharedBuffer | null => {
+  // A Buffer here is gunzip's output or a socket frame, never shared memory.
+  if (raw instanceof Buffer) return raw as NonSharedBuffer;
   if (typeof raw !== 'string') return null;
   try {
     if (isBase64(raw)) return Buffer.from(raw, 'base64');
@@ -31,7 +56,7 @@ const decodeToBuffer = (raw: unknown): Buffer | null => {
   }
 };
 
-export const extractMapContent = (files: any, logger: any, robotId: string) => {
+export const extractMapContent = (files: MapFiles, logger: MapSyncLogger, robotId: string) => {
   const mapYamlRaw = files.map_yaml_content ?? files.map_yaml;
   const mapPgmRaw = files.map_pgm_content ?? files.map_pgm;
 
@@ -52,7 +77,7 @@ export const extractMapContent = (files: any, logger: any, robotId: string) => {
   );
 
   let yamlText: string | undefined;
-  let pgmBytes: Buffer | null = null;
+  let pgmBytes: NonSharedBuffer | null = null;
 
   const hasYamlContent =
     typeof mapYamlRaw === 'string' &&
@@ -77,10 +102,15 @@ export const extractMapContent = (files: any, logger: any, robotId: string) => {
   return { yamlText, pgmBytes, hasYamlContent, hasPgmContent };
 };
 
-export const parseMapMetadata = (yamlText: string, logger: any, robotId: string) => {
+export const parseMapMetadata = (
+  yamlText: string,
+  logger: MapSyncLogger,
+  robotId: string
+): MapMetadata | null => {
   try {
     const metadata = yaml.load(yamlText);
-    if (metadata && typeof metadata === 'object') return metadata as any;
+    // Any object passes, as before; its fields are read by name and checked where used.
+    if (metadata && typeof metadata === 'object') return metadata as MapMetadata;
     logger.error({ robotId }, 'Map YAML is not a mapping');
   } catch (err) {
     logger.error({ robotId, err }, 'Failed to parse map YAML');
@@ -88,27 +118,34 @@ export const parseMapMetadata = (yamlText: string, logger: any, robotId: string)
   return null;
 };
 
-export const normalizeFeatures = (features: any) => {
-  const input = features && typeof features === 'object' ? features : {};
-  const rawLocationTags = Array.isArray(input.locationTags) ? input.locationTags : [];
-  const rawMissions = Array.isArray(input.missions) ? input.missions : [];
+export const normalizeFeatures = (features: unknown): Prisma.InputJsonObject => {
+  const input = (features && typeof features === 'object' ? features : {}) as Record<
+    string,
+    unknown
+  >;
+  const rawLocationTags: RawRecord[] = Array.isArray(input['locationTags'])
+    ? input['locationTags']
+    : [];
+  const rawMissions: RawRecord[] = Array.isArray(input['missions']) ? input['missions'] : [];
 
-  const locationTags = rawLocationTags.map((tag: any, index: number) => {
-    const id = tag?.id ?? tag?.tagId ?? index + 1;
+  const locationTags = rawLocationTags.map((tag, index) => {
+    const id = tag?.['id'] ?? tag?.['tagId'] ?? index + 1;
     return {
       ...tag,
       id: String(id),
     };
   });
 
-  const missions = rawMissions.map((mission: any, index: number) => {
-    const id = mission?.id ?? mission?.missionId ?? mission?.missionID ?? index + 1;
-    const name = mission?.name ?? `Mission ${id}`;
-    const locationTagId = Array.isArray(mission?.locationTagId)
-      ? mission.locationTagId.map((value: any) => String(value))
+  const missions = rawMissions.map((mission, index) => {
+    const id = mission?.['id'] ?? mission?.['missionId'] ?? mission?.['missionID'] ?? index + 1;
+    const name = mission?.['name'] ?? `Mission ${id}`;
+    const rawLocationTagId = mission?.['locationTagId'];
+    const locationTagId = Array.isArray(rawLocationTagId)
+      ? rawLocationTagId.map((value: unknown) => String(value))
       : undefined;
-    const steps = Array.isArray(mission?.steps)
-      ? mission.steps.map((value: any) => String(value))
+    const rawSteps = mission?.['steps'];
+    const steps = Array.isArray(rawSteps)
+      ? rawSteps.map((value: unknown) => String(value))
       : (locationTagId ?? []);
 
     return {
@@ -120,11 +157,12 @@ export const normalizeFeatures = (features: any) => {
     };
   });
 
+  // Stored as the map's features; it all came from the robot's JSON message.
   return {
     ...input,
     locationTags,
     missions,
-  };
+  } as Prisma.InputJsonObject;
 };
 
 export const gunzipMapImage = (gzipBytes: Buffer, maxOutputLength: number) => {
@@ -135,13 +173,18 @@ export const gunzipMapImage = (gzipBytes: Buffer, maxOutputLength: number) => {
   }
 };
 
-export const getMapDetails = (files: any) => {
+export const getMapDetails = (files: MapFiles) => {
   const features = normalizeFeatures(files.metadata_json ?? {});
-  const filename = looksLikeFilename(files.map_yaml, '.yaml') ? files.map_yaml : 'map.yaml';
+  const filename =
+    typeof files.map_yaml === 'string' && looksLikeFilename(files.map_yaml, '.yaml')
+      ? files.map_yaml
+      : 'map.yaml';
   const name = filename.replace(/\.yaml$/i, '') || filename;
   return { features, filename, name };
 };
 
-export const hasFeaturePayload = (value: any) => value && Object.hasOwn(value, 'metadata_json');
+export const hasFeaturePayload = (value: unknown) =>
+  isRecord(value) && Object.hasOwn(value, 'metadata_json');
 
-export const getFeaturePayload = (value: any) => value?.metadata_json ?? {};
+export const getFeaturePayload = (value: unknown) =>
+  (isRecord(value) ? value['metadata_json'] : undefined) ?? {};

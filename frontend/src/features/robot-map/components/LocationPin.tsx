@@ -40,7 +40,7 @@ export const LocationPin = forwardRef<Konva.Group, LocationPinProps>(
 
     return (
       <Group
-        ref={ref as any}
+        ref={ref}
         x={x}
         y={y}
         rotation={rotation}

@@ -1,5 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 import type { PrismaClient } from '@prisma/client';
+import type { FastifyInstance } from 'fastify';
 
 // Robot bridges have no auth, so whatever the backend connects to obeys it. An organization may
 // point a robot at any address, but the backend only connects once that address is APPROVED for
@@ -124,7 +125,7 @@ export const isAddressApproved = async (prisma: PrismaClient, robot: Partial<Rob
   return Boolean(address);
 };
 
-export const reloadRobotConnections = (server: any) => {
+export const reloadRobotConnections = (server: FastifyInstance) => {
   server.rosRegistry?.reloadFromDb?.().catch(() => {});
   server.emergencyRegistry?.reloadFromDb?.().catch(() => {});
   server.missionRegistry?.reloadFromDb?.().catch(() => {});

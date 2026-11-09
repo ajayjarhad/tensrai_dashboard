@@ -136,7 +136,7 @@ type ApiRequestOptions = Omit<Options, 'prefixUrl'>;
 
 const withOptions = (options?: ApiRequestOptions): Options | undefined => options;
 
-const withJsonBody = (data?: any, options?: ApiRequestOptions): Options | undefined => {
+const withJsonBody = (data?: unknown, options?: ApiRequestOptions): Options | undefined => {
   if (data === undefined) {
     return withOptions(options);
   }
@@ -147,13 +147,13 @@ export const apiClient = {
   get: <T>(url: string, options?: ApiRequestOptions) =>
     api.get<T>(url, withOptions(options)).json<T>(),
 
-  post: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
+  post: <T>(url: string, data?: unknown, options?: ApiRequestOptions) =>
     api.post<T>(url, withJsonBody(data, options)).json<T>(),
 
-  put: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
+  put: <T>(url: string, data?: unknown, options?: ApiRequestOptions) =>
     api.put<T>(url, withJsonBody(data, options)).json<T>(),
 
-  patch: <T>(url: string, data?: any, options?: ApiRequestOptions) =>
+  patch: <T>(url: string, data?: unknown, options?: ApiRequestOptions) =>
     api.patch<T>(url, withJsonBody(data, options)).json<T>(),
 
   delete: <T>(url: string, options?: ApiRequestOptions) =>
