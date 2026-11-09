@@ -2,7 +2,7 @@ import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import type React from 'react';
 import { useEffect } from 'react';
-import { Stage } from 'react-konva';
+import { Stage } from '@/lib/map/konva';
 import type { Robot } from '@/types/robot';
 import type { TempLocation } from '../../hooks/useMapLocations';
 import { MapLayers } from '../Map/MapLayers';

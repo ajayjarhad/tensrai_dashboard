@@ -1,4 +1,4 @@
-import { Label, Tag, Text } from 'react-konva';
+import { Label, Tag, Text } from '@/lib/map/konva';
 import type { MapTransforms } from '@/lib/map/mapTransforms';
 import { worldToMapPixel } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';

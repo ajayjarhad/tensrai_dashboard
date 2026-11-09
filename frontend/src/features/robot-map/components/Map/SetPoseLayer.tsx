@@ -1,7 +1,7 @@
 import type { PixelPoint } from '@tensrai/shared';
 import type Konva from 'konva';
 import { useCallback, useMemo } from 'react';
-import { Circle, Group, Layer, Line, Rect, Text } from 'react-konva';
+import { Circle, Group, Layer, Line, Rect, Text } from '@/lib/map/konva';
 import type { MapTransforms } from '@/lib/map/mapTransforms';
 import { mapPixelToWorld, worldAngle } from '@/lib/map/mapTransforms';
 import { RobotMode } from '@/types/robot';

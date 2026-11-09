@@ -1,8 +1,8 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import { type RefObject, useCallback, useEffect, useMemo, useState } from 'react';
-import { Group, Image as KonvaImage, Layer, Rect } from 'react-konva';
 import { toast } from 'sonner';
+import { Group, Image as KonvaImage, Layer, Rect } from '@/lib/map/konva';
 import { clampPixelToBounds, createMapTransforms } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
 import type { TempLocation } from '../../hooks/useMapLocations';
