@@ -59,6 +59,7 @@ for (let i = 0; i < 10; i++) {
     CONTAINER,
   ]);
   const percent = Number.parseFloat(stats.stdout.toString());
-  if (Number.isFinite(percent)) sample('backend:telemetry fan-out', 'cpu_ratio', percent / 100);
+  // CPU milliseconds per wall-clock second (100 % of one core = 1000), so lower is better.
+  if (Number.isFinite(percent)) sample('backend:telemetry fan-out', 'cpu_busy_ms', percent * 10);
 }
 for (const viewer of viewers) viewer.close();
