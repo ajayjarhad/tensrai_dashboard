@@ -30,12 +30,19 @@ const buildPathPoints = (request: TelemetryOverlayRequest) => {
   return toFloat32Array(values, writeIndex);
 };
 
-const buildLaserPoints = (request: TelemetryOverlayRequest) => {
+const laserInputs = (request: TelemetryOverlayRequest) => {
   const { laser, transforms } = request;
   // Use the pose snapshotted at scan arrival; fall back to current pose if unset.
   const pose = request.laserPose ?? request.robotPose;
-  if (!laser || !transforms || !pose) return new Float32Array(0);
-  if (!Array.isArray(laser.ranges) || laser.ranges.length === 0) return new Float32Array(0);
+  if (!laser || !transforms || !pose) return null;
+  if (!Array.isArray(laser.ranges) || laser.ranges.length === 0) return null;
+  return { laser, transforms, pose };
+};
+
+const buildLaserPoints = (request: TelemetryOverlayRequest) => {
+  const inputs = laserInputs(request);
+  if (!inputs) return new Float32Array(0);
+  const { laser, transforms, pose } = inputs;
 
   const maxLaserPoints = request.maxLaserPoints ?? DEFAULT_MAX_LASER_POINTS;
   const values = new Array<number>(maxLaserPoints * 2);

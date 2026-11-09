@@ -102,41 +102,57 @@ const applyAmcl = (next: RobotTelemetry, amcl: OdometryMessage, now: number) => 
   }
 };
 
+const applyOdomData = (next: RobotTelemetry, data: unknown, now: number) => {
+  try {
+    // Always drive pose from odom to avoid AMCL snap/auto-orient.
+    next.odomPose = odomToPose(data as OdometryMessage);
+    next.lastOdomAt = now;
+  } catch {
+    // ignore bad odom
+  }
+};
+
+const applyTfPoseData = (next: RobotTelemetry, data: unknown, now: number) => {
+  const pose = data as { x?: unknown; y?: unknown; theta?: unknown; yaw?: number } | null;
+  if (typeof pose?.x === 'number' && typeof pose?.y === 'number') {
+    next.tfPose = {
+      x: pose.x,
+      y: pose.y,
+      theta: typeof pose.theta === 'number' ? pose.theta : (pose.yaw ?? 0),
+    };
+    next.lastTfAt = now;
+  }
+};
+
+const applyAmclData = (next: RobotTelemetry, data: unknown, now: number) => {
+  try {
+    const amcl = data as OdometryMessage | null;
+    if (amcl?.pose?.pose) applyAmcl(next, amcl, now);
+  } catch {
+    // ignore bad amcl
+  }
+};
+
+const applyLaserData = (next: RobotTelemetry, data: unknown, now: number) => {
+  const laser = data as LaserScan;
+  next.laser = laser;
+  next.lastLaserAt = now;
+  if (isFinitePose(laser?.scanPose)) {
+    next.laserPose = { ...laser.scanPose };
+  } else {
+    delete next.laserPose;
+  }
+};
+
 const applyChannelData = (next: RobotTelemetry, channel: string, data: unknown, now: number) => {
   if (channel === 'odom') {
-    try {
-      // Always drive pose from odom to avoid AMCL snap/auto-orient.
-      next.odomPose = odomToPose(data as OdometryMessage);
-      next.lastOdomAt = now;
-    } catch {
-      // ignore bad odom
-    }
+    applyOdomData(next, data, now);
   } else if (channel === 'pose') {
-    const pose = data as { x?: unknown; y?: unknown; theta?: unknown; yaw?: number } | null;
-    if (typeof pose?.x === 'number' && typeof pose?.y === 'number') {
-      next.tfPose = {
-        x: pose.x,
-        y: pose.y,
-        theta: typeof pose.theta === 'number' ? pose.theta : (pose.yaw ?? 0),
-      };
-      next.lastTfAt = now;
-    }
+    applyTfPoseData(next, data, now);
   } else if (channel === 'amcl') {
-    try {
-      const amcl = data as OdometryMessage | null;
-      if (amcl?.pose?.pose) applyAmcl(next, amcl, now);
-    } catch {
-      // ignore bad amcl
-    }
+    applyAmclData(next, data, now);
   } else if (channel === 'laser') {
-    const laser = data as LaserScan;
-    next.laser = laser;
-    next.lastLaserAt = now;
-    if (isFinitePose(laser?.scanPose)) {
-      next.laserPose = { ...laser.scanPose };
-    } else {
-      delete next.laserPose;
-    }
+    applyLaserData(next, data, now);
   } else if (channel === 'waypoints') {
     next.path = data as PathMessage;
     next.lastPathAt = now;

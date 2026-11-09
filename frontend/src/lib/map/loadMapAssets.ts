@@ -133,6 +133,31 @@ const buildAssetPath = (mapId: string, path: string, contentHash?: string | null
   return `maps/${mapId}/${path}${rev}`;
 };
 
+const readAllChunks = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onChunk: (bytesReceived: number) => void
+) => {
+  const chunks: Uint8Array[] = [];
+  let bytesReceived = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      bytesReceived += value.byteLength;
+      onChunk(bytesReceived);
+    }
+  }
+
+  const bytes = new Uint8Array(bytesReceived);
+  let offset = 0;
+  chunks.forEach(chunk => {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return bytes;
+};
+
 const downloadBinary = async (
   path: string,
   options: LoadMapAssetsOptions,
@@ -168,29 +193,14 @@ const downloadBinary = async (
       };
     }
 
-    const chunks: Uint8Array[] = [];
-    let bytesReceived = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        bytesReceived += value.byteLength;
-        options.progressCallback?.({
-          ...progress,
-          bytesReceived,
-          ...(totalBytes
-            ? { totalBytes, progress: Math.min(74, (bytesReceived / totalBytes) * 70) }
-            : {}),
-        });
-      }
-    }
-
-    const bytes = new Uint8Array(bytesReceived);
-    let offset = 0;
-    chunks.forEach(chunk => {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
+    const bytes = await readAllChunks(reader, bytesReceived => {
+      options.progressCallback?.({
+        ...progress,
+        bytesReceived,
+        ...(totalBytes
+          ? { totalBytes, progress: Math.min(74, (bytesReceived / totalBytes) * 70) }
+          : {}),
+      });
     });
     return {
       bytes,
@@ -287,6 +297,73 @@ const mapResultFromDisplay = (
   return result;
 };
 
+type MapDetails = NonNullable<MapMetadataResponse['data']>;
+
+const loadDisplayResult = async (
+  mapId: string,
+  mapData: MapDetails,
+  options: LoadMapAssetsOptions
+) => {
+  for (const format of ['webp', 'png'] as const) {
+    try {
+      const display = await loadDisplayAsset(mapId, mapData, format, options);
+      if (display) {
+        options.progressCallback?.({ phase: 'ready', progress: 100, source: format });
+        return mapResultFromDisplay(mapData, display, format);
+      }
+    } catch (error) {
+      if (format === 'png') {
+        console.warn('Map display asset failed, falling back to PGM', error);
+      }
+    }
+  }
+  return null;
+};
+
+const loadPgmResult = async (mapId: string, mapData: MapDetails, options: LoadMapAssetsOptions) => {
+  const { metadata, features } = mapData;
+  const pgmDownload = await downloadBinary(
+    buildAssetPath(mapId, 'image', mapData.contentHash),
+    options,
+    {
+      phase: 'downloading-pgm-fallback',
+      source: 'pgm',
+      message: 'Downloading raw PGM map',
+    }
+  );
+  const pgmBuffer = pgmDownload.bytes.buffer.slice(
+    pgmDownload.bytes.byteOffset,
+    pgmDownload.bytes.byteOffset + pgmDownload.bytes.byteLength
+  );
+  options.progressCallback?.({ phase: 'decoding', progress: 75, source: 'pgm' });
+  const result = await processMapInWorker(pgmBuffer, metadata, options);
+
+  if (!result.width || !result.height || !result.bitmap) {
+    throw new Error('Map worker returned incomplete data');
+  }
+
+  options.progressCallback?.({ phase: 'ready', progress: 100, source: 'pgm' });
+  return {
+    imageData: {
+      width: result.width,
+      height: result.height,
+      data: new Uint8ClampedArray(0),
+    },
+    meta: {
+      width: result.width,
+      height: result.height,
+      resolution: Number(metadata.resolution ?? 0.05),
+      origin: (metadata.origin ?? [0, 0, 0]) as [number, number, number],
+      occupiedThresh: Number(metadata.occupied_thresh ?? 0.65),
+      freeThresh: Number(metadata.free_thresh ?? 0.196),
+    },
+    imageBitmap: result.bitmap,
+    ...(features ? { features } : {}),
+    ...(mapData.contentHash ? { contentHash: mapData.contentHash } : {}),
+    source: 'pgm',
+  } as ProcessedMapDataWithBitmap;
+};
+
 const metadataInFlight = new Map<string, Promise<MapMetadataResponse>>();
 
 // The mission list, the map view and the prefetcher all ask for a map at startup.
@@ -308,7 +385,6 @@ export async function loadMapAssets(
   }
 
   const mapData = mapResponse.data;
-  const { metadata, features } = mapData;
   const cacheKey = cacheKeyForMap(mapId, mapData.contentHash, mapData.featuresHash);
 
   if (cacheEnabled) {
@@ -322,60 +398,9 @@ export async function loadMapAssets(
 
   const loadingPromise = (async () => {
     try {
-      for (const format of ['webp', 'png'] as const) {
-        try {
-          const display = await loadDisplayAsset(mapId, mapData, format, options);
-          if (display) {
-            options.progressCallback?.({ phase: 'ready', progress: 100, source: format });
-            return mapResultFromDisplay(mapData, display, format);
-          }
-        } catch (error) {
-          if (format === 'png') {
-            console.warn('Map display asset failed, falling back to PGM', error);
-          }
-        }
-      }
-
-      const pgmDownload = await downloadBinary(
-        buildAssetPath(mapId, 'image', mapData.contentHash),
-        options,
-        {
-          phase: 'downloading-pgm-fallback',
-          source: 'pgm',
-          message: 'Downloading raw PGM map',
-        }
-      );
-      const pgmBuffer = pgmDownload.bytes.buffer.slice(
-        pgmDownload.bytes.byteOffset,
-        pgmDownload.bytes.byteOffset + pgmDownload.bytes.byteLength
-      );
-      options.progressCallback?.({ phase: 'decoding', progress: 75, source: 'pgm' });
-      const result = await processMapInWorker(pgmBuffer, metadata, options);
-
-      if (!result.width || !result.height || !result.bitmap) {
-        throw new Error('Map worker returned incomplete data');
-      }
-
-      options.progressCallback?.({ phase: 'ready', progress: 100, source: 'pgm' });
-      return {
-        imageData: {
-          width: result.width,
-          height: result.height,
-          data: new Uint8ClampedArray(0),
-        },
-        meta: {
-          width: result.width,
-          height: result.height,
-          resolution: Number(metadata.resolution ?? 0.05),
-          origin: (metadata.origin ?? [0, 0, 0]) as [number, number, number],
-          occupiedThresh: Number(metadata.occupied_thresh ?? 0.65),
-          freeThresh: Number(metadata.free_thresh ?? 0.196),
-        },
-        imageBitmap: result.bitmap,
-        ...(features ? { features } : {}),
-        ...(mapData.contentHash ? { contentHash: mapData.contentHash } : {}),
-        source: 'pgm',
-      } as ProcessedMapDataWithBitmap;
+      const display = await loadDisplayResult(mapId, mapData, options);
+      if (display) return display;
+      return await loadPgmResult(mapId, mapData, options);
     } catch (error) {
       mapCache.delete(cacheKey);
       options.progressCallback?.({

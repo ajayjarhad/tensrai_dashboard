@@ -174,6 +174,26 @@ const applyStartAck = (
   return withPhase(shared, current.phase === 'start_pending' ? 'showing' : current.phase);
 };
 
+const unlessCleared = <T>(cleared: boolean, value: T) => (cleared ? undefined : value);
+
+const phaseAfterSucceededControl = (requestType: string | undefined): MissionPhase | undefined => {
+  if (requestType === 'SHOW_UP') return 'showing';
+  if (requestType === 'PAUSE') return 'paused';
+  if (requestType === 'RESUME') return 'running';
+  if (requestType === 'CANCEL') return 'cancelled';
+  return undefined;
+};
+
+const phaseAfterControlAck = (
+  currentPhase: MissionPhase,
+  requestType: string | undefined,
+  succeeded: boolean
+): MissionPhase => {
+  if (succeeded) return phaseAfterSucceededControl(requestType) ?? currentPhase;
+  if (requestType === 'SHOW_UP' && currentPhase === 'preview_pending') return 'idle';
+  return currentPhase;
+};
+
 const applyControlAck = (
   current: MissionStatus,
   payload: MissionControlAckPayload | undefined,
@@ -186,35 +206,24 @@ const applyControlAck = (
   const missionId = missionIdOf(payload);
   const ackStatus = payload?.status;
   const succeeded = ackStatus === 'success';
-
-  let phase = current.phase;
-  if (succeeded) {
-    if (requestType === 'SHOW_UP') phase = 'showing';
-    if (requestType === 'PAUSE') phase = 'paused';
-    if (requestType === 'RESUME') phase = 'running';
-    if (requestType === 'CANCEL') phase = 'cancelled';
-  } else if (requestType === 'SHOW_UP' && current.phase === 'preview_pending') {
-    phase = 'idle';
-  }
-
   const clearMission = succeeded && requestType === 'CANCEL';
   const clearWaypoint = succeeded && (requestType === 'SHOW_UP' || requestType === 'CANCEL');
 
   return withPhase(
     {
       ...base,
-      currentMissionId: clearMission ? undefined : (missionId ?? current.currentMissionId),
+      currentMissionId: unlessCleared(clearMission, missionId ?? current.currentMissionId),
       requestIdLast: requestId ?? current.requestIdLast,
-      runId: clearMission ? undefined : current.runId,
-      startedAt: clearMission ? undefined : current.startedAt,
-      waypointIndex: clearWaypoint ? undefined : current.waypointIndex,
-      totalWaypoints: clearWaypoint ? undefined : current.totalWaypoints,
+      runId: unlessCleared(clearMission, current.runId),
+      startedAt: unlessCleared(clearMission, current.startedAt),
+      waypointIndex: unlessCleared(clearWaypoint, current.waypointIndex),
+      totalWaypoints: unlessCleared(clearWaypoint, current.totalWaypoints),
       lastEventMissionId: missionId ?? current.currentMissionId,
       message: textOr(payload?.message, current.message),
       lastEventStatus: ackStatus,
       lastRequestType: requestType,
     },
-    phase
+    phaseAfterControlAck(current.phase, requestType, succeeded)
   );
 };
 
@@ -283,6 +292,83 @@ const applyModeChangeAck = (
   };
 };
 
+type RuntimeMissionReport = RobotStatusUpdatePayload['mission'];
+
+type ReportedMission = {
+  phase: MissionPhase | undefined;
+  missionId: string | undefined;
+  runId: string | undefined;
+  namesMission: boolean;
+};
+
+const readReportedMission = (mission: RuntimeMissionReport): ReportedMission => ({
+  phase: fromRuntimeMissionStatus(mission?.status),
+  missionId: normalizeMissionId(mission?.currentMissionId),
+  runId: normalizeRequestId(mission?.runId),
+  namesMission:
+    mission !== undefined && mission !== null && Object.hasOwn(mission, 'currentMissionId'),
+});
+
+// A robot reports IDLE throughout a preview, so only a report naming a mission or run ends it.
+const keepsPreview = (current: MissionStatus, reported: ReportedMission) =>
+  isPreviewLikePhase(current.phase) &&
+  reported.phase === 'idle' &&
+  !reported.missionId &&
+  !reported.runId;
+
+const missionIdFromReport = (
+  current: MissionStatus,
+  reported: ReportedMission,
+  keepPreview: boolean
+) => {
+  if (!keepPreview && reported.phase === 'idle' && !reported.namesMission) return undefined;
+  return keepPreview || !reported.namesMission ? current.currentMissionId : reported.missionId;
+};
+
+const reportedStartedAt = (mission: RuntimeMissionReport) =>
+  typeof mission?.startedAt === 'string' && mission.startedAt.trim().length > 0
+    ? mission.startedAt
+    : undefined;
+
+const runFromReport = (
+  current: MissionStatus,
+  mission: RuntimeMissionReport,
+  reported: ReportedMission,
+  nextPhase: MissionPhase
+) => {
+  const ended = nextPhase === 'idle';
+  return {
+    runId: reported.runId ?? (ended ? undefined : current.runId),
+    startedAt: reportedStartedAt(mission) ?? (ended ? undefined : current.startedAt),
+  };
+};
+
+const waypointsFromReport = (
+  current: MissionStatus,
+  mission: RuntimeMissionReport,
+  reported: ReportedMission,
+  nextPhase: MissionPhase
+) => {
+  const missionChanged = reported.namesMission && reported.missionId !== current.currentMissionId;
+  if (missionChanged || !isMissionActivePhase(nextPhase)) {
+    return { waypointIndex: undefined, totalWaypoints: undefined };
+  }
+  return {
+    waypointIndex: toFiniteNumber(mission?.currentWaypointIndex) ?? current.waypointIndex,
+    totalWaypoints: toFiniteNumber(mission?.totalWaypoints) ?? current.totalWaypoints,
+  };
+};
+
+const powerFromReport = (current: MissionStatus, payload: RobotStatusUpdatePayload | undefined) => {
+  const battery = payload?.batteryPercentage;
+  const charging = payload?.chargingStatus;
+  return {
+    batteryPercentage:
+      toFiniteNumber(battery) ?? (battery === null ? null : current.batteryPercentage),
+    chargingStatus: textOr(charging, charging === null ? null : current.chargingStatus),
+  };
+};
+
 // Status reports run on their own clock, so a command or ack stamped by a different clock can
 // never make the robot's own report look stale.
 const applyStatusUpdate = (
@@ -295,47 +381,21 @@ const applyStatusUpdate = (
   }
 
   const mission = payload?.mission;
-  const runtimePhase = fromRuntimeMissionStatus(mission?.status);
-  const missionId = normalizeMissionId(mission?.currentMissionId);
-  const runtimeRunId = normalizeRequestId(mission?.runId);
-  const hasMissionId =
-    mission !== undefined && mission !== null && Object.hasOwn(mission, 'currentMissionId');
-  // A robot reports IDLE throughout a preview, so only a report naming a mission or run ends it.
-  const keepPreview =
-    isPreviewLikePhase(current.phase) && runtimePhase === 'idle' && !missionId && !runtimeRunId;
-  const nextPhase = keepPreview ? current.phase : (runtimePhase ?? current.phase);
-  const nextMissionId = keepPreview || !hasMissionId ? current.currentMissionId : missionId;
-  const clearMissionId = !keepPreview && runtimePhase === 'idle' && !hasMissionId;
-  const missionChanged = hasMissionId && missionId !== current.currentMissionId;
-  const clearWaypoint = missionChanged || !isMissionActivePhase(nextPhase);
-  const reportedStartedAt =
-    typeof mission?.startedAt === 'string' && mission.startedAt.trim().length > 0
-      ? mission.startedAt
-      : undefined;
+  const reported = readReportedMission(mission);
+  const keepPreview = keepsPreview(current, reported);
+  const nextPhase = keepPreview ? current.phase : (reported.phase ?? current.phase);
   const reportedMode = isRobotRuntimeMode(payload?.mode) ? payload.mode : undefined;
-  const battery = payload?.batteryPercentage;
-  const charging = payload?.chargingStatus;
 
   return withPhase(
     {
       ...current,
-      currentMissionId: clearMissionId ? undefined : nextMissionId,
-      runId: keepPreview
-        ? current.runId
-        : (runtimeRunId ?? (nextPhase === 'idle' ? undefined : current.runId)),
-      startedAt: keepPreview
-        ? current.startedAt
-        : (reportedStartedAt ?? (nextPhase === 'idle' ? undefined : current.startedAt)),
-      waypointIndex: clearWaypoint
-        ? undefined
-        : (toFiniteNumber(mission?.currentWaypointIndex) ?? current.waypointIndex),
-      totalWaypoints: clearWaypoint
-        ? undefined
-        : (toFiniteNumber(mission?.totalWaypoints) ?? current.totalWaypoints),
+      currentMissionId: missionIdFromReport(current, reported, keepPreview),
+      ...(keepPreview
+        ? { runId: current.runId, startedAt: current.startedAt }
+        : runFromReport(current, mission, reported, nextPhase)),
+      ...waypointsFromReport(current, mission, reported, nextPhase),
       mode: reportedMode ?? current.mode,
-      batteryPercentage:
-        toFiniteNumber(battery) ?? (battery === null ? null : current.batteryPercentage),
-      chargingStatus: textOr(charging, charging === null ? null : current.chargingStatus),
+      ...powerFromReport(current, payload),
       lastSeenTs: eventAt,
       runtimeUpdatedAt: eventAt,
       modeUpdatedAt: reportedMode ? eventAt : current.modeUpdatedAt,

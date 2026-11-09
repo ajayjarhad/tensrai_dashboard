@@ -378,4 +378,138 @@ describe('merging a server snapshot, whatever this browser’s clock says', () =
 
     expect(merge(progressed, older)?.phase).toBe('running');
   });
+
+  test('an idle snapshot naming no mission or run leaves a local preview alone', () => {
+    setSystemTime(new Date(ms(60)));
+    const idle = {
+      phase: 'idle',
+      requestIdLast: 'q9',
+      message: 'idle',
+      lastEventAt: ms(2),
+      lastSeenTs: ms(2),
+      updatedAt: at(2),
+    };
+
+    expect(merge(showing(), idle)).toMatchObject({
+      phase: 'showing',
+      status: 'showing',
+      currentMissionId: 'm1',
+      requestIdLast: 'q1',
+      message: 'SHOW_UP sent… waiting for robot',
+      lastSeenTs: ms(2),
+      runtimeUpdatedAt: ms(2),
+      updatedAt: ms(2),
+    });
+  });
+
+  test('robots without a snapshot, and snapshots that change nothing, leave the state as it was', () => {
+    setSystemTime(new Date(ms(60)));
+    useRobotMissionStore.setState({ statusByRobot: { r1: running() } });
+    const before = useRobotMissionStore.getState().statusByRobot;
+
+    useRobotMissionStore
+      .getState()
+      .hydrateFromRobots([
+        { id: 'r2' } as unknown as Robot,
+        { id: 'r1', mission: { phase: 'running' } } as unknown as Robot,
+      ]);
+
+    expect(useRobotMissionStore.getState().statusByRobot).toBe(before);
+  });
+});
+
+describe('refused commands and reports that move the mission on', () => {
+  test('a refused preview ends it, and a refused pause leaves the run and its progress', () => {
+    const refusedPreview = event(
+      intent(IDLE, 'SHOW_UP', { missionId: 'm1' }, 0, 'q1'),
+      'MISSION_CONTROL_ACK',
+      { requestType: 'SHOW_UP', status: 'failed', requestId: 'q1', timestamp: at(1) },
+      1
+    );
+    expect(refusedPreview).toMatchObject({
+      phase: 'idle',
+      currentMissionId: 'm1',
+      lastEventStatus: 'failed',
+    });
+
+    const progressed = event(
+      running(),
+      'WAYPOINT_ACK',
+      { runId: 'run2', waypointIndex: 1, totalWaypoints: 3, time: at(2) },
+      2
+    );
+    const refusedPause = event(
+      progressed,
+      'MISSION_CONTROL_ACK',
+      { requestType: 'PAUSE_MISSION', status: 'failed', timestamp: at(3) },
+      3
+    );
+    expect(refusedPause).toMatchObject({
+      phase: 'running',
+      currentMissionId: 'm1',
+      runId: 'run2',
+      waypointIndex: 1,
+      totalWaypoints: 3,
+      lastRequestType: 'PAUSE',
+    });
+  });
+
+  test('a report naming another mission drops the old progress, and one naming the same mission updates it', () => {
+    const progressed = event(
+      running(),
+      'WAYPOINT_ACK',
+      { runId: 'run2', waypointIndex: 1, totalWaypoints: 3, time: at(2) },
+      2
+    );
+    const report = (mission: object) =>
+      event(progressed, 'ROBOT_STATUS_UPDATE', { mission, timestamp: at(3) }, 3);
+
+    expect(
+      report({
+        status: 'ACTIVE',
+        currentMissionId: 'm2',
+        currentWaypointIndex: 0,
+        totalWaypoints: 5,
+      })
+    ).toMatchObject({
+      phase: 'running',
+      currentMissionId: 'm2',
+      runId: 'run2',
+      waypointIndex: undefined,
+      totalWaypoints: undefined,
+    });
+    expect(
+      report({
+        status: 'ACTIVE',
+        currentMissionId: 'm1',
+        currentWaypointIndex: 2,
+        totalWaypoints: 3,
+      })
+    ).toMatchObject({
+      phase: 'running',
+      currentMissionId: 'm1',
+      waypointIndex: 2,
+      totalWaypoints: 3,
+    });
+  });
+
+  test('an idle report naming no mission ends the run, and mode and charging come from the report', () => {
+    const ended = event(
+      running(),
+      'ROBOT_STATUS_UPDATE',
+      { mission: { status: 'IDLE' }, mode: 'teleop', chargingStatus: null, timestamp: at(2) },
+      2
+    );
+
+    expect(ended).toMatchObject({
+      phase: 'idle',
+      currentMissionId: undefined,
+      runId: undefined,
+      startedAt: undefined,
+      waypointIndex: undefined,
+      mode: 'teleop',
+      modeUpdatedAt: ms(2),
+      chargingStatus: null,
+    });
+  });
 });

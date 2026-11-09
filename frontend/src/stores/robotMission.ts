@@ -34,58 +34,58 @@ const clients = new Map<string, ReturnType<typeof createRobotMappingWsClient>>()
 const COMMAND_SYNC_WINDOW_MS = 30_000;
 const IDLE: MissionStatus = { status: 'idle', phase: 'idle' };
 
-// Merges what the server reports into local state. Undefined means the report is older than what
-// this client already knows, so it should be ignored.
-const hydrateStatus = (
-  existing: MissionStatus | undefined,
-  mission: NonNullable<Robot['mission']>
-): MissionStatus | undefined => {
-  const parsedUpdatedAt = mission.updatedAt ? Date.parse(mission.updatedAt) : undefined;
-  // Compared like with like, because the robot, the server and this browser keep different clocks:
-  // robot events and reports by the robot's clock, and this client's latest command by its id.
-  const isOlder = (incoming: number | undefined, local: number | undefined) =>
-    incoming !== undefined && local !== undefined && incoming < local;
+type MissionSnapshot = NonNullable<Robot['mission']>;
+
+const isOlder = (incoming: number | undefined, local: number | undefined) =>
+  incoming !== undefined && local !== undefined && incoming < local;
+
+// Compared like with like, because the robot, the server and this browser keep different clocks:
+// robot events and reports by the robot's clock, and this client's latest command by its id.
+const isSnapshotBehind = (existing: MissionStatus | undefined, mission: MissionSnapshot) => {
+  if (!existing) return false;
   const awaitingOwnCommand =
-    existing?.lastCommandAt !== undefined &&
+    existing.lastCommandAt !== undefined &&
     Date.now() - existing.lastCommandAt < COMMAND_SYNC_WINDOW_MS &&
     mission.requestIdLast !== existing.requestIdLast;
-  if (
-    existing &&
-    (awaitingOwnCommand ||
-      isOlder(mission.lastEventAt, existing.lastEventAt) ||
-      isOlder(mission.lastSeenTs, existing.lastSeenTs))
-  ) {
-    return undefined;
-  }
+  return (
+    awaitingOwnCommand ||
+    isOlder(mission.lastEventAt, existing.lastEventAt) ||
+    isOlder(mission.lastSeenTs, existing.lastSeenTs)
+  );
+};
 
-  const incomingPhase =
-    (mission.phase as MissionPhase) ??
-    (mission.status as MissionPhase) ??
-    existing?.phase ??
-    'idle';
-  const preserveLocalPreview =
-    isPreviewLikePhase(existing?.phase) &&
-    incomingPhase === 'idle' &&
-    !mission.currentMissionId &&
-    !mission.runId;
-  const resolvedPhase = preserveLocalPreview ? (existing?.phase ?? incomingPhase) : incomingPhase;
-  const keepWaypoint = isMissionActivePhase(resolvedPhase);
-  // An idle report can't describe a preview this client just asked for, so it can't overwrite it.
-  const runFields: Partial<typeof mission> = preserveLocalPreview ? {} : mission;
+const snapshotPhase = (existing: MissionStatus | undefined, mission: MissionSnapshot) =>
+  (mission.phase as MissionPhase) ?? (mission.status as MissionPhase) ?? existing?.phase ?? 'idle';
 
+const preservesLocalPreview = (
+  existing: MissionStatus | undefined,
+  mission: MissionSnapshot,
+  incomingPhase: MissionPhase
+) =>
+  isPreviewLikePhase(existing?.phase) &&
+  incomingPhase === 'idle' &&
+  !mission.currentMissionId &&
+  !mission.runId;
+
+const runFieldsFrom = (
+  existing: MissionStatus | undefined,
+  runFields: Partial<MissionSnapshot>
+) => ({
+  currentMissionId: runFields.currentMissionId ?? existing?.currentMissionId,
+  requestIdLast: runFields.requestIdLast ?? existing?.requestIdLast,
+  runId: runFields.runId ?? existing?.runId,
+  startedAt: runFields.startedAt ?? existing?.startedAt,
+  message: runFields.message ?? existing?.message,
+  lastEvent: runFields.lastEvent ?? existing?.lastEvent,
+});
+
+const robotFieldsFrom = (
+  existing: MissionStatus | undefined,
+  mission: MissionSnapshot,
+  phase: MissionPhase
+) => {
+  const keepWaypoint = isMissionActivePhase(phase);
   return {
-    ...existing,
-    status: resolvedPhase,
-    phase: resolvedPhase,
-    currentMissionId: runFields.currentMissionId ?? existing?.currentMissionId,
-    requestIdLast: runFields.requestIdLast ?? existing?.requestIdLast,
-    runId: runFields.runId ?? existing?.runId,
-    startedAt: runFields.startedAt ?? existing?.startedAt,
-    message: runFields.message ?? existing?.message,
-    lastEvent: runFields.lastEvent ?? existing?.lastEvent,
-    updatedAt: Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : existing?.updatedAt,
-    lastEventStatus: runFields.lastEventStatus ?? existing?.lastEventStatus,
-    lastRequestType: runFields.lastRequestType ?? existing?.lastRequestType,
     mode: mission.mode ?? existing?.mode,
     batteryPercentage:
       mission.batteryPercentage !== undefined
@@ -102,6 +102,46 @@ const hydrateStatus = (
         ? mission.lastSeenTs
         : existing?.modeUpdatedAt,
   };
+};
+
+// Merges what the server reports into local state. Undefined means the report is older than what
+// this client already knows, so it should be ignored.
+const hydrateStatus = (
+  existing: MissionStatus | undefined,
+  mission: MissionSnapshot
+): MissionStatus | undefined => {
+  const parsedUpdatedAt = mission.updatedAt ? Date.parse(mission.updatedAt) : undefined;
+  if (isSnapshotBehind(existing, mission)) return undefined;
+
+  const incomingPhase = snapshotPhase(existing, mission);
+  const preserveLocalPreview = preservesLocalPreview(existing, mission, incomingPhase);
+  const resolvedPhase = preserveLocalPreview ? (existing?.phase ?? incomingPhase) : incomingPhase;
+  // An idle report can't describe a preview this client just asked for, so it can't overwrite it.
+  const runFields: Partial<MissionSnapshot> = preserveLocalPreview ? {} : mission;
+
+  return {
+    ...existing,
+    status: resolvedPhase,
+    phase: resolvedPhase,
+    ...runFieldsFrom(existing, runFields),
+    updatedAt: Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : existing?.updatedAt,
+    lastEventStatus: runFields.lastEventStatus ?? existing?.lastEventStatus,
+    lastRequestType: runFields.lastRequestType ?? existing?.lastRequestType,
+    ...robotFieldsFrom(existing, mission, resolvedPhase),
+  };
+};
+
+// Undefined when the robot has no snapshot, or merging it would change nothing.
+const changedStatusFor = (
+  statusByRobot: Record<string, MissionStatus>,
+  robot: Robot
+): MissionStatus | undefined => {
+  if (!robot?.id || !robot.mission) return undefined;
+  const existing = statusByRobot[robot.id];
+  const nextStatus = hydrateStatus(existing, robot.mission);
+  if (!nextStatus) return undefined;
+  if (JSON.stringify(existing ?? {}) === JSON.stringify(nextStatus)) return undefined;
+  return nextStatus;
 };
 
 export const useRobotMissionStore = create<MissionState>(set => ({
@@ -179,11 +219,8 @@ export const useRobotMissionStore = create<MissionState>(set => ({
       const next = { ...state.statusByRobot };
 
       for (const robot of robots) {
-        if (!robot?.id || !robot.mission) continue;
-
-        const existing = state.statusByRobot[robot.id];
-        const nextStatus = hydrateStatus(existing, robot.mission);
-        if (!nextStatus || JSON.stringify(existing ?? {}) === JSON.stringify(nextStatus)) continue;
+        const nextStatus = changedStatusFor(state.statusByRobot, robot);
+        if (!nextStatus) continue;
         next[robot.id] = nextStatus;
         changed = true;
       }
