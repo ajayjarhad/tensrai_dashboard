@@ -1,6 +1,7 @@
 import type { MapYamlMetadata, ProcessedMapData } from '@tensrai/shared';
 import { useAuthStore } from '../../stores/auth';
 import { apiClient, resolveApiHttpBase } from '../api';
+import { shareInFlight } from '../utils/shareInFlight';
 import type { MapWorkerRequest, MapWorkerResponse } from './map.worker';
 import MapWorker from './map.worker?worker';
 
@@ -286,13 +287,21 @@ const mapResultFromDisplay = (
   return result;
 };
 
+const metadataInFlight = new Map<string, Promise<MapMetadataResponse>>();
+
+// The mission list, the map view and the prefetcher all ask for a map at startup.
+export const fetchMapMetadata = (mapId: string, timeout = CACHE_CONFIG.DEFAULT_TIMEOUT) =>
+  shareInFlight(metadataInFlight, mapId, () =>
+    apiClient.get<MapMetadataResponse>(`maps/${mapId}`, { timeout })
+  );
+
 export async function loadMapAssets(
   options: LoadMapAssetsOptions
 ): Promise<ProcessedMapDataWithBitmap> {
   const { mapId, cacheEnabled = true, timeout = CACHE_CONFIG.DEFAULT_TIMEOUT } = options;
   options.progressCallback?.({ phase: 'fetching-metadata', progress: 2 });
 
-  const mapResponse = await apiClient.get<MapMetadataResponse>(`maps/${mapId}`, { timeout });
+  const mapResponse = await fetchMapMetadata(mapId, timeout);
 
   if (!mapResponse.success || !mapResponse.data) {
     throw new Error('Failed to load map metadata');
