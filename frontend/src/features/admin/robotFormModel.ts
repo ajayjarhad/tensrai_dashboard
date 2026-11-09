@@ -58,3 +58,18 @@ export const DEFAULT_CHANNELS: RobotChannel[] = [
     connectionId: 'control',
   },
 ];
+
+const toOptionalPort = (port: number | undefined) => (port ? Number(port) : undefined);
+
+export const toRobotPayload = (form: EditableRobot, channels: RobotChannel[]) => ({
+  name: form.name,
+  ipAddress: form.ipAddress || undefined,
+  bridgePort: toOptionalPort(form.bridgePort),
+  mappingBridgePort: toOptionalPort(form.mappingBridgePort),
+  missionBridgePort: toOptionalPort(form.missionBridgePort),
+  emergencyBridgePort: toOptionalPort(form.emergencyBridgePort),
+  status: form.status ?? 'UNKNOWN',
+  channels: channels.length ? channels : undefined,
+});
+
+export type RobotPayload = ReturnType<typeof toRobotPayload>;

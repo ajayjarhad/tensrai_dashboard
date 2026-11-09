@@ -43,79 +43,97 @@ export const summarizeEmergency = (robots: Robot[]) => {
   };
 };
 
-export const notifyFleetEmergencyResult = (
-  desiredStatus: boolean,
-  result: FleetEmergencyDispatchResult
-) => {
+type FleetDispatchSummary = {
+  status: FleetEmergencyDispatchResult['status'];
+  successSummary: string;
+  successCount: number;
+  failureCount: number;
+  failureDescription: string | undefined;
+  hardwareLockedCount: number;
+};
+
+const pluralRobots = (count: number) => `${count} robot${count === 1 ? '' : 's'}`;
+
+const summarizeFleetDispatch = (result: FleetEmergencyDispatchResult): FleetDispatchSummary => {
   const successfulNames = result.results
     .filter(entry => entry.applied)
     .map(entry => entry.robotName ?? entry.robotId);
   const successCount = result.results.filter(entry => entry.applied).length;
-  const failureCount = result.results.length - successCount;
   const failureSummary = result.results
     .filter(entry => !entry.applied)
     .map(entry => `${entry.robotName ?? entry.robotId}: ${entry.error ?? 'unknown error'}`)
     .join('; ');
-  const hardwareLockedCount = result.results.filter(
-    entry => entry.applied && entry.hardwareEmergencyActive
-  ).length;
-  const successSummary = formatRobotNames(successfulNames);
+  return {
+    status: result.status,
+    successSummary: formatRobotNames(successfulNames),
+    successCount,
+    failureCount: result.results.length - successCount,
+    failureDescription: failureSummary || undefined,
+    hardwareLockedCount: result.results.filter(
+      entry => entry.applied && entry.hardwareEmergencyActive
+    ).length,
+  };
+};
 
-  if (desiredStatus) {
-    if (result.status === 'success') {
-      toast.success(
-        successSummary
-          ? `Emergency sent to ${successSummary}`
-          : `Emergency sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
-      );
-    } else if (result.status === 'partial_failure') {
-      toast.error(
-        successSummary
-          ? `Emergency sent to ${successSummary}; ${failureCount} failed`
-          : `Emergency sent to ${successCount} robots, ${failureCount} failed`,
-        {
-          description: failureSummary || undefined,
-        }
-      );
-    } else {
-      toast.error('Emergency command failed for all robots', {
-        description: failureSummary || undefined,
-      });
-    }
-    return;
-  }
-
-  if (result.status === 'failure') {
-    toast.error('Release command failed for all robots', {
-      description: failureSummary || undefined,
-    });
-    return;
-  }
-
-  if (hardwareLockedCount > 0) {
-    toast.message(
-      `Software emergency released; ${hardwareLockedCount} robot${
-        hardwareLockedCount === 1 ? '' : 's'
-      } remain stopped due to hardware emergency`
+const notifyEmergencySent = (summary: FleetDispatchSummary) => {
+  const { status, successSummary, successCount, failureCount, failureDescription } = summary;
+  if (status === 'success') {
+    toast.success(
+      successSummary
+        ? `Emergency sent to ${successSummary}`
+        : `Emergency sent to ${pluralRobots(successCount)}`
     );
     return;
   }
+  if (status === 'partial_failure') {
+    toast.error(
+      successSummary
+        ? `Emergency sent to ${successSummary}; ${failureCount} failed`
+        : `Emergency sent to ${successCount} robots, ${failureCount} failed`,
+      { description: failureDescription }
+    );
+    return;
+  }
+  toast.error('Emergency command failed for all robots', { description: failureDescription });
+};
 
-  if (result.status === 'partial_failure') {
+const notifyEmergencyReleased = (summary: FleetDispatchSummary) => {
+  const { status, successSummary, successCount, failureCount, failureDescription } = summary;
+  if (status === 'failure') {
+    toast.error('Release command failed for all robots', { description: failureDescription });
+    return;
+  }
+  if (summary.hardwareLockedCount > 0) {
+    const stillStopped = pluralRobots(summary.hardwareLockedCount);
+    toast.message(
+      `Software emergency released; ${stillStopped} remain stopped due to hardware emergency`
+    );
+    return;
+  }
+  if (status === 'partial_failure') {
     toast.error(
       successSummary
         ? `Release sent to ${successSummary}; ${failureCount} failed`
         : `Release sent to ${successCount} robots, ${failureCount} failed`,
-      {
-        description: failureSummary || undefined,
-      }
+      { description: failureDescription }
     );
     return;
   }
-
   toast.success(
     successSummary
       ? `Release sent to ${successSummary}`
-      : `Release sent to ${successCount} robot${successCount === 1 ? '' : 's'}`
+      : `Release sent to ${pluralRobots(successCount)}`
   );
+};
+
+export const notifyFleetEmergencyResult = (
+  desiredStatus: boolean,
+  result: FleetEmergencyDispatchResult
+) => {
+  const summary = summarizeFleetDispatch(result);
+  if (desiredStatus) {
+    notifyEmergencySent(summary);
+  } else {
+    notifyEmergencyReleased(summary);
+  }
 };

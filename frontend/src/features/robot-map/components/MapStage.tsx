@@ -43,6 +43,19 @@ interface MapStageProps {
   dimNonMissionTags?: boolean;
 }
 
+const resolveStageSize = (
+  width: number | string,
+  height: number | string,
+  containerSize: { width: number; height: number }
+) => ({
+  width: typeof width === 'number' ? width : containerSize.width || 800,
+  height: typeof height === 'number' ? height : containerSize.height || 600,
+  style: {
+    width: typeof width === 'number' ? `${width}px` : (width ?? '100%'),
+    height: typeof height === 'number' ? `${height}px` : (height ?? '100%'),
+  },
+});
+
 export function MapStage({
   mapData,
   enablePanning = true,
@@ -74,12 +87,11 @@ export function MapStage({
   const stageRef = useRef<Konva.Stage | null>(null);
   const mapGroupRef = useRef<Konva.Group | null>(null);
 
-  const resolvedWidth = typeof width === 'number' ? width : containerSize.width || 800;
-  const resolvedHeight = typeof height === 'number' ? height : containerSize.height || 600;
-  const containerStyle = {
-    width: typeof width === 'number' ? `${width}px` : (width ?? '100%'),
-    height: typeof height === 'number' ? `${height}px` : (height ?? '100%'),
-  };
+  const {
+    width: resolvedWidth,
+    height: resolvedHeight,
+    style: containerStyle,
+  } = resolveStageSize(width, height, containerSize);
   const fitStageToMap = useMapFitting({
     mapData,
     stageRef,

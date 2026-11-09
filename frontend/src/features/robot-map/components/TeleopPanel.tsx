@@ -48,6 +48,14 @@ const zeroCommand: TeleopCommand = {
   angular: { x: 0, y: 0, z: 0 },
 };
 
+const isTeleopKey = (key: string) =>
+  key === 'w' || key === 'a' || key === 's' || key === 'd' || key.startsWith('arrow');
+
+const isTextEntryTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+};
+
 export function TeleopPanel({
   robotId,
   robotName,
@@ -279,16 +287,7 @@ export function TeleopPanel({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
-      const handled =
-        key === 'w' || key === 'a' || key === 's' || key === 'd' || key.startsWith('arrow');
-
-      if (!handled) return;
-
-      if (event.target instanceof HTMLElement) {
-        const tag = event.target.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        if (event.target.isContentEditable) return;
-      }
+      if (!isTeleopKey(key) || isTextEntryTarget(event.target)) return;
 
       event.preventDefault();
       if (!keysRef.current.has(key)) {

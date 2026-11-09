@@ -12,16 +12,49 @@ import { useAuth } from '@/stores/auth';
 import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import type { Robot } from '@/types/robot';
 import { useChannelEditor } from '../hooks/useChannelEditor';
-import { useMapSync } from '../hooks/useMapSync';
+import { type MapSyncStatus, useMapSync } from '../hooks/useMapSync';
 import {
   DEFAULT_CHANNELS,
   DEFAULT_ROBOT,
   type EditableRobot,
   type MapOption,
+  type RobotPayload,
+  toRobotPayload,
 } from '../robotFormModel';
 import { AdminNav } from './AdminNav';
 import { RobotForm } from './RobotForm';
 import { RobotTable } from './RobotTable';
+
+const saveRobot = async (form: EditableRobot, payload: RobotPayload, robots: Robot[]) => {
+  if (!form.id) {
+    await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
+    return;
+  }
+  await apiClient.patch(`robots/${form.id}`, payload);
+  // Map assignment is managed via the active-map endpoint, not PATCH. That also pins the map,
+  // so saving an unrelated edit must not turn off auto-follow.
+  const savedMapId = robots.find(robot => robot.id === form.id)?.mapId ?? '';
+  if (form.mapId && form.mapId !== savedMapId) {
+    await apiClient.post(`robots/${form.id}/active-map`, { mapId: form.mapId });
+  }
+};
+
+const evictSyncedMapFromCache = (status: MapSyncStatus | null, fallbackMapId?: string) => {
+  const affectedMapId = status?.mapId ?? fallbackMapId;
+  if (affectedMapId) {
+    evictFromCache(affectedMapId);
+  }
+};
+
+// A sync can refresh several of the robot's maps, so evict every cached map.
+const evictRobotMapsFromCache = (robot: Robot) => {
+  for (const map of robot.maps ?? []) {
+    evictFromCache(map.id);
+  }
+};
+
+const mapRefreshedMessage = (status: MapSyncStatus | null) =>
+  status?.phase === 'skipped' ? 'Map metadata refreshed' : 'Map refreshed';
 
 export function RobotManagement() {
   const navigate = useNavigate();
@@ -178,29 +211,7 @@ export function RobotManagement() {
     }
     setSaving(true);
     try {
-      const payload = {
-        name: form.name,
-        ipAddress: form.ipAddress || undefined,
-        bridgePort: form.bridgePort ? Number(form.bridgePort) : undefined,
-        mappingBridgePort: form.mappingBridgePort ? Number(form.mappingBridgePort) : undefined,
-        missionBridgePort: form.missionBridgePort ? Number(form.missionBridgePort) : undefined,
-        emergencyBridgePort: form.emergencyBridgePort
-          ? Number(form.emergencyBridgePort)
-          : undefined,
-        status: form.status ?? 'UNKNOWN',
-        channels: channelEditor.channels.length ? channelEditor.channels : undefined,
-      };
-      if (form.id) {
-        await apiClient.patch(`robots/${form.id}`, payload);
-        // Map assignment is managed via the active-map endpoint, not PATCH. That also pins the map,
-        // so saving an unrelated edit must not turn off auto-follow.
-        const savedMapId = robots.find(robot => robot.id === form.id)?.mapId ?? '';
-        if (form.mapId && form.mapId !== savedMapId) {
-          await apiClient.post(`robots/${form.id}/active-map`, { mapId: form.mapId });
-        }
-      } else {
-        await apiClient.post('robots', { ...payload, mapId: form.mapId || undefined });
-      }
+      await saveRobot(form, toRobotPayload(form, channelEditor.channels), robots);
       resetForm();
       await Promise.all([loadRobots(), loadAddressStatuses(), refreshDashboardData()]);
       toast.success('Robot saved');
@@ -224,29 +235,20 @@ export function RobotManagement() {
     setRefreshingMapRobotId(robotId);
     try {
       const status = await runMapSync(robotId);
-
-      const affectedMapId = status?.mapId ?? fallbackMapId;
-      if (affectedMapId) {
-        evictFromCache(affectedMapId);
-      }
+      evictSyncedMapFromCache(status, fallbackMapId);
 
       await refreshDashboardData();
 
       const [nextRobots] = await Promise.all([loadRobots({ silent: true }), loadMaps()]);
       const refreshedRobot = nextRobots.find(robot => robot.id === robotId);
       if (refreshedRobot) {
-        // A sync can refresh several of the robot's maps, so evict every cached map.
-        for (const map of refreshedRobot.maps ?? []) {
-          evictFromCache(map.id);
-        }
+        evictRobotMapsFromCache(refreshedRobot);
         setForm(current =>
           current.id === robotId ? { ...current, mapId: refreshedRobot.mapId ?? '' } : current
         );
       }
 
-      toast.success(status?.phase === 'skipped' ? 'Map metadata refreshed' : 'Map refreshed', {
-        id: toastId,
-      });
+      toast.success(mapRefreshedMessage(status), { id: toastId });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to refresh map';
       setError(message);

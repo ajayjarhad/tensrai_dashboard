@@ -46,6 +46,32 @@ const resolveRuntimeStatus = (
   return robot.status;
 };
 
+const resolveLiveBattery = (robot: Robot, mission: MissionStatus) => {
+  if (typeof mission.batteryPercentage === 'number' && Number.isFinite(mission.batteryPercentage)) {
+    return mission.batteryPercentage;
+  }
+  return mission.batteryPercentage === null ? undefined : robot.battery;
+};
+
+const applyFreshRuntime = (
+  merged: Robot,
+  mission: MissionStatus,
+  liveBattery: number | undefined
+) => {
+  if (liveBattery !== undefined) merged.battery = liveBattery;
+  if (mission.mode !== undefined) merged.runtimeMode = mission.mode;
+  if (mission.batteryPercentage !== undefined) {
+    merged.runtimeBatteryPercentage = mission.batteryPercentage;
+  }
+  if (mission.chargingStatus !== undefined) merged.runtimeChargingStatus = mission.chargingStatus;
+  if (mission.lastSeenTs !== undefined) merged.runtimeLastSeenTs = mission.lastSeenTs;
+};
+
+const applyLiveProgress = (merged: Robot, mission: MissionStatus) => {
+  if (mission.waypointIndex !== undefined) merged.waypointIndex = mission.waypointIndex;
+  if (mission.totalWaypoints !== undefined) merged.totalWaypoints = mission.totalWaypoints;
+};
+
 export const mergeMissionRuntimeIntoRobot = (
   robot: Robot,
   mission: MissionStatus | undefined,
@@ -53,18 +79,10 @@ export const mergeMissionRuntimeIntoRobot = (
 ): Robot => {
   if (!mission) return robot;
 
-  const liveBattery =
-    typeof mission.batteryPercentage === 'number' && Number.isFinite(mission.batteryPercentage)
-      ? mission.batteryPercentage
-      : mission.batteryPercentage === null
-        ? undefined
-        : robot.battery;
-
+  const liveBattery = resolveLiveBattery(robot, mission);
   const lastSeenIso = mission.lastSeenTs
     ? new Date(mission.lastSeenTs).toISOString()
     : robot.lastSeen;
-  const isFresh = missionIsFresh(mission, nowMs);
-  const isLive = missionIsLive(mission, nowMs);
 
   const merged: Robot = {
     ...robot,
@@ -72,18 +90,8 @@ export const mergeMissionRuntimeIntoRobot = (
     lastSeen: lastSeenIso,
   };
 
-  if (isFresh && liveBattery !== undefined) merged.battery = liveBattery;
-  if (isFresh && mission.mode !== undefined) merged.runtimeMode = mission.mode;
-  if (isFresh && mission.batteryPercentage !== undefined) {
-    merged.runtimeBatteryPercentage = mission.batteryPercentage;
-  }
-  if (isFresh && mission.chargingStatus !== undefined) {
-    merged.runtimeChargingStatus = mission.chargingStatus;
-  }
-  if (isFresh && mission.lastSeenTs !== undefined) merged.runtimeLastSeenTs = mission.lastSeenTs;
-  if (isLive && mission.waypointIndex !== undefined) merged.waypointIndex = mission.waypointIndex;
-  if (isLive && mission.totalWaypoints !== undefined)
-    merged.totalWaypoints = mission.totalWaypoints;
+  if (missionIsFresh(mission, nowMs)) applyFreshRuntime(merged, mission, liveBattery);
+  if (missionIsLive(mission, nowMs)) applyLiveProgress(merged, mission);
 
   return merged;
 };

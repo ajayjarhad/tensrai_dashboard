@@ -30,6 +30,104 @@ type PendingMissionPhase = (typeof PENDING_MISSION_PHASES)[number];
 const isPendingMissionPhase = (phase: MissionStatus['phase']): phase is PendingMissionPhase =>
   (PENDING_MISSION_PHASES as readonly string[]).includes(phase);
 
+const isPendingStartSettled = (status: MissionStatus, pending: PendingMissionStart) => {
+  const activeMissionId = status.currentMissionId ?? status.lastEventMissionId;
+  if (activeMissionId && activeMissionId !== pending.mission.id) return false;
+  if (status.phase === 'running' || status.phase === 'completed' || status.phase === 'cancelled') {
+    return true;
+  }
+  return (
+    (status.phase === 'idle' || status.phase === 'failed') && status.lastRequestType === 'SHOW_UP'
+  );
+};
+
+// Null when no pending start has settled, so callers can skip the state update.
+const pruneSettledPendingStarts = (
+  pendingMissionStarts: Record<string, PendingMissionStart>,
+  missionStatusByRobot: Record<string, MissionStatus>
+) => {
+  let changed = false;
+  const next = { ...pendingMissionStarts };
+  for (const [robotId, pending] of Object.entries(pendingMissionStarts)) {
+    const status = missionStatusByRobot[robotId];
+    if (!status || !isPendingStartSettled(status, pending)) continue;
+    delete next[robotId];
+    changed = true;
+  }
+  return changed ? next : null;
+};
+
+const isPreviewAwaitingStart = (
+  status: MissionStatus | undefined,
+  hasLocalPendingPreview: boolean
+): status is MissionStatus => {
+  const shouldKeepLocalShowingPreview = status?.phase === 'showing' && hasLocalPendingPreview;
+  const shouldKeepLocalPendingPreview = hasLocalPendingPreview && isPreviewLikePhase(status?.phase);
+  if (!shouldKeepLocalPendingPreview && !missionIsFresh(status)) return false;
+  if (!status) return false;
+  return (
+    status.phase === 'preview_pending' ||
+    status.phase === 'start_pending' ||
+    shouldKeepLocalShowingPreview
+  );
+};
+
+const derivePendingStart = (
+  robot: Robot,
+  status: MissionStatus | undefined,
+  hasLocalPendingPreview: boolean,
+  resolveMissionContext: ResolveMissionContext
+): PendingMissionStart | null => {
+  if (!isPreviewAwaitingStart(status, hasLocalPendingPreview)) return null;
+  if (!robot.mapId) return null;
+  const missionId = status.currentMissionId ?? status.lastEventMissionId;
+  const mission = missionId ? resolveMissionContext(missionId, robot.mapId) : null;
+  return mission ? { robotId: robot.id, mission } : null;
+};
+
+const derivePendingStarts = (
+  robots: Robot[],
+  missionStatusByRobot: Record<string, MissionStatus>,
+  pendingMissionStarts: Record<string, PendingMissionStart>,
+  resolveMissionContext: ResolveMissionContext
+) => {
+  const nextEntries: Record<string, PendingMissionStart> = {};
+  for (const robot of robots) {
+    const pending = derivePendingStart(
+      robot,
+      missionStatusByRobot[robot.id],
+      Boolean(pendingMissionStarts[robot.id]),
+      resolveMissionContext
+    );
+    if (pending) nextEntries[robot.id] = pending;
+  }
+  return nextEntries;
+};
+
+const hasSamePendingMissions = (
+  current: Record<string, PendingMissionStart>,
+  next: Record<string, PendingMissionStart>
+) => {
+  const currentKeys = Object.keys(current);
+  return (
+    currentKeys.length === Object.keys(next).length &&
+    currentKeys.every(robotId => next[robotId]?.mission.id === current[robotId]?.mission.id)
+  );
+};
+
+const focusOnPendingStart = (
+  current: FocusedMission | null,
+  pending: PendingMissionStart
+): FocusedMission =>
+  current?.robotId === pending.robotId &&
+  current.missionId === pending.mission.id &&
+  current.mapId === pending.mission.mapId
+    ? current
+    : { robotId: pending.robotId, missionId: pending.mission.id, mapId: pending.mission.mapId };
+
+const unfocusPendingStart = (current: FocusedMission | null, pending: PendingMissionStart) =>
+  current?.robotId === pending.robotId && current.missionId === pending.mission.id ? null : current;
+
 type MissionStartFlowOptions = {
   robots: Robot[];
   prioritizedMissions: MissionWithContext[];
@@ -172,85 +270,25 @@ export const useMissionStartFlow = ({
   const pendingMissionMessage = pendingStatus?.message;
 
   useEffect(() => {
-    const entries = Object.entries(pendingMissionStarts);
-    if (entries.length === 0) return;
+    const next = pruneSettledPendingStarts(pendingMissionStarts, missionStatusByRobot);
+    if (!next) return;
 
-    let changed = false;
-    const next = { ...pendingMissionStarts };
-
-    for (const [robotId, pending] of entries) {
-      const status = missionStatusByRobot[robotId];
-      if (!status) continue;
-      const activeMissionId = status.currentMissionId ?? status.lastEventMissionId;
-      if (activeMissionId && activeMissionId !== pending.mission.id) continue;
-
-      if (
-        status.phase === 'running' ||
-        status.phase === 'completed' ||
-        status.phase === 'cancelled'
-      ) {
-        delete next[robotId];
-        changed = true;
-        continue;
-      }
-
-      if (
-        (status.phase === 'idle' || status.phase === 'failed') &&
-        status.lastRequestType === 'SHOW_UP'
-      ) {
-        delete next[robotId];
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      setPendingMissionStarts(next);
-      if (pendingMissionStart && !next[pendingMissionStart.robotId]) {
-        setFocusedMission(current =>
-          current?.robotId === pendingMissionStart.robotId &&
-          current.missionId === pendingMissionStart.mission.id
-            ? null
-            : current
-        );
-      }
+    setPendingMissionStarts(next);
+    if (pendingMissionStart && !next[pendingMissionStart.robotId]) {
+      setFocusedMission(current => unfocusPendingStart(current, pendingMissionStart));
     }
   }, [missionStatusByRobot, pendingMissionStart, pendingMissionStarts, setFocusedMission]);
 
   useEffect(() => {
-    const nextEntries: Record<string, PendingMissionStart> = {};
-
-    for (const robot of robots) {
-      const status = missionStatusByRobot[robot.id];
-      const hasLocalPendingPreview = Boolean(pendingMissionStarts[robot.id]);
-      const shouldKeepLocalShowingPreview = status?.phase === 'showing' && hasLocalPendingPreview;
-      const shouldKeepLocalPendingPreview =
-        hasLocalPendingPreview && isPreviewLikePhase(status?.phase);
-      if (!shouldKeepLocalPendingPreview && !missionIsFresh(status)) continue;
-      if (
-        !status ||
-        (status.phase !== 'preview_pending' &&
-          status.phase !== 'start_pending' &&
-          !shouldKeepLocalShowingPreview)
-      ) {
-        continue;
-      }
-
-      if (!robot.mapId) continue;
-      const missionId = status.currentMissionId ?? status.lastEventMissionId;
-      const mission = missionId ? resolveMissionContext(missionId, robot.mapId) : null;
-      if (!mission) continue;
-      nextEntries[robot.id] = { robotId: robot.id, mission };
-    }
-
-    const currentKeys = Object.keys(pendingMissionStarts);
+    const nextEntries = derivePendingStarts(
+      robots,
+      missionStatusByRobot,
+      pendingMissionStarts,
+      resolveMissionContext
+    );
     const nextKeys = Object.keys(nextEntries);
-    const isSame =
-      currentKeys.length === nextKeys.length &&
-      currentKeys.every(
-        robotId => nextEntries[robotId]?.mission.id === pendingMissionStarts[robotId]?.mission.id
-      );
 
-    if (!isSame) {
+    if (!hasSamePendingMissions(pendingMissionStarts, nextEntries)) {
       setPendingMissionStarts(nextEntries);
     }
 
@@ -260,17 +298,7 @@ export const useMissionStartFlow = ({
     if (!firstPending) return;
     setStartRobotId(firstPending.robotId);
     setStartMissionId(firstPending.mission.id);
-    setFocusedMission(current =>
-      current?.robotId === firstPending.robotId &&
-      current.missionId === firstPending.mission.id &&
-      current.mapId === firstPending.mission.mapId
-        ? current
-        : {
-            robotId: firstPending.robotId,
-            missionId: firstPending.mission.id,
-            mapId: firstPending.mission.mapId,
-          }
-    );
+    setFocusedMission(current => focusOnPendingStart(current, firstPending));
     if (activeMapId !== firstPending.mission.mapId) {
       setActiveMapId(firstPending.mission.mapId);
     }
@@ -365,12 +393,7 @@ export const useMissionStartFlow = ({
         delete next[pendingMissionStart.robotId];
         return next;
       });
-      setFocusedMission(current =>
-        current?.robotId === pendingMissionStart.robotId &&
-        current.missionId === pendingMissionStart.mission.id
-          ? null
-          : current
-      );
+      setFocusedMission(current => unfocusPendingStart(current, pendingMissionStart));
     } else {
       setFocusedMission(null);
     }
