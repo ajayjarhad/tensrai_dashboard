@@ -11,16 +11,18 @@ WORKDIR /app
 ARG DATABASE_URL=mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0
 ENV DATABASE_URL=${DATABASE_URL}
 
-# Copy workspace root files first
+# Install from the manifests alone, so a source edit reuses the dependency layer instead of
+# re-running the whole install.
 COPY bun.lock package.json tsconfig.json ./
+COPY backend/package.json ./backend/package.json
+COPY shared/package.json ./shared/package.json
+COPY frontend/package.json ./frontend/package.json
+RUN bun install --frozen-lockfile
 
-# Copy all workspace packages
+# frontend is copied too: scripts/seedMaps.ts reads its public map assets.
 COPY backend ./backend/
 COPY shared ./shared/
 COPY frontend ./frontend/
-
-# Install dependencies from workspace root
-RUN bun install
 
 # Build shared workspace package so backend package exports resolve inside the container.
 RUN bun run --cwd shared build
