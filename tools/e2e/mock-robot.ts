@@ -1046,112 +1046,123 @@ serveBridge(9487, handleMissionMessage);
 serveBridge(8766, handleEmergencyMessage);
 setInterval(() => broadcast(9487, statusUpdate()), STATUS_PERIOD_MS);
 
+type ControlArg = (name: string) => string | null;
+type ControlRoute = (arg: ControlArg, req: Request) => Response | Promise<Response>;
+
+const ok = () => new Response('ok');
+const sendToPort = (port: number, frame: string | Uint8Array) => {
+  for (const ws of clients.get(port) ?? []) ws.send(frame);
+};
+const floodFrame = (port: number) => {
+  if (port === 9487) return JSON.stringify(statusUpdate());
+  if (port === 8766) return JSON.stringify({ event: 'EMERGENCY_STATE', payload: emergencyState() });
+  return JSON.stringify({
+    op: 'publish',
+    topic: '/scan_ui',
+    msg: laserMessage({ stamp: stamp(), frame_id: 'base_scan' }),
+  });
+};
+
+const CONTROL: Record<string, ControlRoute> = {
+  '/stats': () =>
+    Response.json({
+      name: NAME,
+      connections: Object.fromEntries([...clients].map(([port, set]) => [port, set.size])),
+      everConnected: Object.fromEntries(everConnected),
+      received: {
+        cmdVel: received.cmdVel.slice(-500),
+        initialPose: received.initialPose,
+        advertised: received.advertised,
+        subscribed: received.subscribed,
+        mission: received.mission,
+        emergency: received.emergency,
+        mapping: received.mapping,
+      },
+      state: { mission, runId, mode, swEmergency, hwEmergency, pose, battery },
+      faults,
+    }),
+  '/reset': () => {
+    for (const list of Object.values(received)) (list as unknown[]).length = 0;
+    return ok();
+  },
+  '/hw': arg => {
+    setHardware(arg('on') === '1');
+    return ok();
+  },
+  '/drop': arg => {
+    const only = arg('port');
+    for (const [port, set] of clients) {
+      if (only && only !== String(port)) continue;
+      for (const ws of set) ws.terminate();
+    }
+    return ok();
+  },
+  '/refuse': arg => {
+    faults.refuse = arg('on') === '1';
+    return ok();
+  },
+  '/laser': arg => {
+    faults.laser = arg('mode') ?? 'normal';
+    return ok();
+  },
+  '/waypoint-ms': arg => {
+    WAYPOINT_MS = Number(arg('v'));
+    return ok();
+  },
+  '/fail-next': () => {
+    faults.failNext = true;
+    return ok();
+  },
+  '/no-cancel-confirm': arg => {
+    faults.noCancelConfirm = arg('on') === '1';
+    return ok();
+  },
+  '/map': arg => {
+    faults.mapMode = arg('mode') ?? faults.mapMode;
+    faults.mapFault = arg('fault') ?? 'none';
+    faults.mapHashes = JSON.parse(arg('hashes') ?? '{}');
+    return ok();
+  },
+  '/battery': arg => {
+    battery = arg('v') === 'null' ? null : Number(arg('v'));
+    return ok();
+  },
+  '/status': () => {
+    broadcast(9487, statusUpdate());
+    return ok();
+  },
+  '/garbage': arg => {
+    const port = Number(arg('port'));
+    for (const frame of GARBAGE[port] ?? []) sendToPort(port, frame as string);
+    return new Response(String(GARBAGE[port]?.length ?? 0));
+  },
+  '/flood': arg => {
+    const port = Number(arg('port'));
+    const frame = floodFrame(port);
+    const count = Number(arg('n'));
+    for (let i = 0; i < count; i += 1) sendToPort(port, frame);
+    return ok();
+  },
+  '/rawbin': arg => {
+    const bytes = Uint8Array.from((arg('hex') ?? '').match(/../g) ?? [], h =>
+      Number.parseInt(h, 16)
+    );
+    sendToPort(Number(arg('port')), bytes);
+    return ok();
+  },
+  '/raw': async (arg, req) => {
+    broadcast(Number(arg('port')), await req.text());
+    return ok();
+  },
+};
+
 Bun.serve({
   port: 9000,
   fetch(req) {
     const url = new URL(req.url);
-    const arg = (name: string) => url.searchParams.get(name);
-    switch (url.pathname) {
-      case '/stats':
-        return Response.json({
-          name: NAME,
-          connections: Object.fromEntries([...clients].map(([port, set]) => [port, set.size])),
-          everConnected: Object.fromEntries(everConnected),
-          received: {
-            cmdVel: received.cmdVel.slice(-500),
-            initialPose: received.initialPose,
-            advertised: received.advertised,
-            subscribed: received.subscribed,
-            mission: received.mission,
-            emergency: received.emergency,
-            mapping: received.mapping,
-          },
-          state: { mission, runId, mode, swEmergency, hwEmergency, pose, battery },
-          faults,
-        });
-      case '/reset':
-        for (const list of Object.values(received)) (list as unknown[]).length = 0;
-        return new Response('ok');
-      case '/hw':
-        setHardware(arg('on') === '1');
-        return new Response('ok');
-      case '/drop': {
-        const only = arg('port');
-        for (const [port, set] of clients) {
-          if (only && only !== String(port)) continue;
-          for (const ws of set) ws.terminate();
-        }
-        return new Response('ok');
-      }
-      case '/refuse':
-        faults.refuse = arg('on') === '1';
-        return new Response('ok');
-      case '/laser':
-        faults.laser = arg('mode') ?? 'normal';
-        return new Response('ok');
-      case '/waypoint-ms':
-        WAYPOINT_MS = Number(arg('v'));
-        return new Response('ok');
-      case '/fail-next':
-        faults.failNext = true;
-        return new Response('ok');
-      case '/no-cancel-confirm':
-        faults.noCancelConfirm = arg('on') === '1';
-        return new Response('ok');
-      case '/map':
-        faults.mapMode = arg('mode') ?? faults.mapMode;
-        faults.mapFault = arg('fault') ?? 'none';
-        faults.mapHashes = JSON.parse(arg('hashes') ?? '{}');
-        return new Response('ok');
-      case '/battery':
-        battery = arg('v') === 'null' ? null : Number(arg('v'));
-        return new Response('ok');
-      case '/status':
-        broadcast(9487, statusUpdate());
-        return new Response('ok');
-      case '/garbage': {
-        const port = Number(arg('port'));
-        for (const frame of GARBAGE[port] ?? []) {
-          for (const ws of clients.get(port) ?? []) ws.send(frame as string);
-        }
-        return new Response(String(GARBAGE[port]?.length ?? 0));
-      }
-      case '/flood': {
-        const port = Number(arg('port'));
-        const count = Number(arg('n'));
-        const frame =
-          port === 9487
-            ? JSON.stringify(statusUpdate())
-            : port === 8766
-              ? JSON.stringify({ event: 'EMERGENCY_STATE', payload: emergencyState() })
-              : JSON.stringify({
-                  op: 'publish',
-                  topic: '/scan_ui',
-                  msg: laserMessage({ stamp: stamp(), frame_id: 'base_scan' }),
-                });
-        for (let i = 0; i < count; i += 1) {
-          for (const ws of clients.get(port) ?? []) ws.send(frame);
-        }
-        return new Response('ok');
-      }
-      case '/rawbin': {
-        const port = Number(arg('port'));
-        const bytes = Uint8Array.from((arg('hex') ?? '').match(/../g) ?? [], h =>
-          Number.parseInt(h, 16)
-        );
-        for (const ws of clients.get(port) ?? []) ws.send(bytes);
-        return new Response('ok');
-      }
-      case '/raw': {
-        const port = Number(arg('port'));
-        return req.text().then(body => {
-          broadcast(port, body);
-          return new Response('ok');
-        });
-      }
-      default:
-        return new Response('not found', { status: 404 });
-    }
+    const route = CONTROL[url.pathname];
+    if (!route) return new Response('not found', { status: 404 });
+    return route(name => url.searchParams.get(name), req);
   },
 });
 console.log(`mock robot ${NAME} ready`);
