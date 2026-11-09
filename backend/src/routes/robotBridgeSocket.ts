@@ -29,6 +29,9 @@ type IncomingMessage =
       };
     };
 
+type CommandMessage = Extract<IncomingMessage, { type: 'command' }>;
+type CommandLogLevel = 'info' | 'warn';
+
 type ForwardableChannelEvent = {
   channel: string;
   data: unknown;
@@ -52,6 +55,17 @@ const ROS_TELEOP_STALE_WARN_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return Number.POSITIVE_INFINITY;
   return Math.floor(raw);
 })();
+
+const commandAgeMs = (sentAtMs: number | undefined) =>
+  typeof sentAtMs === 'number' ? Date.now() - sentAtMs : null;
+
+const commandLogLevel = (channel: string, ageMs: number | null): CommandLogLevel =>
+  channel === 'teleop' && typeof ageMs === 'number' && ageMs >= ROS_TELEOP_STALE_WARN_MS
+    ? 'warn'
+    : 'info';
+
+const staleCommandFields = (level: CommandLogLevel) =>
+  level === 'warn' ? { reason: 'teleop_command_age_high' } : {};
 
 export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: RosRegistry) => {
   const rosCommandLogState = new Map<string, { lastAt: number; suppressed: number }>();
@@ -160,6 +174,52 @@ export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: Ros
     attachManager(registry.getManager(robotId));
     const stopFollowingManager = registry.onManagerChange(robotId, attachManager);
 
+    const handleCommand = (command: CommandMessage) => {
+      const commandId = command.commandId ?? null;
+      const ageMs = commandAgeMs(command.sentAtMs);
+      const level = commandLogLevel(command.channel, ageMs);
+      logRosCommand(level, 'received', {
+        robotId,
+        channel: command.channel,
+        commandId,
+        sentAtMs: command.sentAtMs ?? null,
+        ageMs,
+        ...staleCommandFields(level),
+        managerAttached: Boolean(attachedManager),
+      });
+      const currentManager = registry.getManager(robotId);
+      if (!currentManager) {
+        logRosCommand('warn', 'rejected', {
+          robotId,
+          channel: command.channel,
+          commandId,
+          reason: 'robot_not_found',
+        });
+        socket.send(makeError(command.channel, command.commandId, `Unknown robot: ${robotId}`));
+        return;
+      }
+      const result = currentManager.handleCommand(command.channel, command.data);
+      if (!result.ok) {
+        const error = result.error ?? 'Command failed';
+        logRosCommand('warn', 'rejected', {
+          robotId,
+          channel: command.channel,
+          commandId,
+          error,
+          result,
+        });
+        socket.send(makeError(command.channel, command.commandId, error));
+        return;
+      }
+      logRosCommand(level, 'published', {
+        robotId,
+        channel: command.channel,
+        commandId,
+        ...staleCommandFields(level),
+        result,
+      });
+    };
+
     socket.on('message', async (buffer: Buffer) => {
       let parsed: IncomingMessage;
       try {
@@ -182,55 +242,7 @@ export const createRobotBridgeHandler = (fastify: FastifyInstance, registry: Ros
       });
 
       if (parsed.type === 'command') {
-        const commandAgeMs =
-          typeof parsed.sentAtMs === 'number' ? Date.now() - parsed.sentAtMs : null;
-        const commandLogLevel =
-          parsed.channel === 'teleop' &&
-          typeof commandAgeMs === 'number' &&
-          commandAgeMs >= ROS_TELEOP_STALE_WARN_MS
-            ? 'warn'
-            : 'info';
-        logRosCommand(commandLogLevel, 'received', {
-          robotId,
-          channel: parsed.channel,
-          commandId: parsed.commandId ?? null,
-          sentAtMs: parsed.sentAtMs ?? null,
-          ageMs: commandAgeMs,
-          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
-          managerAttached: Boolean(attachedManager),
-        });
-        const currentManager = registry.getManager(robotId);
-        if (!currentManager) {
-          logRosCommand('warn', 'rejected', {
-            robotId,
-            channel: parsed.channel,
-            commandId: parsed.commandId ?? null,
-            reason: 'robot_not_found',
-          });
-          socket.send(makeError(parsed.channel, parsed.commandId, `Unknown robot: ${robotId}`));
-          return;
-        }
-        const result = currentManager.handleCommand(parsed.channel, parsed.data);
-        if (!result.ok) {
-          logRosCommand('warn', 'rejected', {
-            robotId,
-            channel: parsed.channel,
-            commandId: parsed.commandId ?? null,
-            error: result.error ?? 'Command failed',
-            result,
-          });
-          socket.send(
-            makeError(parsed.channel, parsed.commandId, result.error ?? 'Command failed')
-          );
-          return;
-        }
-        logRosCommand(commandLogLevel, 'published', {
-          robotId,
-          channel: parsed.channel,
-          commandId: parsed.commandId ?? null,
-          ...(commandLogLevel === 'warn' ? { reason: 'teleop_command_age_high' } : {}),
-          result,
-        });
+        handleCommand(parsed);
         return;
       }
 

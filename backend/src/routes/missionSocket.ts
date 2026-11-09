@@ -1,6 +1,8 @@
 import {
   isRobotMissionCommandEvent,
   parseRobotMissionCommand,
+  type RobotMissionCommand,
+  type RobotMissionPayload,
   withMissionCommandId,
 } from '@tensrai/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -67,6 +69,61 @@ export const createMissionSocketHandler =
       } catch {}
     };
 
+    const replyNotForwarded = (
+      command: RobotMissionCommand,
+      payload: RobotMissionPayload | undefined,
+      error: string
+    ) => {
+      fastify.log.warn(
+        { robotId, event: command.event, commandId: command.commandId ?? null, error },
+        'Mission command could not be forwarded to mission bridge'
+      );
+      const failureAck = buildMissionFailureAck(command.event, payload, error);
+      safeClientSend(
+        JSON.stringify({
+          ...failureAck,
+          commandId: command.commandId,
+          payload: withMissionCommandId(failureAck.payload, command.commandId),
+        })
+      );
+    };
+
+    const persistCommandIntent = (
+      command: RobotMissionCommand,
+      payload: RobotMissionPayload | undefined
+    ) => {
+      try {
+        if (missionRegistry.recordCommandIntent) {
+          void missionRegistry
+            .recordCommandIntent(robotId, command.event, payload)
+            .catch((error: unknown) => {
+              fastify.log.warn({ robotId, error }, 'Failed to persist mission command intent');
+            });
+        }
+      } catch (err) {
+        fastify.log.error({ robotId, err }, 'Failed to persist mission command intent');
+      }
+    };
+
+    const forwardCommand = (command: RobotMissionCommand) => {
+      fastify.log.info(
+        { robotId, event: command.event, commandId: command.commandId ?? null },
+        'Forwarding dashboard mission command to mission bridge'
+      );
+      const payload = withMissionCommandId(command.payload, command.commandId);
+      const serializedCommand = JSON.stringify({ event: command.event, payload });
+      void auditRobotCommand(fastify, request, 'MISSION_COMMAND', {
+        robotId,
+        event: command.event,
+      });
+      const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
+      if (!sendResult.ok) {
+        replyNotForwarded(command, payload, sendResult.error ?? 'Mission bridge not connected');
+        return;
+      }
+      persistCommandIntent(command, payload);
+    };
+
     clientSocket.on('message', (msg: Buffer | string) => {
       const payloadText = clientFrameText(msg);
       websocketMetrics.messagesReceived.add(1, {
@@ -86,53 +143,7 @@ export const createMissionSocketHandler =
       const parsed = parseRobotMissionCommand(rawMessage);
 
       if (parsed?.event && isRobotMissionCommandEvent(parsed.event)) {
-        fastify.log.info(
-          { robotId, event: parsed.event, commandId: parsed.commandId ?? null },
-          'Forwarding dashboard mission command to mission bridge'
-        );
-        const payload = withMissionCommandId(parsed.payload, parsed.commandId);
-        const serializedCommand = JSON.stringify({ event: parsed.event, payload });
-        void auditRobotCommand(fastify, request, 'MISSION_COMMAND', {
-          robotId,
-          event: parsed.event,
-        });
-        const sendResult = missionRegistry.sendCommand(robotId, serializedCommand);
-        if (!sendResult.ok) {
-          fastify.log.warn(
-            {
-              robotId,
-              event: parsed.event,
-              commandId: parsed.commandId ?? null,
-              error: sendResult.error ?? 'Mission bridge not connected',
-            },
-            'Mission command could not be forwarded to mission bridge'
-          );
-          const failureAck = buildMissionFailureAck(
-            parsed.event,
-            payload,
-            sendResult.error ?? 'Mission bridge not connected'
-          );
-          safeClientSend(
-            JSON.stringify({
-              ...failureAck,
-              commandId: parsed.commandId,
-              payload: withMissionCommandId(failureAck.payload, parsed.commandId),
-            })
-          );
-          return;
-        }
-
-        try {
-          if (missionRegistry.recordCommandIntent) {
-            void missionRegistry
-              .recordCommandIntent(robotId, parsed.event, payload)
-              .catch((error: unknown) => {
-                fastify.log.warn({ robotId, error }, 'Failed to persist mission command intent');
-              });
-          }
-        } catch (err) {
-          fastify.log.error({ robotId, err }, 'Failed to persist mission command intent');
-        }
+        forwardCommand(parsed);
         return;
       }
 

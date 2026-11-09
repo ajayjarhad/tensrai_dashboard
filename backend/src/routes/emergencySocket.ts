@@ -9,6 +9,9 @@ import {
   makeError,
 } from './gatewaySocket.js';
 
+const requestIdOf = (frame: { requestId?: unknown } | null | undefined) =>
+  typeof frame?.requestId === 'string' ? frame.requestId : undefined;
+
 export const createEmergencySocketHandler =
   (fastify: FastifyInstance) => async (connection: any, request: FastifyRequest) => {
     const { robotId } = request.params as { robotId: string };
@@ -82,7 +85,7 @@ export const createEmergencySocketHandler =
         return;
       }
 
-      const requestId = typeof parsed?.requestId === 'string' ? parsed.requestId : undefined;
+      const requestId = requestIdOf(parsed);
       const eventName = parsed?.event ?? parsed?.type;
       if (eventName !== 'SOFTWARE_EMERGENCY') {
         safeClientSend(makeError(undefined, requestId, 'Unsupported emergency websocket message'));

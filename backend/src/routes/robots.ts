@@ -1,9 +1,11 @@
-import { trace } from '@opentelemetry/api';
+import { type Span, trace } from '@opentelemetry/api';
+import type { Prisma, Robot } from '@prisma/client';
 import { z } from 'zod';
 import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
 import { requireActiveSession, requireAdmin, requireOwnedRobot } from '../middleware/auth.js';
 import { getMapSyncStatus, isMapSyncActive } from '../services/mapSyncStatus.js';
 import { getMissionState } from '../services/missionStatus.js';
+import type { ScopedPrisma } from '../services/orgScope.js';
 import {
   isAddressApproved,
   maxRobotsPerOrg,
@@ -94,6 +96,74 @@ const shapeRobotWithMaps = (robot: any) => {
   const active = maps.find((m: any) => m.isActive);
   const { robotMaps: _robotMaps, ...rest } = robot;
   return { ...rest, maps, mapId: active?.id ?? robot.mapId ?? null };
+};
+
+// Stores the parsed form of the address in place; returns the rejection when it doesn't parse.
+const applyParsedAddress = (data: { ipAddress?: string | undefined }) => {
+  if (!data.ipAddress) return undefined;
+  const parsed = parseRobotAddress(data.ipAddress);
+  if ('error' in parsed) return parsed;
+  data.ipAddress = parsed.ip;
+  return undefined;
+};
+
+const isMissingMap = async (prisma: ScopedPrisma, mapId: string | undefined) => {
+  if (!mapId) return false;
+  return !(await prisma.map.findUnique({ where: { id: mapId }, select: { id: true } }));
+};
+
+const activateInitialMap = async (
+  prisma: ScopedPrisma,
+  robotId: string,
+  mapId: string | undefined
+) => {
+  if (!mapId) return;
+  await prisma.robotMap.upsert({
+    where: { robotId_mapId: { robotId, mapId } },
+    update: { isActive: true },
+    // The scoped client adds orgId, which Prisma's input type requires.
+    create: {
+      robotId,
+      mapId,
+      isActive: true,
+      isPinned: false,
+    } as Prisma.RobotMapUncheckedCreateInput,
+  });
+};
+
+const recordStatusChange = (
+  span: Span,
+  robotId: string,
+  previous: Pick<Robot, 'status'> | null,
+  robot: Robot
+) => {
+  if (!previous || previous.status === robot.status) return;
+  robotFleetMetrics.statusChanges.add(1, {
+    'robot.id': robotId,
+    'robot.status.from': previous.status,
+    'robot.status.to': robot.status,
+  });
+
+  span.setAttributes({
+    'robot.status.from': previous.status,
+    'robot.status.to': robot.status,
+    'robot.status.changed': true,
+  });
+};
+
+const updateFailureReason = (code: unknown) => (code === 'P2025' ? 'not_found' : 'database_error');
+
+const respondWithSavedRobot = async (
+  server: AppFastifyInstance,
+  request: AppFastifyRequest,
+  robot: Robot
+) => {
+  const addressStatus = robot.ipAddress
+    ? await requestAddressFor(server, request, robot.ipAddress)
+    : null;
+  reloadRobotConnections(server);
+  fetchMapViaMappingBridge(server, robot).catch(() => {});
+  return { success: true, data: { ...robot, addressStatus } };
 };
 
 const robotRoutes = async (server: AppFastifyInstance) => {
@@ -312,12 +382,9 @@ const robotRoutes = async (server: AppFastifyInstance) => {
       const { name, mapId, channels, ...data } = result.data;
       const prisma = request.db;
 
-      if (data.ipAddress) {
-        const parsed = parseRobotAddress(data.ipAddress);
-        if ('error' in parsed) {
-          return reply.status(400).send({ success: false, error: parsed.error });
-        }
-        data.ipAddress = parsed.ip;
+      const invalidAddress = applyParsedAddress(data);
+      if (invalidAddress) {
+        return reply.status(400).send({ success: false, error: invalidAddress.error });
       }
 
       if ((await prisma.robot.count()) >= maxRobotsPerOrg()) {
@@ -329,10 +396,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
       }
 
       try {
-        if (
-          mapId &&
-          !(await prisma.map.findUnique({ where: { id: mapId }, select: { id: true } }))
-        ) {
+        if (await isMissingMap(prisma, mapId)) {
           return reply.status(404).send({ success: false, error: 'Map not found' });
         }
 
@@ -345,21 +409,8 @@ const robotRoutes = async (server: AppFastifyInstance) => {
             mapId,
           } as any,
         });
-        if (mapId) {
-          await prisma.robotMap.upsert({
-            where: { robotId_mapId: { robotId: robot.id, mapId } },
-            update: { isActive: true },
-            // The scoped client adds orgId, which Prisma's input type requires.
-            create: { robotId: robot.id, mapId, isActive: true, isPinned: false } as any,
-          });
-        }
-        const addressStatus = robot.ipAddress
-          ? await requestAddressFor(server, request, robot.ipAddress)
-          : null;
-        reloadRobotConnections(server);
-        // Try to fetch and store map in the background (fire and forget)
-        fetchMapViaMappingBridge(server, robot).catch(() => {});
-        return { success: true, data: { ...robot, addressStatus } };
+        await activateInitialMap(prisma, robot.id, mapId);
+        return await respondWithSavedRobot(server, request, robot);
       } catch (error: any) {
         if (error.code === 'P2002') {
           return reply
@@ -394,17 +445,14 @@ const robotRoutes = async (server: AppFastifyInstance) => {
         return reply.status(400).send({ success: false, error: result.error });
       }
 
-      if (result.data.ipAddress) {
-        const parsed = parseRobotAddress(result.data.ipAddress);
-        if ('error' in parsed) {
-          span.setAttributes({
-            'robot.update.success': false,
-            'robot.update.reason': 'invalid_address',
-          });
-          span.end();
-          return reply.status(400).send({ success: false, error: parsed.error });
-        }
-        result.data.ipAddress = parsed.ip;
+      const invalidAddress = applyParsedAddress(result.data);
+      if (invalidAddress) {
+        span.setAttributes({
+          'robot.update.success': false,
+          'robot.update.reason': 'invalid_address',
+        });
+        span.end();
+        return reply.status(400).send({ success: false, error: invalidAddress.error });
       }
 
       const prisma = request.db;
@@ -427,20 +475,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
           } as any,
         });
 
-        // Track status changes
-        if (currentRobot && currentRobot.status !== robot.status) {
-          robotFleetMetrics.statusChanges.add(1, {
-            'robot.id': id,
-            'robot.status.from': currentRobot.status,
-            'robot.status.to': robot.status,
-          });
-
-          span.setAttributes({
-            'robot.status.from': currentRobot.status,
-            'robot.status.to': robot.status,
-            'robot.status.changed': true,
-          });
-        }
+        recordStatusChange(span, id, currentRobot, robot);
 
         // Record database metrics
         databaseMetrics.queryDuration.record(Date.now() - startTime, {
@@ -461,12 +496,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
         });
         span.end();
 
-        const addressStatus = robot.ipAddress
-          ? await requestAddressFor(server, request, robot.ipAddress)
-          : null;
-        reloadRobotConnections(server);
-        fetchMapViaMappingBridge(server, robot).catch(() => {});
-        return { success: true, data: { ...robot, addressStatus } };
+        return await respondWithSavedRobot(server, request, robot);
       } catch (error: any) {
         databaseMetrics.queryDuration.record(Date.now() - startTime, {
           'db.operation': 'update',
@@ -476,7 +506,7 @@ const robotRoutes = async (server: AppFastifyInstance) => {
 
         span.setAttributes({
           'robot.update.success': false,
-          'robot.update.reason': error.code === 'P2025' ? 'not_found' : 'database_error',
+          'robot.update.reason': updateFailureReason(error.code),
         });
 
         if (error.code === 'P2025') {

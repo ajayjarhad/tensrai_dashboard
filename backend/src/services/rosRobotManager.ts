@@ -36,6 +36,7 @@ type ChannelRuntime = {
 };
 
 type ScanPoseSource = 'firmware' | 'sidecar' | 'computed' | 'none';
+type ScanOffsetSource = 'identity' | 'frame_id' | 'legacy' | 'default';
 type ScanPose2D = { x: number; y: number; theta: number };
 type ScanPoseSidecar = ScanPose2D & { stampMs?: number | undefined; receivedAtMs: number };
 // The ROS messages read here. The robot decides what it sends, so every field is optional and each
@@ -143,6 +144,22 @@ const rosStampToKey = (stamp: RosStamp | undefined): string | undefined => {
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
+
+const downsampleRanges = (ranges: number[]) => {
+  const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
+  const downsampledRanges: number[] = [];
+  for (let i = 0; i < ranges.length; i += stride) {
+    downsampledRanges.push(ranges[i]);
+  }
+  return { downsampledRanges, stride };
+};
+
+const stampedPose = (trans: RosVector, yaw: number, stampMs: number | undefined): StampedPose => ({
+  x: trans.x ?? 0,
+  y: trans.y ?? 0,
+  yaw,
+  stampMs,
+});
 
 const pickPose = (pose: RosPose | undefined) => {
   if (!pose) return undefined;
@@ -257,7 +274,7 @@ export class RosRobotManager extends EventEmitter {
   private mapPoseHistory: Array<Pose2D & { stampMs: number }> = [];
   private sensorOffsetsByFrame = new Map<string, Pose2D>();
   private lastLoggedScanFrameId?: string | null;
-  private lastLoggedOffsetSource?: 'identity' | 'frame_id' | 'legacy' | 'default';
+  private lastLoggedOffsetSource?: ScanOffsetSource;
   private lastScanDetailLogAt = 0;
   private lastScanPoseSidecarLogAt = 0;
   private lastScanPoseWaitLogAt = 0;
@@ -851,138 +868,35 @@ export class RosRobotManager extends EventEmitter {
 
   private processLaser(raw: RosLaserScan, options: { allowDefer?: boolean } = {}) {
     if (!raw?.ranges || !Array.isArray(raw.ranges)) {
-      if (!this.lastLoggedOffsetSource) {
-        console.log(
-          JSON.stringify({
-            tag: 'laser-skip',
-            reason: 'no-ranges',
-            keys: raw && typeof raw === 'object' ? Object.keys(raw) : null,
-          })
-        );
-        this.lastLoggedOffsetSource = 'default';
-      }
+      this.logLaserWithoutRanges(raw);
       return raw;
     }
 
-    const ranges = raw.ranges;
-    const stride = Math.max(1, Math.ceil(ranges.length / MAX_LASER_POINTS));
-    const downsampledRanges: number[] = [];
-    for (let i = 0; i < ranges.length; i += stride) {
-      downsampledRanges.push(ranges[i]);
-    }
-
+    const { downsampledRanges, stride } = downsampleRanges(raw.ranges);
     const scanFrameId = typeof raw?.header?.frame_id === 'string' ? raw.header.frame_id : undefined;
-    const scanInBaseFrame = scanFrameId !== undefined && this.baseFrames.includes(scanFrameId);
-    const frameOffset = scanInBaseFrame
-      ? { x: 0, y: 0, yaw: 0 }
-      : scanFrameId
-        ? this.sensorOffsetsByFrame.get(scanFrameId)
-        : undefined;
-    const offset = frameOffset ?? this.laserToBase ?? this.laserOffset;
-    const offsetSource: 'identity' | 'frame_id' | 'legacy' | 'default' = scanInBaseFrame
-      ? 'identity'
-      : frameOffset
-        ? 'frame_id'
-        : this.laserToBase
-          ? 'legacy'
-          : 'default';
-    if (
-      offsetSource !== this.lastLoggedOffsetSource ||
-      (scanFrameId ?? null) !== (this.lastLoggedScanFrameId ?? null)
-    ) {
-      console.log(
-        JSON.stringify({
-          tag: 'scan-offset',
-          scanFrameId: scanFrameId ?? null,
-          offsetSource,
-          offset,
-          knownFrames: [...this.sensorOffsetsByFrame.keys()],
-        })
-      );
-      this.lastLoggedOffsetSource = offsetSource;
-      this.lastLoggedScanFrameId = scanFrameId ?? null;
-    }
+    const offset = this.scanOffsetFor(scanFrameId);
     const stampMs = rosStampToMs(raw?.header?.stamp);
     const stampKey = rosStampToKey(raw?.header?.stamp);
-    const [fwX, fwY, fwTheta] = [raw?.pose?.x, raw?.pose?.y, raw?.pose?.theta];
-    const fwValid = isFiniteNumber(fwX) && isFiniteNumber(fwY) && isFiniteNumber(fwTheta);
     const sidecarPose = stampKey ? this.scanPoseByStamp.get(stampKey) : undefined;
-    let scanPoseSource: ScanPoseSource = 'none';
-    let scanPose: ScanPose2D | undefined;
-    if (fwValid) {
-      scanPose = { x: fwX, y: fwY, theta: fwTheta };
-      scanPoseSource = 'firmware';
-    } else if (sidecarPose) {
-      scanPose = { x: sidecarPose.x, y: sidecarPose.y, theta: sidecarPose.theta };
-      scanPoseSource = 'sidecar';
-    } else if ((options.allowDefer ?? true) && stampKey && this.channels.has('scanPose')) {
-      this.deferLaserUntilPose(raw, stampKey);
-      return undefined;
-    } else {
-      const pose =
-        stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
-      if (pose) {
-        scanPose = { x: pose.x, y: pose.y, theta: pose.yaw };
-        scanPoseSource = 'computed';
-      }
-    }
+    const resolved = this.scanPoseFor(raw, {
+      stampMs,
+      stampKey,
+      sidecarPose,
+      allowDefer: options.allowDefer ?? true,
+    });
+    if (!resolved) return undefined;
+    const { scanPose, scanPoseSource } = resolved;
 
     const nowMs = Date.now();
-    const scanInterval =
-      stampMs !== undefined && this.lastScanStampMs !== undefined
-        ? stampMs - this.lastScanStampMs
-        : null;
-    if (stampMs !== undefined) this.lastScanStampMs = stampMs;
-    if (nowMs - this.lastScanDetailLogAt >= 2000) {
-      this.lastScanDetailLogAt = nowMs;
-      const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
-      const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
-      const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
-      const amclExtrapolated =
-        amclLatest !== undefined && stampMs !== undefined && stampMs > amclLatest;
-      let omegaRadPerSec: number | null = null;
-      if (this.mapPoseHistory.length >= 2) {
-        const a = this.mapPoseHistory[this.mapPoseHistory.length - 2];
-        const b = this.mapPoseHistory[this.mapPoseHistory.length - 1];
-        if (a && b) {
-          const dt = (b.stampMs - a.stampMs) / 1000;
-          if (dt > 0) {
-            let dyaw = b.yaw - a.yaw;
-            if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
-            if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
-            omegaRadPerSec = dyaw / dt;
-          }
-        }
-      }
-      console.log(
-        JSON.stringify({
-          tag: 'scan-pose',
-          stampMs,
-          stampKey,
-          scanPose,
-          scanPoseSource,
-          scanPoseChannelEnabled: this.channels.has('scanPose'),
-          sidecarAvailable: !!sidecarPose,
-          sidecarStampMs: sidecarPose?.stampMs ?? null,
-          sidecarAgeMs: sidecarPose ? nowMs - sidecarPose.receivedAtMs : null,
-          sidecarBufferSize: this.scanPoseByStamp.size,
-          pendingLaserCount: this.pendingLaserByStamp.size,
-          scanPoseMatchTimeoutMs: SCAN_POSE_MATCH_TIMEOUT_MS,
-          scanInterval,
-          amclExtrapolated,
-          omegaRadPerSec,
-          amclLatestStamp: amclLatest,
-          amclAgeVsScan: amclLatest && stampMs !== undefined ? amclLatest - stampMs : null,
-          amclHistLen: this.mapPoseHistory.length,
-          m2oLatestStamp: m2oLatest,
-          m2oAgeVsScan: m2oLatest && stampMs !== undefined ? m2oLatest - stampMs : null,
-          o2bLatestStamp: o2bLatest,
-          o2bAgeVsScan: o2bLatest && stampMs !== undefined ? o2bLatest - stampMs : null,
-          m2oHistLen: this.mapToOdomHistory.length,
-          o2bHistLen: this.odomToBaseHistory.length,
-        })
-      );
-    }
+    const scanInterval = this.trackScanInterval(stampMs);
+    this.logScanDetail(nowMs, {
+      stampMs,
+      stampKey,
+      scanPose,
+      scanPoseSource,
+      sidecarPose,
+      scanInterval,
+    });
 
     return {
       ...raw,
@@ -994,6 +908,165 @@ export class RosRobotManager extends EventEmitter {
       frame: 'base_link',
       stampMs,
     };
+  }
+
+  private logLaserWithoutRanges(raw: RosLaserScan) {
+    if (this.lastLoggedOffsetSource) return;
+    console.log(
+      JSON.stringify({
+        tag: 'laser-skip',
+        reason: 'no-ranges',
+        keys: raw && typeof raw === 'object' ? Object.keys(raw) : null,
+      })
+    );
+    this.lastLoggedOffsetSource = 'default';
+  }
+
+  private scanOffsetFor(scanFrameId: string | undefined) {
+    const scanInBaseFrame = scanFrameId !== undefined && this.baseFrames.includes(scanFrameId);
+    const frameOffset = scanInBaseFrame
+      ? { x: 0, y: 0, yaw: 0 }
+      : scanFrameId
+        ? this.sensorOffsetsByFrame.get(scanFrameId)
+        : undefined;
+    const offset = frameOffset ?? this.laserToBase ?? this.laserOffset;
+    const offsetSource: ScanOffsetSource = scanInBaseFrame
+      ? 'identity'
+      : frameOffset
+        ? 'frame_id'
+        : this.laserToBase
+          ? 'legacy'
+          : 'default';
+    this.logScanOffsetChange(scanFrameId, offsetSource, offset);
+    return offset;
+  }
+
+  private logScanOffsetChange(
+    scanFrameId: string | undefined,
+    offsetSource: ScanOffsetSource,
+    offset: Pose2D
+  ) {
+    if (
+      offsetSource === this.lastLoggedOffsetSource &&
+      (scanFrameId ?? null) === (this.lastLoggedScanFrameId ?? null)
+    ) {
+      return;
+    }
+    console.log(
+      JSON.stringify({
+        tag: 'scan-offset',
+        scanFrameId: scanFrameId ?? null,
+        offsetSource,
+        offset,
+        knownFrames: [...this.sensorOffsetsByFrame.keys()],
+      })
+    );
+    this.lastLoggedOffsetSource = offsetSource;
+    this.lastLoggedScanFrameId = scanFrameId ?? null;
+  }
+
+  // Undefined means the scan was parked until its pose sidecar arrives or the wait times out.
+  private scanPoseFor(
+    raw: RosLaserScan,
+    scan: {
+      stampMs: number | undefined;
+      stampKey: string | undefined;
+      sidecarPose: ScanPoseSidecar | undefined;
+      allowDefer: boolean;
+    }
+  ): { scanPose: ScanPose2D | undefined; scanPoseSource: ScanPoseSource } | undefined {
+    const [fwX, fwY, fwTheta] = [raw?.pose?.x, raw?.pose?.y, raw?.pose?.theta];
+    if (isFiniteNumber(fwX) && isFiniteNumber(fwY) && isFiniteNumber(fwTheta)) {
+      return { scanPose: { x: fwX, y: fwY, theta: fwTheta }, scanPoseSource: 'firmware' };
+    }
+    const { stampMs, stampKey, sidecarPose } = scan;
+    if (sidecarPose) {
+      return {
+        scanPose: { x: sidecarPose.x, y: sidecarPose.y, theta: sidecarPose.theta },
+        scanPoseSource: 'sidecar',
+      };
+    }
+    if (scan.allowDefer && stampKey && this.channels.has('scanPose')) {
+      this.deferLaserUntilPose(raw, stampKey);
+      return undefined;
+    }
+    const pose =
+      stampMs !== undefined ? this.resolveScanPose(stampMs) : this.computeMapBasePose()?.pose;
+    if (!pose) return { scanPose: undefined, scanPoseSource: 'none' };
+    return { scanPose: { x: pose.x, y: pose.y, theta: pose.yaw }, scanPoseSource: 'computed' };
+  }
+
+  private trackScanInterval(stampMs: number | undefined) {
+    const scanInterval =
+      stampMs !== undefined && this.lastScanStampMs !== undefined
+        ? stampMs - this.lastScanStampMs
+        : null;
+    if (stampMs !== undefined) this.lastScanStampMs = stampMs;
+    return scanInterval;
+  }
+
+  private logScanDetail(
+    nowMs: number,
+    scan: {
+      stampMs: number | undefined;
+      stampKey: string | undefined;
+      scanPose: ScanPose2D | undefined;
+      scanPoseSource: ScanPoseSource;
+      sidecarPose: ScanPoseSidecar | undefined;
+      scanInterval: number | null;
+    }
+  ) {
+    if (nowMs - this.lastScanDetailLogAt < 2000) return;
+    this.lastScanDetailLogAt = nowMs;
+    const { stampMs, stampKey, scanPose, scanPoseSource, sidecarPose, scanInterval } = scan;
+    const m2oLatest = this.mapToOdomHistory.at(-1)?.stampMs;
+    const o2bLatest = this.odomToBaseHistory.at(-1)?.stampMs;
+    const amclLatest = this.mapPoseHistory.at(-1)?.stampMs;
+    const amclExtrapolated =
+      amclLatest !== undefined && stampMs !== undefined && stampMs > amclLatest;
+    console.log(
+      JSON.stringify({
+        tag: 'scan-pose',
+        stampMs,
+        stampKey,
+        scanPose,
+        scanPoseSource,
+        scanPoseChannelEnabled: this.channels.has('scanPose'),
+        sidecarAvailable: !!sidecarPose,
+        sidecarStampMs: sidecarPose?.stampMs ?? null,
+        sidecarAgeMs: sidecarPose ? nowMs - sidecarPose.receivedAtMs : null,
+        sidecarBufferSize: this.scanPoseByStamp.size,
+        pendingLaserCount: this.pendingLaserByStamp.size,
+        scanPoseMatchTimeoutMs: SCAN_POSE_MATCH_TIMEOUT_MS,
+        scanInterval,
+        amclExtrapolated,
+        omegaRadPerSec: this.amclYawRate(),
+        amclLatestStamp: amclLatest,
+        amclAgeVsScan: amclLatest && stampMs !== undefined ? amclLatest - stampMs : null,
+        amclHistLen: this.mapPoseHistory.length,
+        m2oLatestStamp: m2oLatest,
+        m2oAgeVsScan: m2oLatest && stampMs !== undefined ? m2oLatest - stampMs : null,
+        o2bLatestStamp: o2bLatest,
+        o2bAgeVsScan: o2bLatest && stampMs !== undefined ? o2bLatest - stampMs : null,
+        m2oHistLen: this.mapToOdomHistory.length,
+        o2bHistLen: this.odomToBaseHistory.length,
+      })
+    );
+  }
+
+  private amclYawRate(): number | null {
+    if (this.mapPoseHistory.length < 2) return null;
+    const a = this.mapPoseHistory[this.mapPoseHistory.length - 2];
+    const b = this.mapPoseHistory[this.mapPoseHistory.length - 1];
+    if (!a || !b) return null;
+    const dt = (b.stampMs - a.stampMs) / 1000;
+    if (dt > 0) {
+      let dyaw = b.yaw - a.yaw;
+      if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+      if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+      return dyaw / dt;
+    }
+    return null;
   }
 
   private subscribeTf(connectionId: string, connection: RosBridgeConnection) {
@@ -1105,40 +1178,40 @@ export class RosRobotManager extends EventEmitter {
     stampMs?: number
   ) {
     if (parent === 'map' && child === 'odom') {
-      this.mapToOdom = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
-      if (stampMs !== undefined) {
-        this.pushTfHistory(this.mapToOdomHistory, {
-          x: trans.x ?? 0,
-          y: trans.y ?? 0,
-          yaw,
-          stampMs,
-        });
-      }
+      this.mapToOdom = stampedPose(trans, yaw, stampMs);
+      this.pushStampedTf(this.mapToOdomHistory, trans, yaw, stampMs);
     }
     if (parent === 'map' && this.baseFrames.includes(child)) {
-      this.mapToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
+      this.mapToBase = stampedPose(trans, yaw, stampMs);
     }
     if (parent === 'odom' && this.baseFrames.includes(child)) {
-      this.odomToBase = { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs };
-      if (stampMs !== undefined) {
-        this.pushTfHistory(this.odomToBaseHistory, {
-          x: trans.x ?? 0,
-          y: trans.y ?? 0,
-          yaw,
-          stampMs,
-        });
-      }
+      this.odomToBase = stampedPose(trans, yaw, stampMs);
+      this.pushStampedTf(this.odomToBaseHistory, trans, yaw, stampMs);
     }
     if (this.baseFrames.includes(parent) && !this.baseFrames.includes(child)) {
-      const offset = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
-      const isNew = !this.sensorOffsetsByFrame.has(child);
-      this.sensorOffsetsByFrame.set(child, offset);
-      if (isNew) {
-        console.log(JSON.stringify({ tag: 'tf-static', parent, child, offset }));
-      }
-      if (child === 'laser' || child === 'base_scan') {
-        this.laserToBase = { ...offset };
-      }
+      this.updateSensorOffset(parent, child, trans, yaw);
+    }
+  }
+
+  private pushStampedTf(
+    history: Array<Pose2D & { stampMs: number }>,
+    trans: RosVector,
+    yaw: number,
+    stampMs: number | undefined
+  ) {
+    if (stampMs === undefined) return;
+    this.pushTfHistory(history, { x: trans.x ?? 0, y: trans.y ?? 0, yaw, stampMs });
+  }
+
+  private updateSensorOffset(parent: string, child: string, trans: RosVector, yaw: number) {
+    const offset = { x: trans.x ?? 0, y: trans.y ?? 0, yaw };
+    const isNew = !this.sensorOffsetsByFrame.has(child);
+    this.sensorOffsetsByFrame.set(child, offset);
+    if (isNew) {
+      console.log(JSON.stringify({ tag: 'tf-static', parent, child, offset }));
+    }
+    if (child === 'laser' || child === 'base_scan') {
+      this.laserToBase = { ...offset };
     }
   }
 
