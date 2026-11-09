@@ -10,7 +10,7 @@ type ManifestChunk = { file: string; src?: string; isEntry?: boolean; imports?: 
 
 const FRONTEND = resolve(import.meta.dir, '../../frontend');
 const PAGES: Record<string, string | null> = {
-  '/auth/login': null,
+  '/auth/login': 'src/features/auth/components/login-form.tsx',
   '/': 'src/features/robot-map/components/Dashboard.tsx',
   '/admin/robots': 'src/features/admin/components/index.ts',
   '/staff/organizations': 'src/features/staff/components/OrganizationsPage.tsx',

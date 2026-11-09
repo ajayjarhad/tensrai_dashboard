@@ -10,7 +10,6 @@ import {
 import { PERMISSIONS } from '@tensrai/shared';
 import { ArrowLeft, Home } from 'lucide-react';
 import { Suspense, useEffect } from 'react';
-import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
 import { StaffOrgBanner } from '@/features/staff/components/StaffOrgBanner';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
@@ -23,6 +22,15 @@ const Dashboard = lazyRouteComponent(
 );
 const adminPage = (name: 'RobotManagement' | 'UserCreation' | 'UserManagement') =>
   lazyRouteComponent(() => import('@/features/admin/components'), name);
+// Separate chunks: the password-setup form brings zod and react-hook-form, the login form doesn't.
+const LoginForm = lazyRouteComponent(
+  () => import('@/features/auth/components/login-form'),
+  'LoginForm'
+);
+const FirstTimePasswordForm = lazyRouteComponent(
+  () => import('@/features/auth/components/first-time-password-form'),
+  'FirstTimePasswordForm'
+);
 
 const PageLoading = ({ message }: { message: string }) => (
   <div className="min-h-screen flex items-center justify-center bg-background">
@@ -96,7 +104,11 @@ const loginRoute = createRoute({
       return <Navigate to="/" replace />;
     }
 
-    return <LoginForm />;
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <LoginForm />
+      </Suspense>
+    );
   },
 });
 
@@ -114,7 +126,11 @@ const firstTimeSetupRoute = createRoute({
       return <Navigate to="/" replace />;
     }
 
-    return <FirstTimePasswordForm />;
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <FirstTimePasswordForm />
+      </Suspense>
+    );
   },
 });
 
