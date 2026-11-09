@@ -2,6 +2,7 @@ import { ChevronDown, ChevronUp, Pause, Play, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { isRobotEmergencyActive } from '@/lib/robotStatus';
 import { cn } from '@/lib/utils';
+import { isMissionControlAllowedDuringEmergency } from '../../utils/missionControls';
 import {
   type MissionDockProps,
   matchesFocus,
@@ -87,7 +88,7 @@ function SummaryControls({
         variant="destructive"
         className="h-8 pointer-events-auto"
         onClick={() => onCancelMission(mission.robotId, mission.missionId)}
-        disabled={disabled}
+        disabled={disabled && !isMissionControlAllowedDuringEmergency('CANCEL_MISSION')}
       >
         <XCircle className="h-3.5 w-3.5 mr-1" />
         Cancel

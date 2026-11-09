@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { useRobotMissionStore } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
+import { isMissionControlAllowedDuringEmergency } from '../utils/missionControls';
 
 const MISSION_CONTROLS = {
   PAUSE_MISSION: {
@@ -59,7 +60,7 @@ export const useMissionCommands = (
 
   const sendMissionControl = useCallback(
     (event: keyof typeof MISSION_CONTROLS, robotId: string, missionId?: string) => {
-      if (isRobotEmergencyBlocked(robotId)) {
+      if (!isMissionControlAllowedDuringEmergency(event) && isRobotEmergencyBlocked(robotId)) {
         toast.error('Controls unavailable while emergency stop is active');
         return;
       }
