@@ -299,21 +299,31 @@ type EmergencySet = (
   updater: (state: EmergencyStoreState) => Partial<EmergencyStoreState> | EmergencyStoreState
 ) => void;
 
+// Unregistered before it is disconnected, so the status change its disconnect reports cannot
+// write a removed robot back into the store.
+const retireClient = (robotId: string) => {
+  const entry = clients.get(robotId);
+  clients.delete(robotId);
+  entry?.client.disconnect();
+};
+
 // Keeps a robot's bridge client, replacing it only when the robot's bridge address changed.
 const ensureEmergencyClient = (robot: EmergencyRobotConfig, set: EmergencySet) => {
   const configKey = buildConfigKey(robot);
   const existing = clients.get(robot.id);
   if (existing && existing.configKey === configKey) return;
 
-  existing?.client.disconnect();
+  retireClient(robot.id);
   const client = createRobotEmergencyWsClient({
     robotId: robot.id,
     robotName: robot.name,
     ...(robot.ipAddress ? { ipAddress: robot.ipAddress } : {}),
     ...(robot.emergencyBridgePort ? { emergencyBridgePort: robot.emergencyBridgePort } : {}),
   });
+  const isCurrent = () => clients.get(robot.id)?.client === client;
 
   client.addStatusListener(status => {
+    if (!isCurrent()) return;
     set(store => {
       const currentState = store.byRobot[robot.id];
       return {
@@ -326,6 +336,7 @@ const ensureEmergencyClient = (robot: EmergencyRobotConfig, set: EmergencySet) =
   });
 
   client.addEventListener(event => {
+    if (!isCurrent()) return;
     const observedAt = Date.now();
     set(store => {
       const currentState = store.byRobot[robot.id];
@@ -361,10 +372,8 @@ const toSyncedState = (
 });
 
 const disconnectRemovedClients = (keptIds: Set<string>) => {
-  for (const [robotId, entry] of Array.from(clients.entries())) {
-    if (keptIds.has(robotId)) continue;
-    entry.client.disconnect();
-    clients.delete(robotId);
+  for (const robotId of Array.from(clients.keys())) {
+    if (!keptIds.has(robotId)) retireClient(robotId);
   }
 };
 
@@ -419,8 +428,7 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
       const hasSocketConfig = USE_BACKEND_EMERGENCY_PROXY || Boolean(robot.ipAddress);
 
       if (!hasSocketConfig) {
-        clients.get(robot.id)?.client.disconnect();
-        clients.delete(robot.id);
+        retireClient(robot.id);
         nextByRobot[robot.id] = toStatusChangeState(robot, 'unconfigured', current);
         continue;
       }
@@ -439,10 +447,7 @@ export const useRobotEmergencyStore = create<EmergencyStoreState>((set, get) => 
   },
 
   disconnectAll: () => {
-    for (const entry of clients.values()) {
-      entry.client.disconnect();
-    }
-    clients.clear();
+    for (const robotId of Array.from(clients.keys())) retireClient(robotId);
     set({
       byRobot: {},
       pendingDispatch: null,

@@ -91,6 +91,18 @@ describe('syncing the fleet', () => {
 });
 
 describe('a fleet software e-stop', () => {
+  test('a removed robot leaves the store, so a fleet e-stop is not sent to it', async () => {
+    store().syncRobots([alpha, bravo]);
+    socketAt(0).acknowledges = true;
+    socketAt(0).open();
+    store().syncRobots([alpha]);
+
+    expect(store().byRobot['r2']).toBeUndefined();
+    const result = await store().sendFleetSoftwareEmergency(true);
+    expect(result.status).toBe('success');
+    expect(result.results.map(entry => entry.robotId)).toEqual(['r1']);
+  });
+
   test('one robot acknowledging while another is still connecting is a partial failure', async () => {
     store().syncRobots([alpha, bravo]);
     socketAt(0).acknowledges = true;
