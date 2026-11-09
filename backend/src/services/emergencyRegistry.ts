@@ -2,6 +2,7 @@ import type { PrismaClient, RobotMode } from '@prisma/client';
 import WebSocket from 'ws';
 import { emergencyMetrics } from '../metrics/index.js';
 import { parsePositiveMs } from '../utils/env.js';
+import { LatestCall } from '../utils/latestCall.js';
 import { ReconnectSchedule, startPingHeartbeat } from './bridgeSocket.js';
 import { deriveRobotModeFromMissionState } from './missionStatus.js';
 import { withApprovedAddress } from './robotAddress.js';
@@ -167,6 +168,7 @@ export class EmergencyRegistry {
   private robotConfigs = new Map<string, RobotEmergencyConfig>();
   private connections = new Map<string, ActiveConnection>();
   private reconnects = new ReconnectSchedule();
+  private reloads = new LatestCall();
   private snapshotTimers = new Map<string, NodeJS.Timeout>();
   private states = new Map<string, RobotEmergencyState>();
   private lastNonEmergencyStatusByRobot = new Map<string, RobotMode>();
@@ -190,6 +192,7 @@ export class EmergencyRegistry {
   }
 
   async reloadFromDb() {
+    const isLatest = this.reloads.begin();
     const robots = await withApprovedAddress(
       this.prisma,
       await this.prisma.robot.findMany({
@@ -204,6 +207,8 @@ export class EmergencyRegistry {
         },
       })
     );
+    // A reload that began later read newer data; applying this one after it would undo it.
+    if (!isLatest()) return;
 
     const desiredIds = new Set<string>();
 

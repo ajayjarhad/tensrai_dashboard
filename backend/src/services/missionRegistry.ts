@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { isRobotMissionStatusEvent } from '@tensrai/shared';
 import WebSocket from 'ws';
 import { parsePositiveMs } from '../utils/env.js';
+import { LatestCall } from '../utils/latestCall.js';
 import { ReconnectSchedule } from './bridgeSocket.js';
 import { MissionRunStore } from './missionRunStore.js';
 import {
@@ -139,6 +140,7 @@ export class MissionRegistry extends EventEmitter {
   private robotConfigs = new Map<string, RobotMissionConfig>();
   private connections = new Map<string, ActiveConnection>();
   private reconnects = new ReconnectSchedule();
+  private reloads = new LatestCall();
   private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
@@ -199,6 +201,7 @@ export class MissionRegistry extends EventEmitter {
   }
 
   async reloadFromDb() {
+    const isLatest = this.reloads.begin();
     try {
       this.log.info({}, 'Loading mission registry from DB');
       await this.runStore.hydrateActiveRuns();
@@ -221,6 +224,8 @@ export class MissionRegistry extends EventEmitter {
           },
         })
       );
+      // A reload that began later read newer data; applying this one after it would undo it.
+      if (!isLatest()) return;
 
       this.log.info({ robotCount: robots.length }, 'Mission registry robot configs loaded');
       const desiredIds = new Set<string>();

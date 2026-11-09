@@ -1,6 +1,7 @@
 import EventEmitter from 'node:events';
-import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient, Robot } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
+import { LatestCall } from '../utils/latestCall.js';
 import { withApprovedAddress } from './robotAddress.js';
 import { type RosChannelConfig, type RosRobotConfig, RosRobotManager } from './rosRobotManager.js';
 
@@ -142,8 +143,32 @@ const mergeChannels = (base: RosChannelConfig[], custom: RosChannelConfig[] | un
   return Array.from(byName.values());
 };
 
+type StoredRobot = Pick<Robot, 'id' | 'bridgePort' | 'mappingBridgePort' | 'channels'>;
+
+const robotConfig = (robot: StoredRobot, ipAddress: string): RosRobotConfig => {
+  const bridgeUrl = `ws://${ipAddress}:${robot.bridgePort ?? DEFAULT_PORT}`;
+  const connections = [
+    { id: DEFAULT_CONNECTION_ID, url: bridgeUrl },
+    { id: CONTROL_CONNECTION_ID, url: bridgeUrl },
+  ];
+  // Only attach the mapping connection when requested per-robot or via env
+  const mappingPort =
+    robot.mappingBridgePort ??
+    (process.env['ROS_MAPPING_BRIDGE_PORT'] ? DEFAULT_MAPPING_PORT : undefined);
+  if (mappingPort) {
+    connections.push({ id: 'mapping', url: `ws://${ipAddress}:${mappingPort}` });
+  }
+  return {
+    id: robot.id,
+    bridgeUrl,
+    connections,
+    channels: mergeChannels(defaultChannels, normalizeChannels(robot.channels)),
+  };
+};
+
 export class RosRegistry extends EventEmitter {
   private managers = new Map<string, RosRobotManager>();
+  private reloads = new LatestCall();
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -162,69 +187,26 @@ export class RosRegistry extends EventEmitter {
   }
 
   async reloadFromDb() {
+    const isLatest = this.reloads.begin();
     const robots = await withApprovedAddress(this.prisma, await this.prisma.robot.findMany());
+    // A reload that began later read newer data; applying this one after it would undo it.
+    if (!isLatest()) return;
     const desiredIds = new Set<string>();
 
     for (const robot of robots) {
       if (!robot.ipAddress) {
         continue;
       }
-      const bridgePort = robot.bridgePort ?? DEFAULT_PORT;
-      const configuredMappingPort = robot.mappingBridgePort;
-      const resolvedMappingPort =
-        configuredMappingPort ??
-        (process.env['ROS_MAPPING_BRIDGE_PORT'] ? DEFAULT_MAPPING_PORT : undefined);
-      const bridgeUrl = `ws://${robot.ipAddress}:${bridgePort}`;
-      const connections: Array<{ id: string; url: string }> = [
-        { id: DEFAULT_CONNECTION_ID, url: bridgeUrl },
-        { id: CONTROL_CONNECTION_ID, url: bridgeUrl },
-      ];
+      desiredIds.add(robot.id);
+      const nextConfig = robotConfig(robot, robot.ipAddress);
 
-      // Only attach the mapping connection when requested per-robot or via env
-      if (resolvedMappingPort) {
-        connections.push({
-          id: 'mapping',
-          url: `ws://${robot.ipAddress}:${resolvedMappingPort}`,
-        });
-      }
-      const channels = mergeChannels(defaultChannels, normalizeChannels(robot.channels));
-      const robotId = robot.id;
-      desiredIds.add(robotId);
-
-      const nextConfig: RosRobotConfig = {
-        id: robotId,
-        bridgeUrl,
-        connections,
-        channels,
-      };
-
-      const existing = this.managers.get(robotId);
+      const existing = this.managers.get(robot.id);
       if (existing && serializeConfig(existing.config) === serializeConfig(nextConfig)) {
         continue;
       }
 
       existing?.stop();
-      const manager = new RosRobotManager(nextConfig);
-      const formatErr = (e: unknown) =>
-        e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
-      const lastErrorLogAt = new Map<string, number>();
-      const shouldLog = (key: string, intervalMs = 60_000) => {
-        const now = Date.now();
-        const last = lastErrorLogAt.get(key) ?? 0;
-        if (now - last < intervalMs) return false;
-        lastErrorLogAt.set(key, now);
-        return true;
-      };
-      manager.on('error', error => {
-        const key = error instanceof Error ? error.message : String(error);
-        if (!shouldLog(key)) return;
-        this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
-      });
-      this.managers.set(robotId, manager);
-      this.emit(`manager:${robotId}`, manager);
-      manager.start().catch(error => {
-        this.logger?.error({ robotId, err: formatErr(error) }, 'Failed to start ROS manager');
-      });
+      this.startManager(robot.id, nextConfig);
     }
 
     // Remove stale managers
@@ -235,6 +217,30 @@ export class RosRegistry extends EventEmitter {
         this.emit(`manager:${robotId}`, undefined);
       }
     }
+  }
+
+  private startManager(robotId: string, config: RosRobotConfig) {
+    const manager = new RosRobotManager(config);
+    const formatErr = (e: unknown) =>
+      e instanceof Error ? { message: e.message, name: e.name, stack: e.stack } : e;
+    const lastErrorLogAt = new Map<string, number>();
+    const shouldLog = (key: string, intervalMs = 60_000) => {
+      const now = Date.now();
+      const last = lastErrorLogAt.get(key) ?? 0;
+      if (now - last < intervalMs) return false;
+      lastErrorLogAt.set(key, now);
+      return true;
+    };
+    manager.on('error', error => {
+      const key = error instanceof Error ? error.message : String(error);
+      if (!shouldLog(key)) return;
+      this.logger?.error({ robotId, err: formatErr(error) }, 'ROS manager error');
+    });
+    this.managers.set(robotId, manager);
+    this.emit(`manager:${robotId}`, manager);
+    manager.start().catch(error => {
+      this.logger?.error({ robotId, err: formatErr(error) }, 'Failed to start ROS manager');
+    });
   }
 
   getManager(robotId: string) {
