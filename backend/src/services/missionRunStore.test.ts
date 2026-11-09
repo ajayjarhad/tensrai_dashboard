@@ -263,3 +263,45 @@ test('a preview acked by a robot whose clock lags is still live, and one left al
   (runs[0] as { updatedAt: Date }).updatedAt = new Date(Date.now() - 31_000);
   expect(await store.getCurrentRun(meta.robotId)).toBeNull();
 });
+
+test('the e-stop request ids the robot reuses on every run never reopen a finished run', async () => {
+  const { store, runs } = createStore();
+  const estopCycle = async (runId: string) => {
+    const pause = controlAck(
+      'PAUSE_MISSION',
+      'Paused (Nav2 confirmed cancel)',
+      'EMERGENCY_AUTO_PAUSE'
+    );
+    await store.applyEvent(meta, 'MISSION_CONTROL_ACK', { ...pause, runId });
+    const resume = controlAck('RESUME_MISSION', 'Resuming from 2/4', 'EMERGENCY_AUTO_RESUME');
+    await store.applyEvent(meta, 'MISSION_CONTROL_ACK', { ...resume, runId });
+  };
+  const complete = (runId: string) =>
+    store.applyEvent(meta, 'MISSION_COMPLETED', {
+      status: 'success',
+      missionId: 1,
+      runId,
+      message: 'All waypoints completed',
+      completionTime: at(),
+    });
+
+  await startRunning(store);
+  await estopCycle('1');
+  await complete('1');
+
+  await store.recordCommandIntent(meta, 'SHOW_UP', { missionId: 1, requestId: 'show-2' });
+  await store.applyEvent(
+    meta,
+    'MISSION_CONTROL_ACK',
+    controlAck('SHOW_UP', 'Loaded map map.yaml', 'show-2')
+  );
+  await store.recordCommandIntent(meta, 'START_MISSION', { missionId: 1, requestId: 'start-2' });
+  await store.applyEvent(meta, 'MISSION_START_ACK', startAck('success', 'start-2', '2'));
+  await estopCycle('2');
+  await complete('2');
+
+  expect(runs.map(run => [run.runId, run.status])).toEqual([
+    ['1', 'COMPLETED'],
+    ['2', 'COMPLETED'],
+  ]);
+});

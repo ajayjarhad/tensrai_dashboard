@@ -256,6 +256,8 @@ export class MissionRunStore {
     return latest;
   }
 
+  // Only a run still in progress can take a control ack: the robot reuses ids such as
+  // EMERGENCY_AUTO_RESUME on every run, and matching a finished run would reopen it.
   private async findRunByRequest(robotId: string, requestId: string | undefined) {
     if (!requestId) return null;
     const prisma = this.prisma as any;
@@ -263,6 +265,7 @@ export class MissionRunStore {
       where: {
         robotId,
         requestIdLast: requestId,
+        status: { in: ACTIVE_STATUSES },
       },
       orderBy: { updatedAt: 'desc' },
     });
