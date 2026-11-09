@@ -1156,36 +1156,29 @@ export class RosRobotManager extends EventEmitter {
     buffer: Array<Pose2D & { stampMs: number }>,
     stampMs: number
   ): Pose2D | undefined {
-    if (buffer.length === 0) return undefined;
-    if (buffer.length === 1) {
-      const only = buffer[0]!;
-      return { x: only.x, y: only.y, yaw: only.yaw };
-    }
     let before: (Pose2D & { stampMs: number }) | undefined;
     let after: (Pose2D & { stampMs: number }) | undefined;
-    for (let i = 0; i < buffer.length; i++) {
-      const s = buffer[i]!;
-      if (s.stampMs <= stampMs) before = s;
-      if (s.stampMs >= stampMs) {
-        after = s;
+    for (const sample of buffer) {
+      if (sample.stampMs <= stampMs) before = sample;
+      if (sample.stampMs >= stampMs) {
+        after = sample;
         break;
       }
     }
-    if (before && after && before !== after) {
-      const span = after.stampMs - before.stampMs;
-      if (span <= 0) return { x: before.x, y: before.y, yaw: before.yaw };
-      const t = (stampMs - before.stampMs) / span;
-      let dYaw = after.yaw - before.yaw;
-      if (dYaw > Math.PI) dYaw -= 2 * Math.PI;
-      if (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-      return {
-        x: before.x + (after.x - before.x) * t,
-        y: before.y + (after.y - before.y) * t,
-        yaw: before.yaw + dYaw * t,
-      };
+    const nearest = before ?? after;
+    if (!nearest) return undefined;
+    if (!before || !after || after.stampMs <= before.stampMs) {
+      return { x: nearest.x, y: nearest.y, yaw: nearest.yaw };
     }
-    const sample = before ?? after!;
-    return { x: sample.x, y: sample.y, yaw: sample.yaw };
+    const t = (stampMs - before.stampMs) / (after.stampMs - before.stampMs);
+    let dYaw = after.yaw - before.yaw;
+    if (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+    if (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+    return {
+      x: before.x + (after.x - before.x) * t,
+      y: before.y + (after.y - before.y) * t,
+      yaw: before.yaw + dYaw * t,
+    };
   }
 
   private resolveScanPose(scanStampMs: number): Pose2D | undefined {
