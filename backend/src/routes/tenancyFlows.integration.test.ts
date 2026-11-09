@@ -96,6 +96,15 @@ if (url) {
     return false;
   };
   const settle = () => new Promise(resolve => setTimeout(resolve, 200));
+  // Each registry opens its own sockets, so the count can still be climbing after the first one.
+  const steadyClients = async () => {
+    let count = bridgeClients();
+    for (;;) {
+      await settle();
+      if (bridgeClients() === count) return count;
+      count = bridgeClients();
+    }
+  };
 
   const cookieOf = (res: { headers: Record<string, unknown> }) =>
     String(res.headers['set-cookie']).split(';')[0] ?? '';
@@ -172,7 +181,7 @@ if (url) {
   });
 
   test('approving the same address for a second org is refused while it is held', async () => {
-    const before = bridgeClients();
+    const before = await steadyClients();
     const row = await addressRow(orgB.id);
     const res = await call(staffCookie, 'POST', `/api/staff/addresses/${row?.id}/approve`);
     expect(res.statusCode).toBe(409);
