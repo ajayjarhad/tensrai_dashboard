@@ -20,6 +20,7 @@ import { useRobotSelection } from '../hooks/useRobotSelection';
 import { useRobots } from '../hooks/useRobots';
 import { useSetPose } from '../hooks/useSetPose';
 import { useTeleopControl } from '../hooks/useTeleopControl';
+import { RECENT_RUNS } from '../queries';
 import type { FocusedMission } from '../types';
 import { notifyFleetEmergencyResult, summarizeEmergency } from '../utils/fleetEmergency';
 import { mergeMissionRuntimeIntoRobot } from '../utils/missionRuntime';
@@ -35,7 +36,7 @@ import { TeleopPanel } from './TeleopPanel';
 // Hook order is effect order: several of these effects set the active map, and the last one wins.
 export function Dashboard() {
   const { data: robotsData, refetch: refetchRobots } = useRobots();
-  const { data: missionRunData } = useMissionRuns({ limit: 100 });
+  const { data: missionRunData } = useMissionRuns(RECENT_RUNS);
   const robotsFromApi = useMemo(() => robotsData ?? [], [robotsData]);
   const [focusedMission, setFocusedMission] = useState<FocusedMission | null>(null);
 

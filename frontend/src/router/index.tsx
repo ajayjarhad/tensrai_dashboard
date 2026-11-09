@@ -13,6 +13,7 @@ import { Suspense, useEffect } from 'react';
 import { StaffOrgBanner } from '@/features/staff/components/StaffOrgBanner';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
+import { queryClient } from '@/lib/query-client';
 import { useAuth, useAuthStore } from '@/stores/auth';
 
 // Each page is its own chunk, so sign-in doesn't download the map renderer or the admin screens.
@@ -59,6 +60,13 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  loader: () => {
+    if (!useAuthStore.getState().isAuthenticated) return;
+    // The page fetches the same queries itself if this chunk fails to load.
+    import('@/features/robot-map/queries')
+      .then(({ prefetchDashboard }) => prefetchDashboard(queryClient))
+      .catch(() => undefined);
+  },
   component: () => {
     const { user, isAuthenticated, isLoading, hasHydrated } = useAuth();
 
