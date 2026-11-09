@@ -134,10 +134,7 @@ export function Dashboard() {
 
   useRefetchOnEmergencyChange(robots, refetchRobots);
 
-  const { currentEmergencyAlert, acknowledgeEmergencyAlert } = useEmergencyAlerts(
-    robots,
-    robotsFromApi
-  );
+  const { emergencyAlerts, acknowledgeEmergencyAlerts } = useEmergencyAlerts(robots, robotsFromApi);
 
   useRobotConnections(robots);
 
@@ -342,10 +339,7 @@ export function Dashboard() {
         }
       />
 
-      <EmergencyAlertDialog
-        alert={currentEmergencyAlert}
-        onAcknowledge={acknowledgeEmergencyAlert}
-      />
+      <EmergencyAlertDialog alerts={emergencyAlerts} onAcknowledge={acknowledgeEmergencyAlerts} />
     </>
   );
 }

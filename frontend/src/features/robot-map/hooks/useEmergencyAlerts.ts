@@ -111,9 +111,10 @@ export const useEmergencyAlerts = (robots: Robot[], robotsFromApi: Robot[]) => {
     }
   }, [apiStatusById, robots]);
 
-  const acknowledgeEmergencyAlert = useCallback(() => {
-    setEmergencyAlerts(current => current.slice(1));
+  // Only the alerts the operator saw are cleared; one that arrived meanwhile stays up.
+  const acknowledgeEmergencyAlerts = useCallback((ids: string[]) => {
+    setEmergencyAlerts(current => current.filter(alert => !ids.includes(alert.id)));
   }, []);
 
-  return { currentEmergencyAlert: emergencyAlerts[0] ?? null, acknowledgeEmergencyAlert };
+  return { emergencyAlerts, acknowledgeEmergencyAlerts };
 };

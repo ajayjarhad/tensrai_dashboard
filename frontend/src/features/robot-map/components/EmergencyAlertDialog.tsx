@@ -8,15 +8,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { EmergencyAlert } from '../types';
+import { describeEmergencyAlerts } from '../utils/emergencyAlertText';
 
 type EmergencyAlertDialogProps = {
-  alert: EmergencyAlert | null;
-  onAcknowledge: () => void;
+  alerts: EmergencyAlert[];
+  onAcknowledge: (ids: string[]) => void;
 };
 
-export function EmergencyAlertDialog({ alert, onAcknowledge }: EmergencyAlertDialogProps) {
+export function EmergencyAlertDialog({ alerts, onAcknowledge }: EmergencyAlertDialogProps) {
   return (
-    <Dialog open={alert !== null}>
+    <Dialog open={alerts.length > 0}>
       <DialogContent
         className="bg-card border-safety-estop/30"
         onPointerDownOutside={event => event.preventDefault()}
@@ -25,13 +26,15 @@ export function EmergencyAlertDialog({ alert, onAcknowledge }: EmergencyAlertDia
         <DialogHeader>
           <DialogTitle className="text-safety-estop">Emergency Active</DialogTitle>
           <DialogDescription className="text-foreground/80">
-            {alert
-              ? `${alert.kind === 'hardware' ? 'Hardware' : 'Software'} emergency set on ${alert.robotName}.`
-              : ''}
+            {describeEmergencyAlerts(alerts)}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button type="button" variant="destructive" onClick={onAcknowledge}>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => onAcknowledge(alerts.map(alert => alert.id))}
+          >
             Acknowledge
           </Button>
         </DialogFooter>
