@@ -97,12 +97,14 @@ function MissionOption({
   mission,
   isSelected,
   isPending,
+  onOtherMap,
   pendingPhase,
   onSelect,
 }: {
   mission: MissionWithContext;
   isSelected: boolean;
   isPending: boolean;
+  onOtherMap: boolean;
   pendingPhase: MissionDockProps['pendingPhase'];
   onSelect: () => void;
 }) {
@@ -122,9 +124,11 @@ function MissionOption({
           ? 'border-status-active/60 bg-status-active/10'
           : isSelected
             ? 'border-primary/40 bg-primary/5'
-            : 'border-border bg-background hover:bg-muted/60'
+            : 'border-border bg-background hover:bg-muted/60',
+        onOtherMap && 'cursor-not-allowed opacity-50 hover:bg-background'
       )}
       onClick={onSelect}
+      disabled={onOtherMap}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm font-semibold truncate">{mission.name}</div>
@@ -144,7 +148,10 @@ function MissionOption({
         {mission.steps.length} waypoint
         {mission.steps.length === 1 ? '' : 's'}
       </div>
-      <div className="mt-1 text-xs text-muted-foreground truncate">{mission.mapName}</div>
+      <div className="mt-1 text-xs text-muted-foreground truncate">
+        {mission.mapName}
+        {onOtherMap && ' · not the robot’s current map'}
+      </div>
     </button>
   );
 }
@@ -254,6 +261,8 @@ function MissionPicker({
             mission={mission}
             isSelected={selectedMissionId === mission.id}
             isPending={isPending}
+            // SHOW_UP carries only the mission id, so a robot can only preview its current map.
+            onOtherMap={mission.mapId !== robot.mapId}
             pendingPhase={pendingPhase}
             onSelect={() => {
               onSetStartMission(mission.id);
