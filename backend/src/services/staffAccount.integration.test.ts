@@ -198,6 +198,36 @@ if (url) {
     await prisma.user.deleteMany({ where: { username } });
   });
 
+  test('a demo admin set to the staff address cannot take it from the default account', async () => {
+    const username = `demo-admin-${Date.now()}`;
+    commitHashOf('Seeded-password-1');
+
+    const { status } = runScript('seed.ts', '', {
+      SEED_ADMIN_USERNAME: username,
+      SEED_ADMIN_EMAIL: STAFF_EMAIL,
+      SEED_ADMIN_PASSWORD: 'Demo-password-1',
+    });
+
+    expect(status).toBe(0);
+    expect(await defaultStaff()).toMatchObject({
+      role: 'STAFF',
+      email: STAFF_EMAIL,
+      mustResetPassword: true,
+    });
+    expect(await prisma.user.count({ where: { username } })).toBe(0);
+  });
+
+  test('when another user already has the staff address, the seed says which one', async () => {
+    const username = `older-admin-${Date.now()}`;
+    const org = await prisma.organization.findFirstOrThrow();
+    await prisma.user.create({
+      data: { orgId: org.id, username, email: STAFF_EMAIL, role: 'ADMIN', passwordHash: '' },
+    });
+    commitHashOf('Seeded-password-1');
+
+    expect(seed().output).toContain(`already used by ${username}`);
+  });
+
   test('an older account on that address blocks the default, and staff:create takes it over', async () => {
     const username = `older-admin-${Date.now()}`;
     const org = await prisma.organization.findFirstOrThrow();

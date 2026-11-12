@@ -89,7 +89,14 @@ async function createDefaultStaffIfNoStaff(orgId: string) {
   const existing = await prisma.user.findFirst({
     where: { OR: [{ role: 'STAFF' }, { username }, { email }] },
   });
-  if (existing) return;
+  if (existing) {
+    if (existing.role !== 'STAFF') {
+      console.log(
+        ` → STAFF ${email}: not created, the address is already used by ${existing.username}`
+      );
+    }
+    return;
+  }
 
   const tempPasswordExpiry = new Date(Date.now() + TEMP_PASSWORD_TTL_MS);
   const user = await prisma.user.create({
@@ -117,11 +124,12 @@ async function createDefaultStaffIfNoStaff(orgId: string) {
 async function main() {
   console.log('🌱 Seeding baseline users');
   const org = await ensureDefaultOrg(prisma);
+  // First, so a demo account configured with the staff address can't take it.
+  await createDefaultStaffIfNoStaff(org.id);
   for (const user of seedUsers) {
     const outcome = await createUserIfMissing(user, org.id);
     console.log(` → ${user.role} ${user.email}: ${outcome}`);
   }
-  await createDefaultStaffIfNoStaff(org.id);
   if ((await prisma.user.count({ where: { role: 'STAFF' } })) === 0) {
     console.log(
       ' → No staff account yet. Run staff:create (see "Default staff account" in the README)'
