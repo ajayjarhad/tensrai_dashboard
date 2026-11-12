@@ -154,6 +154,21 @@ const run = async (name: Target) => {
 
   await emergencyStep('invalid JSON ignored', 'not json');
   await emergencyStep('unknown event ignored', cmd('NOPE'));
+  await emergencyStep('software e-stop on while idle', cmd('SOFTWARE_EMERGENCY', { status: true }));
+  await missionStep(
+    'START refused while idle in e-stop',
+    cmd('START_MISSION', { missionId: 1, requestId: 'i1' }),
+    200
+  );
+  await missionStep(
+    'RESUME refused while idle in e-stop',
+    cmd('RESUME_MISSION', { missionId: 1, requestId: 'i2' }),
+    200
+  );
+  await emergencyStep(
+    'software e-stop off while idle',
+    cmd('SOFTWARE_EMERGENCY', { status: false })
+  );
   await missionStep(
     'START for e-stop',
     cmd('START_MISSION', { missionId: 1, requestId: 'e1' }),
@@ -162,6 +177,16 @@ const run = async (name: Target) => {
   await emergencyStep('software e-stop on', cmd('SOFTWARE_EMERGENCY', { status: true }));
   await missionStep('auto pause', null, 500);
   await emergencyStep('software e-stop on again', cmd('SOFTWARE_EMERGENCY', { status: true }));
+  await missionStep(
+    'START refused while auto-paused',
+    cmd('START_MISSION', { missionId: 1, requestId: 'e2' }),
+    200
+  );
+  await missionStep(
+    'RESUME refused while auto-paused',
+    cmd('RESUME_MISSION', { missionId: 1, requestId: 'e3' }),
+    200
+  );
   await emergencyStep('software e-stop off', cmd('SOFTWARE_EMERGENCY', { status: false }));
   await missionStep('auto resume', null, 400);
   await missionStep('hardware e-stop', null, 100);

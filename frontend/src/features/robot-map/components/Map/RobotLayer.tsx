@@ -1,4 +1,4 @@
-import { Group } from 'react-konva';
+import { Group } from '@/lib/map/konva';
 import type { MapTransforms } from '@/lib/map/mapTransforms';
 import { worldToMapPixel } from '@/lib/map/mapTransforms';
 import { getRobotDisplayMode } from '@/lib/robotStatus';

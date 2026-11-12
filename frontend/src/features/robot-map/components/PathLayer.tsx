@@ -1,4 +1,4 @@
-import { Shape } from 'react-konva';
+import { Shape } from '@/lib/map/konva';
 
 interface PathLayerProps {
   points: Float32Array;

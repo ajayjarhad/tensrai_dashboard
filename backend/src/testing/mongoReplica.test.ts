@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const SCRIPT = resolve(import.meta.dirname, '../../scripts/mongoReplica.sh');
 const SYSTEM_TOOLS = ['cat', 'dirname', 'mkdir'];
@@ -87,20 +88,27 @@ test('with neither MongoDB nor a running Docker, it says what to do', () => {
   expect(output).toContain('Docker');
 });
 
-test('a local MongoDB uses wherever Homebrew really lives', () => {
+test('a local MongoDB uses wherever Homebrew really lives', async () => {
   const prefix = mkdtempSync(join(tmpdir(), 'brew-prefix-'));
   sandboxes.push(prefix);
-  const { run } = sandbox({
+  const { dir, run } = sandbox({
     brew: `echo "${prefix}"`,
     mongod: '',
     mongosh: "echo 'Initialized'",
   });
 
-  const { status, output, calls } = run();
+  const { status, output } = run();
+  // The script starts mongod in the background, so on a busy machine its stub can log the call
+  // just after the script has exited.
+  const callsLog = join(dir, 'calls.log');
+  const deadline = Date.now() + 3000;
+  while (!readFileSync(callsLog, 'utf8').includes('mongod --config') && Date.now() < deadline) {
+    await sleep(20);
+  }
 
   expect(output).not.toContain('Permission denied');
   expect(status).toBe(0);
-  expect(calls).toContain('mongod --config');
+  expect(readFileSync(callsLog, 'utf8')).toContain('mongod --config');
   expect(existsSync(join(prefix, 'var/log/mongodb'))).toBe(true);
   expect(existsSync(join(prefix, 'var/mongodb'))).toBe(true);
 });

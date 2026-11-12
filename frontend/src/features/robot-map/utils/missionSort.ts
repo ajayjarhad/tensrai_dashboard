@@ -1,9 +1,4 @@
-import type { MissionWithContext } from '../components/MissionDialog';
-
-export interface MissionPriority {
-  mission: MissionWithContext;
-  priority: number;
-}
+import type { MissionWithContext } from '../types';
 
 /**
  * Sorts missions based on:

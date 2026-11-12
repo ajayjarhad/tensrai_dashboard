@@ -1,6 +1,7 @@
 import type { MapYamlMetadata, ProcessedMapData } from '@tensrai/shared';
 import { useAuthStore } from '../../stores/auth';
 import { apiClient, resolveApiHttpBase } from '../api';
+import { shareInFlight } from '../utils/shareInFlight';
 import type { MapWorkerRequest, MapWorkerResponse } from './map.worker';
 import MapWorker from './map.worker?worker';
 
@@ -33,12 +34,7 @@ export interface LoadMapAssetsOptions {
   mapId: string;
   cacheEnabled?: boolean;
   timeout?: number;
-  useOptimizedParser?: boolean;
-  pgmQuality?: number;
-  chunkSize?: number;
   progressCallback?: (progress: MapLoadProgress) => void;
-  retryFailedOperations?: boolean;
-  maxRetries?: number;
 }
 
 type MapMetadataResponse = {
@@ -66,9 +62,8 @@ const CACHE_CONFIG = {
   DEFAULT_TIMEOUT: 30000,
 };
 
-const mapCache = new Map<string, { promise: Promise<ProcessedMapDataWithBitmap>; at: number }>();
-const cacheAccessOrder = new Map<string, number>();
-let accessCounter = 0;
+// A Map iterates in insertion order, so re-inserting on access keeps the least recently used first.
+const mapCache = new Map<string, Promise<ProcessedMapDataWithBitmap>>();
 
 let mapWorker: Worker | null = null;
 let mapWorkerRequestId = 0;
@@ -84,39 +79,19 @@ const getWorker = () => {
 };
 
 const getFromCache = (key: string): Promise<ProcessedMapDataWithBitmap> | undefined => {
-  const entry = mapCache.get(key);
-  if (!entry) return undefined;
-  accessCounter += 1;
-  cacheAccessOrder.set(key, accessCounter);
-  return entry.promise;
-};
-
-const removeFromCache = (key: string) => {
+  const promise = mapCache.get(key);
+  if (!promise) return undefined;
   mapCache.delete(key);
-  cacheAccessOrder.delete(key);
-};
-
-const evictLeastRecentlyUsed = () => {
-  let lruKey: string | undefined;
-  let oldest = Number.POSITIVE_INFINITY;
-  for (const [key, order] of cacheAccessOrder.entries()) {
-    if (order < oldest) {
-      oldest = order;
-      lruKey = key;
-    }
-  }
-  if (lruKey) {
-    removeFromCache(lruKey);
-  }
+  mapCache.set(key, promise);
+  return promise;
 };
 
 const addToCache = (key: string, promise: Promise<ProcessedMapDataWithBitmap>) => {
   if (mapCache.size >= CACHE_CONFIG.MAX_SIZE) {
-    evictLeastRecentlyUsed();
+    const leastRecentlyUsed = mapCache.keys().next().value;
+    if (leastRecentlyUsed !== undefined) mapCache.delete(leastRecentlyUsed);
   }
-  mapCache.set(key, { promise, at: Date.now() });
-  accessCounter += 1;
-  cacheAccessOrder.set(key, accessCounter);
+  mapCache.set(key, promise);
 };
 
 const processMapInWorker = async (
@@ -134,15 +109,6 @@ const processMapInWorker = async (
     };
     const handleMessage = (e: MessageEvent<MapWorkerResponse>) => {
       if (e.data.requestId !== requestId) return;
-      if (e.data.type === 'MAP_PROGRESS') {
-        options.progressCallback?.({
-          phase: 'decoding',
-          progress: 75 + ((e.data.progress ?? 0) / 100) * 20,
-          source: 'pgm',
-        });
-        return;
-      }
-      if (e.data.type !== 'MAP_PROCESSED') return;
       cleanup();
       if (e.data.error) {
         reject(new Error(e.data.error));
@@ -156,17 +122,9 @@ const processMapInWorker = async (
     }, options.timeout ?? CACHE_CONFIG.DEFAULT_TIMEOUT);
 
     worker.addEventListener('message', handleMessage);
-    worker.postMessage(
-      {
-        type: 'PROCESS_MAP',
-        requestId,
-        pgmBuffer,
-        yaml: metadata,
-        useOptimized: options.useOptimizedParser ?? pgmBuffer.byteLength > 5 * 1024 * 1024,
-        pgmQuality: options.pgmQuality,
-      } as MapWorkerRequest,
-      [pgmBuffer]
-    );
+    worker.postMessage({ requestId, pgmBuffer, yaml: metadata } satisfies MapWorkerRequest, [
+      pgmBuffer,
+    ]);
   });
 };
 
@@ -175,9 +133,32 @@ const buildAssetPath = (mapId: string, path: string, contentHash?: string | null
   return `maps/${mapId}/${path}${rev}`;
 };
 
-const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+const readAllChunks = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onChunk: (bytesReceived: number) => void
+) => {
+  const chunks: Uint8Array[] = [];
+  let bytesReceived = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      bytesReceived += value.byteLength;
+      onChunk(bytesReceived);
+    }
+  }
 
-const downloadBinaryOnce = async (
+  const bytes = new Uint8Array(bytesReceived);
+  let offset = 0;
+  chunks.forEach(chunk => {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return bytes;
+};
+
+const downloadBinary = async (
   path: string,
   options: LoadMapAssetsOptions,
   progress: Omit<MapLoadProgress, 'bytesReceived' | 'totalBytes' | 'progress'>
@@ -212,29 +193,14 @@ const downloadBinaryOnce = async (
       };
     }
 
-    const chunks: Uint8Array[] = [];
-    let bytesReceived = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        bytesReceived += value.byteLength;
-        options.progressCallback?.({
-          ...progress,
-          bytesReceived,
-          ...(totalBytes
-            ? { totalBytes, progress: Math.min(74, (bytesReceived / totalBytes) * 70) }
-            : {}),
-        });
-      }
-    }
-
-    const bytes = new Uint8Array(bytesReceived);
-    let offset = 0;
-    chunks.forEach(chunk => {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
+    const bytes = await readAllChunks(reader, bytesReceived => {
+      options.progressCallback?.({
+        ...progress,
+        bytesReceived,
+        ...(totalBytes
+          ? { totalBytes, progress: Math.min(74, (bytesReceived / totalBytes) * 70) }
+          : {}),
+      });
     });
     return {
       bytes,
@@ -243,27 +209,6 @@ const downloadBinaryOnce = async (
   } finally {
     window.clearTimeout(timeoutId);
   }
-};
-
-const downloadBinary = async (
-  path: string,
-  options: LoadMapAssetsOptions,
-  progress: Omit<MapLoadProgress, 'bytesReceived' | 'totalBytes' | 'progress'>
-) => {
-  const attempts = options.retryFailedOperations ? (options.maxRetries ?? 3) + 1 : 1;
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await downloadBinaryOnce(path, options, progress);
-    } catch (error) {
-      lastError = error;
-      if (attempt === attempts - 1) break;
-      await wait(250 * (attempt + 1));
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('Map download failed');
 };
 
 const createImageFromBytes = async (bytes: Uint8Array, contentType?: string) => {
@@ -352,20 +297,94 @@ const mapResultFromDisplay = (
   return result;
 };
 
+type MapDetails = NonNullable<MapMetadataResponse['data']>;
+
+const loadDisplayResult = async (
+  mapId: string,
+  mapData: MapDetails,
+  options: LoadMapAssetsOptions
+) => {
+  for (const format of ['webp', 'png'] as const) {
+    try {
+      const display = await loadDisplayAsset(mapId, mapData, format, options);
+      if (display) {
+        options.progressCallback?.({ phase: 'ready', progress: 100, source: format });
+        return mapResultFromDisplay(mapData, display, format);
+      }
+    } catch (error) {
+      if (format === 'png') {
+        console.warn('Map display asset failed, falling back to PGM', error);
+      }
+    }
+  }
+  return null;
+};
+
+const loadPgmResult = async (mapId: string, mapData: MapDetails, options: LoadMapAssetsOptions) => {
+  const { metadata, features } = mapData;
+  const pgmDownload = await downloadBinary(
+    buildAssetPath(mapId, 'image', mapData.contentHash),
+    options,
+    {
+      phase: 'downloading-pgm-fallback',
+      source: 'pgm',
+      message: 'Downloading raw PGM map',
+    }
+  );
+  const pgmBuffer = pgmDownload.bytes.buffer.slice(
+    pgmDownload.bytes.byteOffset,
+    pgmDownload.bytes.byteOffset + pgmDownload.bytes.byteLength
+  );
+  options.progressCallback?.({ phase: 'decoding', progress: 75, source: 'pgm' });
+  const result = await processMapInWorker(pgmBuffer, metadata, options);
+
+  if (!result.width || !result.height || !result.bitmap) {
+    throw new Error('Map worker returned incomplete data');
+  }
+
+  options.progressCallback?.({ phase: 'ready', progress: 100, source: 'pgm' });
+  return {
+    imageData: {
+      width: result.width,
+      height: result.height,
+      data: new Uint8ClampedArray(0),
+    },
+    meta: {
+      width: result.width,
+      height: result.height,
+      resolution: Number(metadata.resolution ?? 0.05),
+      origin: (metadata.origin ?? [0, 0, 0]) as [number, number, number],
+      occupiedThresh: Number(metadata.occupied_thresh ?? 0.65),
+      freeThresh: Number(metadata.free_thresh ?? 0.196),
+    },
+    imageBitmap: result.bitmap,
+    ...(features ? { features } : {}),
+    ...(mapData.contentHash ? { contentHash: mapData.contentHash } : {}),
+    source: 'pgm',
+  } as ProcessedMapDataWithBitmap;
+};
+
+const metadataInFlight = new Map<string, Promise<MapMetadataResponse>>();
+
+// The mission list, the map view and the prefetcher all ask for a map at startup.
+export const fetchMapMetadata = (mapId: string, timeout = CACHE_CONFIG.DEFAULT_TIMEOUT) =>
+  shareInFlight(metadataInFlight, mapId, () =>
+    apiClient.get<MapMetadataResponse>(`maps/${mapId}`, { timeout })
+  );
+
 export async function loadMapAssets(
   options: LoadMapAssetsOptions
 ): Promise<ProcessedMapDataWithBitmap> {
   const { mapId, cacheEnabled = true, timeout = CACHE_CONFIG.DEFAULT_TIMEOUT } = options;
   options.progressCallback?.({ phase: 'fetching-metadata', progress: 2 });
 
-  const mapResponse = await apiClient.get<MapMetadataResponse>(`maps/${mapId}`, { timeout });
+  const mapResponse = await fetchMapMetadata(mapId, timeout);
 
   if (!mapResponse.success || !mapResponse.data) {
     throw new Error('Failed to load map metadata');
   }
 
   const mapData = mapResponse.data;
-  const { metadata, features } = mapData;
   const cacheKey = cacheKeyForMap(mapId, mapData.contentHash, mapData.featuresHash);
 
   if (cacheEnabled) {
@@ -379,61 +398,11 @@ export async function loadMapAssets(
 
   const loadingPromise = (async () => {
     try {
-      for (const format of ['webp', 'png'] as const) {
-        try {
-          const display = await loadDisplayAsset(mapId, mapData, format, options);
-          if (display) {
-            options.progressCallback?.({ phase: 'ready', progress: 100, source: format });
-            return mapResultFromDisplay(mapData, display, format);
-          }
-        } catch (error) {
-          if (format === 'png') {
-            console.warn('Map display asset failed, falling back to PGM', error);
-          }
-        }
-      }
-
-      const pgmDownload = await downloadBinary(
-        buildAssetPath(mapId, 'image', mapData.contentHash),
-        options,
-        {
-          phase: 'downloading-pgm-fallback',
-          source: 'pgm',
-          message: 'Downloading raw PGM map',
-        }
-      );
-      const pgmBuffer = pgmDownload.bytes.buffer.slice(
-        pgmDownload.bytes.byteOffset,
-        pgmDownload.bytes.byteOffset + pgmDownload.bytes.byteLength
-      );
-      const result = await processMapInWorker(pgmBuffer, metadata, options);
-
-      if (!result.width || !result.height || !result.bitmap) {
-        throw new Error('Map worker returned incomplete data');
-      }
-
-      options.progressCallback?.({ phase: 'ready', progress: 100, source: 'pgm' });
-      return {
-        imageData: {
-          width: result.width,
-          height: result.height,
-          data: new Uint8ClampedArray(0),
-        },
-        meta: {
-          width: result.width,
-          height: result.height,
-          resolution: Number(metadata.resolution ?? 0.05),
-          origin: (metadata.origin ?? [0, 0, 0]) as [number, number, number],
-          occupiedThresh: Number(metadata.occupied_thresh ?? 0.65),
-          freeThresh: Number(metadata.free_thresh ?? 0.196),
-        },
-        imageBitmap: result.bitmap,
-        ...(features ? { features } : {}),
-        ...(mapData.contentHash ? { contentHash: mapData.contentHash } : {}),
-        source: 'pgm',
-      } as ProcessedMapDataWithBitmap;
+      const display = await loadDisplayResult(mapId, mapData, options);
+      if (display) return display;
+      return await loadPgmResult(mapId, mapData, options);
     } catch (error) {
-      removeFromCache(cacheKey);
+      mapCache.delete(cacheKey);
       options.progressCallback?.({
         phase: 'failed',
         message: error instanceof Error ? error.message : 'Failed to load map',
@@ -449,31 +418,15 @@ export async function loadMapAssets(
   return loadingPromise;
 }
 
-export function clearMapAssetCache(): void {
-  mapCache.clear();
-  cacheAccessOrder.clear();
-  accessCounter = 0;
-}
-
 export function evictFromCache(mapId: string): void {
   for (const key of Array.from(mapCache.keys())) {
     if (key.startsWith(`map_${mapId}_`)) {
-      removeFromCache(key);
+      mapCache.delete(key);
     }
   }
 }
 
-export function getCacheStats(): { size: number; keys: string[]; maxSize: number } {
-  return {
-    size: mapCache.size,
-    keys: Array.from(mapCache.keys()),
-    maxSize: CACHE_CONFIG.MAX_SIZE,
-  };
-}
-
-export { loadMapAssets as default };
-
 // Decoded floor plans belong to one organization.
 useAuthStore.subscribe((state, previous) => {
-  if (state.user?.id !== previous.user?.id) clearMapAssetCache();
+  if (state.user?.id !== previous.user?.id) mapCache.clear();
 });

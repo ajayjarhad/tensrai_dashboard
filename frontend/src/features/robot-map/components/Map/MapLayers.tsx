@@ -1,8 +1,8 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import { type RefObject, useCallback, useEffect, useMemo, useState } from 'react';
-import { Group, Image as KonvaImage, Layer, Rect } from 'react-konva';
 import { toast } from 'sonner';
+import { Group, Image as KonvaImage, Layer, Rect } from '@/lib/map/konva';
 import { clampPixelToBounds, createMapTransforms } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
 import type { TempLocation } from '../../hooks/useMapLocations';
@@ -19,13 +19,12 @@ interface MapLayersProps {
   stageRef: RefObject<Konva.Stage | null>;
   mapGroupRef: RefObject<Konva.Group | null>;
   mapData: ProcessedMapData;
-  mapImage: HTMLImageElement | ImageBitmap | HTMLCanvasElement | undefined;
+  mapImage: HTMLImageElement | ImageBitmap | undefined;
   rotation: number;
   locations: TempLocation[];
   robots: Robot[];
   laserPoints?: Float32Array;
   pathPoints?: Float32Array;
-  overlayBitmap?: ImageBitmap | undefined;
   onRobotSelect?: ((robotId: string | null) => void) | undefined;
   stageScale?: number;
   selectedRobotId?: string | null;
@@ -46,7 +45,6 @@ export function MapLayers({
   robots,
   laserPoints = EMPTY_FLOATS,
   pathPoints = EMPTY_FLOATS,
-  overlayBitmap,
   onRobotSelect,
   stageScale = 1,
   selectedRobotId,
@@ -180,14 +178,8 @@ export function MapLayers({
 
       <Layer listening={false}>
         <Group {...sharedGroupProps}>
-          {overlayBitmap ? (
-            <KonvaImage image={overlayBitmap} width={mapWidth} height={mapHeight} />
-          ) : (
-            <>
-              <PathLayer points={pathPoints} />
-              <LaserLayer points={laserPoints} scale={stageScale} />
-            </>
-          )}
+          <PathLayer points={pathPoints} />
+          <LaserLayer points={laserPoints} scale={stageScale} />
         </Group>
       </Layer>
 

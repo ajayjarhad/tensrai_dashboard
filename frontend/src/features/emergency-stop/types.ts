@@ -10,7 +10,7 @@ type FleetEmergencySummary = {
 export interface EmergencyHeaderProps {
   className?: string;
   summary: FleetEmergencySummary;
-  pendingDispatch?: boolean;
+  pendingDesiredStatus?: boolean | null;
   canSendEmergency?: boolean;
   canReleaseSoftware?: boolean;
   onEmergencyAll?: () => void;

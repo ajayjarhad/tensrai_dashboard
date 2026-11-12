@@ -1,5 +1,5 @@
 import type { ProcessedMapData } from '@tensrai/shared';
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import { createMapTransforms, worldToMapPixel } from '../../../lib/map/mapTransforms';
 
 export interface TempLocation {
@@ -14,41 +14,25 @@ export interface TempLocation {
 }
 
 export function useMapLocations({ mapData }: { mapData: ProcessedMapData | null }) {
-  const [locations, setLocations] = useState<TempLocation[]>([]);
+  const locations = useMemo<TempLocation[]>(() => {
+    if (!mapData?.features?.locationTags || !mapData.meta) return [];
 
-  // Initialize locations from map data features
-  useEffect(() => {
-    if (mapData?.features?.locationTags && mapData.meta) {
-      const transforms = createMapTransforms(mapData.meta);
-
-      setLocations(
-        mapData.features.locationTags.map(tag => {
-          const pixelPos = worldToMapPixel({ x: tag.x, y: tag.y }, transforms);
-          // Adjust rotation by subtracting map origin rotation (if any)
-          // theta is in radians, convert to degrees for Konva
-          // Konva rotation is clockwise, ROS is counter-clockwise, but mapTransforms handles coordinate system
-          // For simple pins, we just convert radians to degrees.
-          // Ideally we should also adjust for origin yaw: (tag.theta - originYaw) * (180/PI)
-          // But let's stick to the requested translation first.
-
-          return {
-            id: tag.id,
-            name: tag.name,
-            x: pixelPos.x,
-            y: pixelPos.y,
-            rotation: tag.theta * (180 / Math.PI),
-            worldX: tag.x,
-            worldY: tag.y,
-            thetaRad: tag.theta,
-          };
-        })
-      );
-    } else {
-      setLocations([]);
-    }
+    const transforms = createMapTransforms(mapData.meta);
+    return mapData.features.locationTags.map(tag => {
+      const pixelPos = worldToMapPixel({ x: tag.x, y: tag.y }, transforms);
+      return {
+        id: tag.id,
+        name: tag.name,
+        x: pixelPos.x,
+        y: pixelPos.y,
+        // Konva takes degrees. This ignores the map origin's yaw, which pins haven't needed so far.
+        rotation: tag.theta * (180 / Math.PI),
+        worldX: tag.x,
+        worldY: tag.y,
+        thetaRad: tag.theta,
+      };
+    });
   }, [mapData]);
 
-  return {
-    locations,
-  };
+  return { locations };
 }

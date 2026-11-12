@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import net from 'node:net';
 import { WebSocketServer } from 'ws';
+import { MissionRegistry } from './missionRegistry.js';
 
-process.env['ROS_MISSION_CONNECT_TIMEOUT_MS'] = '50';
-process.env['ROS_MISSION_HEARTBEAT_INTERVAL_MS'] = '50';
-process.env['ROS_MISSION_HEARTBEAT_TIMEOUT_MS'] = '50';
+const SHORT_TIMEOUTS = {
+  ROS_MISSION_CONNECT_TIMEOUT_MS: '50',
+  ROS_MISSION_HEARTBEAT_INTERVAL_MS: '50',
+  ROS_MISSION_HEARTBEAT_TIMEOUT_MS: '50',
+};
 
-const { MissionRegistry } = await import('./missionRegistry.js');
 type MissionRegistryInstance = InstanceType<typeof MissionRegistry>;
 
 type TestRobot = {
@@ -149,11 +151,13 @@ const startHealthyMissionServer = async () => {
 };
 
 beforeEach(() => {
+  Object.assign(process.env, SHORT_TIMEOUTS);
   registries.length = 0;
   closeFns.length = 0;
 });
 
 afterEach(async () => {
+  for (const name of Object.keys(SHORT_TIMEOUTS)) delete process.env[name];
   for (const registry of registries) {
     registry.stop();
   }

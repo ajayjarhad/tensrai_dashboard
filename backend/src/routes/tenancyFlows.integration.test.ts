@@ -96,6 +96,15 @@ if (url) {
     return false;
   };
   const settle = () => new Promise(resolve => setTimeout(resolve, 200));
+  // Each registry opens its own sockets, so the count can still be climbing after the first one.
+  const steadyClients = async () => {
+    let count = bridgeClients();
+    for (;;) {
+      await settle();
+      if (bridgeClients() === count) return count;
+      count = bridgeClients();
+    }
+  };
 
   const cookieOf = (res: { headers: Record<string, unknown> }) =>
     String(res.headers['set-cookie']).split(';')[0] ?? '';
@@ -172,7 +181,7 @@ if (url) {
   });
 
   test('approving the same address for a second org is refused while it is held', async () => {
-    const before = bridgeClients();
+    const before = await steadyClients();
     const row = await addressRow(orgB.id);
     const res = await call(staffCookie, 'POST', `/api/staff/addresses/${row?.id}/approve`);
     expect(res.statusCode).toBe(409);
@@ -613,6 +622,62 @@ if (url) {
     expect(statuses.slice(0, 10).every(status => status === 400)).toBe(true);
     expect(statuses[10]).toBe(429);
     expect((await signIn(adminB.username)).statusCode).toBe(200);
+  });
+
+  test('setting a password ends every session the account had', async () => {
+    const tempPassword = `temp-${run}-password`;
+    const newPassword = `new-${run}-password`;
+    const user = await prisma.user.create({
+      data: {
+        orgId: orgA.id,
+        role: 'USER',
+        username: `setup-${run}`,
+        email: `setup-${run}@example.test`,
+        passwordHash: '',
+        mustResetPassword: true,
+        tempPasswordHash: await bcrypt.hash(tempPassword, 4),
+        tempPasswordExpiry: new Date(Date.now() + 60_000),
+      },
+    });
+    const thisDevice = cookieOf(await signIn(user.username, tempPassword));
+    const otherDevice = cookieOf(await signIn(user.username, tempPassword));
+
+    const setup = await call(thisDevice, 'POST', '/api/auth/first-time-setup', {
+      tempPassword,
+      newPassword,
+      confirmPassword: newPassword,
+    });
+    expect(setup.statusCode).toBe(200);
+
+    for (const cookie of [thisDevice, otherDevice]) {
+      expect((await call(cookie, 'GET', '/api/auth/session')).statusCode).toBe(401);
+    }
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+
+    const fresh = cookieOf(await signIn(user.username, newPassword));
+    expect((await call(fresh, 'GET', '/api/robots')).statusCode).toBe(200);
+  });
+
+  test('audit events record whom they acted on, whichever way they are written', async () => {
+    const created = await call(adminACookie, 'POST', '/api/users', {
+      username: `audited-${run}`,
+      email: `audited-${run}@example.test`,
+      role: 'USER',
+    });
+    const targetUserId = created.json().data.user.id;
+    await call(adminACookie, 'DELETE', `/api/users/${targetUserId}`);
+    await app.audit({
+      orgId: orgA.id,
+      userId: adminA.id,
+      role: 'ADMIN',
+      action: 'PLUGIN_AUDIT_PROBE',
+      targetUserId,
+    });
+
+    for (const action of ['TEMP_PASSWORD_CREATED', 'USER_DELETED', 'PLUGIN_AUDIT_PROBE']) {
+      const rows = await prisma.auditLog.count({ where: { action, targetUserId, orgId: orgA.id } });
+      expect([action, rows]).toEqual([action, 1]);
+    }
   });
 
   test('requests a client got wrong are answered as 4xx, not as server errors', async () => {

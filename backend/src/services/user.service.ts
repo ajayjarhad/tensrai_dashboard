@@ -57,6 +57,7 @@ export async function logAuditEvent(
         userId: event.userId,
         role: event.role,
         action: event.action,
+        targetUserId: event.targetUserId ?? null,
         timestamp: new Date(),
         metadata: event.metadata ?? null,
       },
@@ -85,13 +86,13 @@ export async function createUserWithTempPassword(
   });
 
   if (existingUser) {
-    throw new Error('User with this email or username already exists');
+    throw new ServiceError(400, 'User with this email or username already exists');
   }
 
   const tempPassword = userData.tempPassword || generateTemporaryPassword();
 
   if (tempPassword.length < 8) {
-    throw new Error('Temporary password must be at least 8 characters long');
+    throw new ServiceError(400, 'Temporary password must be at least 8 characters long');
   }
 
   const tempPasswordHash = await bcrypt.hash(tempPassword, 12);
@@ -153,15 +154,15 @@ export async function resetPasswordWithTemp(
   resetData: ResetPasswordInput
 ): Promise<{ success: boolean; message: string }> {
   if (resetData.newPassword !== resetData.confirmPassword) {
-    throw new Error('Passwords do not match');
+    throw new ServiceError(400, 'Passwords do not match');
   }
 
   if (resetData.newPassword.length < 8) {
-    throw new Error('Password must be at least 8 characters long');
+    throw new ServiceError(400, 'Password must be at least 8 characters long');
   }
 
   if (resetData.newPassword === resetData.tempPassword) {
-    throw new Error('Choose a password different from the temporary one');
+    throw new ServiceError(400, 'Choose a password different from the temporary one');
   }
 
   const user = await prisma.user.findUnique({
@@ -169,21 +170,21 @@ export async function resetPasswordWithTemp(
   });
 
   if (!user) {
-    throw new Error('User not found');
+    throw new ServiceError(400, 'User not found');
   }
 
   if (!user.tempPasswordHash || !user.tempPasswordExpiry) {
-    throw new Error('No temporary password found for this user');
+    throw new ServiceError(400, 'No temporary password found for this user');
   }
 
   if (new Date() > user.tempPasswordExpiry) {
-    throw new Error('Temporary password has expired');
+    throw new ServiceError(400, 'Temporary password has expired');
   }
 
   const isTempPasswordValid = await bcrypt.compare(resetData.tempPassword, user.tempPasswordHash);
 
   if (!isTempPasswordValid) {
-    throw new Error('Invalid temporary password');
+    throw new ServiceError(400, 'Invalid temporary password');
   }
 
   const newPasswordHash = await bcrypt.hash(resetData.newPassword, 12);
@@ -199,6 +200,8 @@ export async function resetPasswordWithTemp(
       updatedAt: new Date(),
     },
   });
+  // Everyone signed in with the old credentials goes, including the device doing this.
+  await prisma.session.deleteMany({ where: { userId } });
 
   await logAuditEvent(prisma, {
     userId: user.id,

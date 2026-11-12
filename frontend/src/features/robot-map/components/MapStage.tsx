@@ -1,12 +1,11 @@
-import type { ProcessedMapData } from '@tensrai/shared';
 import type Konva from 'konva';
 import { useMemo, useRef, useState } from 'react';
+import type { ProcessedMapDataWithBitmap } from '@/lib/map/loadMapAssets';
 import { createMapTransforms } from '@/lib/map/mapTransforms';
 import type { Robot } from '@/types/robot';
 import type { LaserScan, PathMessage, Pose2D } from '@/types/telemetry';
 import { useElementSize } from '../../../hooks/useElementSize';
 import { useMapFitting } from '../hooks/useMapFitting';
-import { useMapImage } from '../hooks/useMapImage';
 import { useMapLocations } from '../hooks/useMapLocations';
 import { useRobots } from '../hooks/useRobots';
 import { useTelemetryOverlayData } from '../hooks/useTelemetryOverlayData';
@@ -18,7 +17,7 @@ import { MapControls } from './MapStage/MapControls';
 import { useMapInteraction } from './MapStage/useMapInteraction';
 
 interface MapStageProps {
-  mapData: ProcessedMapData | null;
+  mapData: ProcessedMapDataWithBitmap | null;
   enablePanning?: boolean;
   enableZooming?: boolean;
   width?: number | string;
@@ -44,6 +43,19 @@ interface MapStageProps {
   dimNonMissionTags?: boolean;
 }
 
+const resolveStageSize = (
+  width: number | string,
+  height: number | string,
+  containerSize: { width: number; height: number }
+) => ({
+  width: typeof width === 'number' ? width : containerSize.width || 800,
+  height: typeof height === 'number' ? height : containerSize.height || 600,
+  style: {
+    width: typeof width === 'number' ? `${width}px` : (width ?? '100%'),
+    height: typeof height === 'number' ? `${height}px` : (height ?? '100%'),
+  },
+});
+
 export function MapStage({
   mapData,
   enablePanning = true,
@@ -65,7 +77,7 @@ export function MapStage({
   const { ref: containerRef, size: containerSize } = useElementSize<HTMLDivElement>();
   const [stageScale, setStageScale] = useState(1);
 
-  const mapImage = useMapImage(mapData, 'default');
+  const mapImage = mapData?.imageBitmap ?? mapData?.imageElement;
   const { locations } = useMapLocations({ mapData });
 
   const { data: robotsFetched = [] } = useRobots(!robotsProp);
@@ -75,12 +87,11 @@ export function MapStage({
   const stageRef = useRef<Konva.Stage | null>(null);
   const mapGroupRef = useRef<Konva.Group | null>(null);
 
-  const resolvedWidth = typeof width === 'number' ? width : containerSize.width || 800;
-  const resolvedHeight = typeof height === 'number' ? height : containerSize.height || 600;
-  const containerStyle = {
-    width: typeof width === 'number' ? `${width}px` : (width ?? '100%'),
-    height: typeof height === 'number' ? `${height}px` : (height ?? '100%'),
-  };
+  const {
+    width: resolvedWidth,
+    height: resolvedHeight,
+    style: containerStyle,
+  } = resolveStageSize(width, height, containerSize);
   const fitStageToMap = useMapFitting({
     mapData,
     stageRef,
@@ -126,13 +137,12 @@ export function MapStage({
     return undefined;
   }, [telemetry?.pose, telemetryRobotId, robots]);
 
-  const { laserPoints, pathPoints, overlayBitmap } = useTelemetryOverlayData({
+  const { laserPoints, pathPoints } = useTelemetryOverlayData({
     transforms,
     laser: telemetry?.laser,
     path: telemetry?.path,
     robotPose: activeRobotPose,
     laserPose: telemetry?.laserPose,
-    stageScale,
   });
 
   if (!mapData) {
@@ -164,7 +174,6 @@ export function MapStage({
           {...(onPoseCancel ? { onPoseCancel } : {})}
           laserPoints={laserPoints}
           pathPoints={pathPoints}
-          overlayBitmap={overlayBitmap}
           width={resolvedWidth}
           height={resolvedHeight}
           rotation={rotation}

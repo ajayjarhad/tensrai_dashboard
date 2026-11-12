@@ -324,6 +324,20 @@ const ce = (await m.waitEvent(
   15000
 )) as any;
 check('and it completes', ce?.payload?.status === 'success', ce);
+// The robot reuses EMERGENCY_AUTO_PAUSE/RESUME on every run, so its history is checked as a whole.
+const sameRun = (list: any[]) => list.filter((r: any) => r.runId === se?.payload?.runId);
+const estopHistory = await waitFor(async () => {
+  const list = await runs();
+  const mine = sameRun(list);
+  return mine.length === 1 && mine[0].status === 'COMPLETED' ? list : false;
+}, 5000);
+check('stored as one completed run', estopHistory, sameRun(await runs()));
+check(
+  'no earlier run was reopened by the e-stop acks',
+  estopHistory &&
+    (estopHistory as any[]).every((r: any) => !['RUNNING', 'PAUSED'].includes(r.status)),
+  (await runs()).map((r: any) => [r.runId, r.status])
+);
 
 section('mode change through the real bridge');
 m.clear();

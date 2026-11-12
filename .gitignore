@@ -151,6 +151,9 @@ logs
 # Biome
 .biome/
 
+# Claude Code worktrees; Biome rejects their biome.json as a nested root config unless ignored here
+.claude/worktrees/
+
 # Bun
 .bun-cache/
 

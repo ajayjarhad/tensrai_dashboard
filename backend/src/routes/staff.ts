@@ -1,3 +1,4 @@
+import type { RobotAddressStatus } from '@prisma/client';
 import { z } from 'zod';
 import { requireStaff } from '../middleware/auth.js';
 import { appErrorHandler } from '../plugins/errorHandler.js';
@@ -8,7 +9,13 @@ import {
   reloadRobotConnections,
 } from '../services/robotAddress.js';
 import { ServiceError } from '../services/user.service.js';
-import type { AppFastifyInstance } from '../types/app.js';
+import type {
+  AppFastifyInstance,
+  AppFastifyRequest,
+  AppSession,
+  IdParams,
+  SessionUser,
+} from '../types/app.js';
 
 const AdminLoginSchema = z.object({
   username: z.string().trim().min(3).max(50),
@@ -39,7 +46,7 @@ const parseBody = <T>(schema: z.ZodType<T>, body: unknown): T => {
 const staffRoutes = async (server: AppFastifyInstance) => {
   server.addHook('onRequest', requireStaff);
 
-  server.setErrorHandler((error: any, request: any, reply: any) => {
+  server.setErrorHandler((error: Parameters<typeof appErrorHandler>[0], request, reply) => {
     if (error instanceof ServiceError) {
       return reply.status(error.status).send({ success: false, error: error.message });
     }
@@ -52,14 +59,23 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return appErrorHandler(error, request, reply);
   });
 
-  const prisma = () => server.prisma as any;
+  const prisma = () => server.prisma;
 
-  const actorOf = async (request: any) => {
-    const user = await request.getCurrentUser();
-    return { id: user.id as string, role: user.role as string };
+  // requireStaff has already established the user and session for every route here.
+  const actorOf = async (request: AppFastifyRequest) => {
+    const user = (await request.getCurrentUser()) as SessionUser;
+    return { id: user.id, role: user.role };
   };
 
-  const audit = async (request: any, action: string, orgId: string, metadata: object) => {
+  const sessionOf = async (request: AppFastifyRequest) =>
+    (await request.getUserSession()) as AppSession;
+
+  const audit = async (
+    request: AppFastifyRequest,
+    action: string,
+    orgId: string,
+    metadata: Record<string, unknown>
+  ) => {
     const actor = await actorOf(request);
     await server.audit?.({ orgId, userId: actor.id, role: actor.role, action, metadata });
   };
@@ -103,7 +119,7 @@ const staffRoutes = async (server: AppFastifyInstance) => {
 
     return {
       success: true,
-      data: orgs.map((org: any) => ({
+      data: orgs.map(org => ({
         id: org.id,
         name: org.name,
         slug: org.slug,
@@ -115,14 +131,14 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     };
   });
 
-  server.post('/staff/orgs', async (request: any, reply: any) => {
+  server.post('/staff/orgs', async (request, reply) => {
     const input = parseBody(CreateOrgSchema, request.body);
     const result = await createOrgWithAdmin(prisma(), input, await actorOf(request));
     await audit(request, 'ORG_CREATED', result.org.id, { name: input.name, slug: input.slug });
     return reply.status(201).send({ success: true, data: result });
   });
 
-  server.post('/staff/orgs/:id/admins', async (request: any, reply: any) => {
+  server.post<IdParams>('/staff/orgs/:id/admins', async (request, reply) => {
     const { id } = request.params;
     const login = parseBody(AdminLoginSchema, request.body);
     const result = await addOrgAdmin(prisma(), id, login, await actorOf(request));
@@ -131,12 +147,12 @@ const staffRoutes = async (server: AppFastifyInstance) => {
   });
 
   // The acting organization lives on the session, so REST and sockets both follow it.
-  server.post('/staff/orgs/:id/enter', async (request: any) => {
+  server.post<IdParams>('/staff/orgs/:id/enter', async request => {
     const { id } = request.params;
     const org = await prisma().organization.findUnique({ where: { id }, select: { id: true } });
     if (!org) throw new ServiceError(404, 'Organization not found');
 
-    const session = await request.getUserSession();
+    const session = await sessionOf(request);
     await prisma().session.updateMany({
       where: { id: session.session.id },
       data: { activeOrgId: id },
@@ -145,8 +161,8 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return { success: true };
   });
 
-  server.post('/staff/exit', async (request: any) => {
-    const session = await request.getUserSession();
+  server.post('/staff/exit', async request => {
+    const session = await sessionOf(request);
     await prisma().session.updateMany({
       where: { id: session.session.id },
       data: { activeOrgId: null },
@@ -154,57 +170,68 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return { success: true };
   });
 
-  server.get('/staff/addresses', async (request: any) => {
-    const status = request.query?.status;
-    const addresses = await prisma().robotAddress.findMany({
-      where: status ? { status } : {},
-      orderBy: { createdAt: 'desc' },
-    });
-    const ips = addresses.map((address: any) => address.ip);
+  server.get<{ Querystring: { status?: RobotAddressStatus } }>(
+    '/staff/addresses',
+    async request => {
+      const { status } = request.query;
+      const addresses = await prisma().robotAddress.findMany({
+        where: status ? { status } : {},
+        orderBy: { createdAt: 'desc' },
+      });
+      const ips = addresses.map(address => address.ip);
 
-    const [orgs, robots, sameIp, requesters] = await Promise.all([
-      prisma().organization.findMany({ select: { id: true, name: true } }),
-      prisma().robot.findMany({
-        where: { ipAddress: { in: ips } },
-        select: { orgId: true, ipAddress: true, name: true },
-      }),
-      prisma().robotAddress.findMany({
-        where: { ip: { in: ips } },
-        select: { orgId: true, ip: true, status: true },
-      }),
-      prisma().user.findMany({
-        where: { id: { in: addresses.map((a: any) => a.requestedById).filter(Boolean) } },
-        select: { id: true, username: true },
-      }),
-    ]);
-    const orgNames = new Map(orgs.map((org: any) => [org.id, org.name]));
-    const usernames = new Map(requesters.map((user: any) => [user.id, user.username]));
+      const [orgs, robots, sameIp, requesters] = await Promise.all([
+        prisma().organization.findMany({ select: { id: true, name: true } }),
+        prisma().robot.findMany({
+          where: { ipAddress: { in: ips } },
+          select: { orgId: true, ipAddress: true, name: true },
+        }),
+        prisma().robotAddress.findMany({
+          where: { ip: { in: ips } },
+          select: { orgId: true, ip: true, status: true },
+        }),
+        prisma().user.findMany({
+          where: {
+            id: {
+              in: addresses.map(a => a.requestedById).filter((id): id is string => Boolean(id)),
+            },
+          },
+          select: { id: true, username: true },
+        }),
+      ]);
+      const orgNames = new Map(orgs.map(org => [org.id, org.name]));
+      const usernames = new Map(requesters.map(user => [user.id, user.username]));
 
-    return {
-      success: true,
-      data: addresses.map((address: any) => ({
-        id: address.id,
-        ip: address.ip,
-        status: address.status,
-        createdAt: address.createdAt,
-        orgId: address.orgId,
-        orgName: orgNames.get(address.orgId) ?? null,
-        requestedBy: usernames.get(address.requestedById) ?? null,
-        robots: robots
-          .filter((r: any) => r.orgId === address.orgId && r.ipAddress === address.ip)
-          .map((r: any) => r.name),
-        otherOrgs: sameIp
-          .filter((other: any) => other.ip === address.ip && other.orgId !== address.orgId)
-          .map((other: any) => ({
-            name: orgNames.get(other.orgId) ?? null,
-            status: other.status,
-          })),
-      })),
-    };
-  });
+      return {
+        success: true,
+        data: addresses.map(address => ({
+          id: address.id,
+          ip: address.ip,
+          status: address.status,
+          createdAt: address.createdAt,
+          orgId: address.orgId,
+          orgName: orgNames.get(address.orgId) ?? null,
+          requestedBy: usernames.get(address.requestedById as string) ?? null,
+          robots: robots
+            .filter(r => r.orgId === address.orgId && r.ipAddress === address.ip)
+            .map(r => r.name),
+          otherOrgs: sameIp
+            .filter(other => other.ip === address.ip && other.orgId !== address.orgId)
+            .map(other => ({
+              name: orgNames.get(other.orgId) ?? null,
+              status: other.status,
+            })),
+        })),
+      };
+    }
+  );
 
-  const decide = async (request: any, status: 'APPROVED' | 'REJECTED') => {
-    const address = await addressOr404(request.params.id);
+  const decide = async (
+    request: AppFastifyRequest,
+    id: string,
+    status: Exclude<RobotAddressStatus, 'PENDING'>
+  ) => {
+    const address = await addressOr404(id);
     if (status === 'APPROVED') await assertNotHeldElsewhere(address.ip, address.orgId);
 
     const actor = await actorOf(request);
@@ -217,12 +244,16 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return { success: true, data: updated };
   };
 
-  server.post('/staff/addresses/:id/approve', (request: any) => decide(request, 'APPROVED'));
-  server.post('/staff/addresses/:id/reject', (request: any) => decide(request, 'REJECTED'));
+  server.post<IdParams>('/staff/addresses/:id/approve', request =>
+    decide(request, request.params.id, 'APPROVED')
+  );
+  server.post<IdParams>('/staff/addresses/:id/reject', request =>
+    decide(request, request.params.id, 'REJECTED')
+  );
 
   // Robots in the organization lose the address too. Otherwise the startup backfill, which approves
   // any robot address with no record, would hand it straight back on the next restart.
-  server.delete('/staff/addresses/:id', async (request: any) => {
+  server.delete<IdParams>('/staff/addresses/:id', async request => {
     const address = await addressOr404(request.params.id);
     await prisma().$transaction([
       prisma().robotAddress.delete({ where: { id: address.id } }),
@@ -236,7 +267,7 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return { success: true };
   });
 
-  server.post('/staff/orgs/:id/addresses', async (request: any, reply: any) => {
+  server.post<IdParams>('/staff/orgs/:id/addresses', async (request, reply) => {
     const { id } = request.params;
     const org = await prisma().organization.findUnique({ where: { id }, select: { id: true } });
     if (!org) throw new ServiceError(404, 'Organization not found');
@@ -246,7 +277,11 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     await assertNotHeldElsewhere(parsed.ip, id);
 
     const actor = await actorOf(request);
-    const decision = { status: 'APPROVED', decidedById: actor.id, decidedAt: new Date() };
+    const decision = {
+      status: 'APPROVED' as const,
+      decidedById: actor.id,
+      decidedAt: new Date(),
+    };
     const address = await prisma().robotAddress.upsert({
       where: { orgId_ip: { orgId: id, ip: parsed.ip } },
       update: decision,
@@ -257,7 +292,7 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     return reply.status(201).send({ success: true, data: address });
   });
 
-  server.post('/staff/robots/:id/move', async (request: any) => {
+  server.post<IdParams>('/staff/robots/:id/move', async request => {
     const { id } = request.params;
     const { orgId } = parseBody(MoveRobotSchema, request.body);
     await moveRobotToOrg(prisma(), id, orgId);

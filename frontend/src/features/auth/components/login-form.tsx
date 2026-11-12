@@ -1,41 +1,46 @@
-import { zodResolver } from '@hookform/resolvers/zod';
 import { LogIn } from 'lucide-react';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
-import { FormError, LoadingButton } from '@/components/forms';
+import { type FormEvent, useState } from 'react';
+import { FormError } from '@/components/forms/form-error';
+import { LoadingButton } from '@/components/forms/loading-button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/stores/auth';
+import { type LoginField, loginFieldError } from '../loginValidation';
 
-const loginSchema = z.object({
-  username: z.string().min(1, 'Username is required'),
-  password: z.string().min(1, 'Password is required'),
-});
-
+// Plain state rather than react-hook-form and zod: two required fields don't justify shipping
+// both libraries to the first page every operator loads.
 export function LoginForm() {
   const { login, isLoading, error } = useAuth();
+  const [values, setValues] = useState({ username: '', password: '' });
+  const [edited, setEdited] = useState({ username: false, password: false });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const {
-    register,
-    handleSubmit,
-    watch,
-    formState: { errors, isSubmitting },
-  } = useForm({
-    resolver: zodResolver(loginSchema),
-    mode: 'onChange',
-    defaultValues: {
-      username: '',
-      password: '',
+  const { username, password } = values;
+  const canSubmit = Boolean(username.trim().length && password.trim().length);
+  const errors = {
+    username: loginFieldError('username', values, edited),
+    password: loginFieldError('password', values, edited),
+  };
+
+  const fieldProps = (name: LoginField) => ({
+    name,
+    value: values[name],
+    onChange: (event: { target: { value: string } }) => {
+      const value = event.target.value;
+      setValues(current => ({ ...current, [name]: value }));
+      setEdited(current => ({ ...current, [name]: true }));
     },
   });
 
-  const username = watch('username');
-  const password = watch('password');
-  const canSubmit = Boolean(username?.trim().length && password?.trim().length);
-
-  const onSubmit = async (data: { username: string; password: string }) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     if (isLoading || isSubmitting || !canSubmit) return;
-    await login(data);
+    setIsSubmitting(true);
+    try {
+      await login(values);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -46,7 +51,7 @@ export function LoginForm() {
           <p className="text-sm text-muted-foreground">Sign in to manage your robots</p>
         </div>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-6">
+        <form onSubmit={onSubmit} className="mt-8 space-y-6">
           <FormError errors={error} />
 
           <div className="space-y-4">
@@ -58,10 +63,10 @@ export function LoginForm() {
                 autoComplete="username"
                 placeholder="Username"
                 disabled={isLoading}
-                {...register('username')}
+                {...fieldProps('username')}
               />
               {errors.username && (
-                <p className="text-sm text-destructive mt-1">{errors.username.message}</p>
+                <p className="text-sm text-destructive mt-1">{errors.username}</p>
               )}
             </div>
 
@@ -73,10 +78,10 @@ export function LoginForm() {
                 autoComplete="current-password"
                 placeholder="Password"
                 disabled={isLoading}
-                {...register('password')}
+                {...fieldProps('password')}
               />
               {errors.password && (
-                <p className="text-sm text-destructive mt-1">{errors.password.message}</p>
+                <p className="text-sm text-destructive mt-1">{errors.password}</p>
               )}
             </div>
           </div>

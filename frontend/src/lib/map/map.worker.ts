@@ -1,53 +1,27 @@
 import type { MapYamlMetadata } from '@tensrai/shared';
-import { type ParsedPGM, parsePGM } from './pgm-parser';
-import { parsePGMOptimized } from './pgm-parser-optimized';
+import { parsePGM } from './pgm-parser';
 
-// Define message types
 export type MapWorkerRequest = {
-  type: 'PROCESS_MAP';
   requestId: number;
   pgmBuffer: ArrayBuffer;
   yaml: MapYamlMetadata;
-  useOptimized?: boolean;
-  pgmQuality?: number;
 };
 
 export type MapWorkerResponse = {
-  type: 'MAP_PROCESSED' | 'MAP_PROGRESS';
   requestId: number;
   bitmap?: ImageBitmap;
   width?: number;
   height?: number;
-  progress?: number;
   error?: string;
 };
 
 const ctx: Worker = self as any;
 
 ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
-  const { type, requestId, pgmBuffer, yaml, useOptimized, pgmQuality } = e.data;
-
-  if (type !== 'PROCESS_MAP') return;
+  const { requestId, pgmBuffer, yaml } = e.data;
 
   try {
-    let parsedPGM: ParsedPGM;
-    if (useOptimized) {
-      const result = await parsePGMOptimized(pgmBuffer, {
-        ...(pgmQuality !== undefined ? { quality: pgmQuality } : {}),
-        progressCallback: progress => {
-          ctx.postMessage({
-            type: 'MAP_PROGRESS',
-            requestId,
-            progress,
-          } as MapWorkerResponse);
-        },
-      });
-      parsedPGM = result.parsedPGM;
-    } else {
-      parsedPGM = parsePGM(pgmBuffer);
-    }
-
-    const { width, height, maxVal, data } = parsedPGM;
+    const { width, height, maxVal, data } = parsePGM(pgmBuffer);
     const { negate = 0 } = yaml;
     const rgbaBuffer = new Uint8ClampedArray(width * height * 4);
 
@@ -72,21 +46,11 @@ ctx.onmessage = async (e: MessageEvent<MapWorkerRequest>) => {
     const imageData = new ImageData(rgbaBuffer, width, height);
     const bitmap = await createImageBitmap(imageData);
 
-    ctx.postMessage(
-      {
-        type: 'MAP_PROCESSED',
-        requestId,
-        bitmap,
-        width,
-        height,
-      },
-      [bitmap]
-    );
+    ctx.postMessage({ requestId, bitmap, width, height } satisfies MapWorkerResponse, [bitmap]);
   } catch (error) {
     ctx.postMessage({
-      type: 'MAP_PROCESSED',
       requestId,
       error: error instanceof Error ? error.message : 'Unknown worker error',
-    } as any);
+    } satisfies MapWorkerResponse);
   }
 };

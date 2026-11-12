@@ -1,6 +1,9 @@
 import type { PrismaClient, RobotMode } from '@prisma/client';
 import WebSocket from 'ws';
 import { emergencyMetrics } from '../metrics/index.js';
+import { parsePositiveMs } from '../utils/env.js';
+import { LatestCall } from '../utils/latestCall.js';
+import { ReconnectSchedule, startPingHeartbeat } from './bridgeSocket.js';
 import { deriveRobotModeFromMissionState } from './missionStatus.js';
 import { withApprovedAddress } from './robotAddress.js';
 
@@ -32,8 +35,6 @@ type RobotEmergencyBridgeEvent =
 const MAX_EMERGENCY_FRAME_CHARS = 16 * 1024;
 const DEFAULT_EMERGENCY_BRIDGE_PORT = Number(process.env['ROS_EMERGENCY_BRIDGE_PORT'] ?? 8766);
 const SNAPSHOT_TIMEOUT_MS = 5_000;
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 10_000;
 
 type LoggerLike = {
   info: (obj: Record<string, unknown>, msg: string) => void;
@@ -63,6 +64,8 @@ type RobotEmergencyState = {
 type ActiveConnection = {
   socket: WebSocket;
   manualClose: boolean;
+  connectTimeout?: NodeJS.Timeout;
+  heartbeat?: NodeJS.Timeout;
 };
 type RobotEventListener = (payloadText: string) => void;
 
@@ -164,12 +167,19 @@ export class EmergencyRegistry {
   private stopped = false;
   private robotConfigs = new Map<string, RobotEmergencyConfig>();
   private connections = new Map<string, ActiveConnection>();
-  private reconnectTimers = new Map<string, NodeJS.Timeout>();
+  private reconnects = new ReconnectSchedule();
+  private reloads = new LatestCall();
   private snapshotTimers = new Map<string, NodeJS.Timeout>();
-  private reconnectAttempts = new Map<string, number>();
   private states = new Map<string, RobotEmergencyState>();
   private lastNonEmergencyStatusByRobot = new Map<string, RobotMode>();
   private robotEventListeners = new Map<string, Set<RobotEventListener>>();
+  // Read per instance, not at import, so the settings never depend on which module loaded first.
+  private readonly connectTimeoutMs = parsePositiveMs('ROS_EMERGENCY_CONNECT_TIMEOUT_MS', 5_000);
+  // Much tighter than the mission bridge because an operator's e-stop depends on this socket.
+  private readonly heartbeatIntervalMs = parsePositiveMs(
+    'ROS_EMERGENCY_HEARTBEAT_INTERVAL_MS',
+    3_000
+  );
 
   constructor(prisma: PrismaClient, log: LoggerLike) {
     this.prisma = prisma;
@@ -182,6 +192,7 @@ export class EmergencyRegistry {
   }
 
   async reloadFromDb() {
+    const isLatest = this.reloads.begin();
     const robots = await withApprovedAddress(
       this.prisma,
       await this.prisma.robot.findMany({
@@ -196,6 +207,8 @@ export class EmergencyRegistry {
         },
       })
     );
+    // A reload that began later read newer data; applying this one after it would undo it.
+    if (!isLatest()) return;
 
     const desiredIds = new Set<string>();
 
@@ -242,7 +255,7 @@ export class EmergencyRegistry {
       this.lastNonEmergencyStatusByRobot.delete(robotId);
       this.states.delete(robotId);
       this.disconnectRobot(robotId);
-      this.clearReconnectTimer(robotId);
+      this.reconnects.cancel(robotId);
       this.clearSnapshotTimer(robotId);
     }
   }
@@ -250,9 +263,7 @@ export class EmergencyRegistry {
   stop() {
     this.stopped = true;
 
-    for (const robotId of Array.from(this.reconnectTimers.keys())) {
-      this.clearReconnectTimer(robotId);
-    }
+    this.reconnects.cancelAll();
     for (const robotId of Array.from(this.snapshotTimers.keys())) {
       this.clearSnapshotTimer(robotId);
     }
@@ -352,7 +363,7 @@ export class EmergencyRegistry {
     if (!config?.url || this.stopped) return;
 
     this.disconnectRobot(robotId);
-    this.clearReconnectTimer(robotId);
+    this.reconnects.cancel(robotId);
     this.setConnectionStatus(robotId, 'connecting');
 
     const socket = new WebSocket(config.url);
@@ -363,9 +374,18 @@ export class EmergencyRegistry {
 
     this.connections.set(robotId, connection);
 
+    connection.connectTimeout = setTimeout(() => {
+      this.dropDeadConnection(robotId, connection, 'Emergency bridge connect timed out');
+    }, this.connectTimeoutMs);
+    connection.connectTimeout.unref?.();
+
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
-      this.reconnectAttempts.set(robotId, 0);
+      clearTimeout(connection.connectTimeout);
+      connection.heartbeat = startPingHeartbeat(socket, this.heartbeatIntervalMs, reason =>
+        this.dropDeadConnection(robotId, connection, `Emergency bridge ${reason}`)
+      );
+      this.reconnects.connected(robotId);
       emergencyMetrics.connectionEvents.add(1, {
         'robot.id': robotId,
         'connection.status': 'connected',
@@ -406,28 +426,47 @@ export class EmergencyRegistry {
     });
 
     socket.on('close', () => {
-      if (this.connections.get(robotId) !== connection) return;
-      this.connections.delete(robotId);
-      this.clearSnapshotTimer(robotId);
-
-      if (connection.manualClose || this.stopped || !this.robotConfigs.get(robotId)?.url) {
-        return;
-      }
-
-      emergencyMetrics.connectionEvents.add(1, {
-        'robot.id': robotId,
-        'connection.status': 'disconnected',
-      });
-      this.setConnectionStatus(robotId, 'disconnected');
-      this.scheduleReconnect(robotId);
-      this.log.warn({ robotId, url: config.url }, 'Emergency bridge disconnected');
+      this.handleConnectionLost(robotId, connection, 'Emergency bridge disconnected');
     });
+  }
+
+  private clearConnectionTimers(connection: ActiveConnection) {
+    clearTimeout(connection.connectTimeout);
+    clearInterval(connection.heartbeat);
+  }
+
+  private handleConnectionLost(robotId: string, connection: ActiveConnection, reason: string) {
+    if (this.connections.get(robotId) !== connection) return;
+    this.clearConnectionTimers(connection);
+    this.connections.delete(robotId);
+    this.clearSnapshotTimer(robotId);
+
+    const url = this.robotConfigs.get(robotId)?.url;
+    if (connection.manualClose || this.stopped || !url) return;
+
+    emergencyMetrics.connectionEvents.add(1, {
+      'robot.id': robotId,
+      'connection.status': 'disconnected',
+    });
+    this.setConnectionStatus(robotId, 'disconnected');
+    this.reconnects.schedule(robotId, () => this.connectRobot(robotId));
+    this.log.warn({ robotId, url }, reason);
+  }
+
+  // Retire the connection before terminating it, so nothing depends on a dead socket's close event
+  // ever arriving, and a late one is ignored.
+  private dropDeadConnection(robotId: string, connection: ActiveConnection, reason: string) {
+    this.handleConnectionLost(robotId, connection, reason);
+    try {
+      connection.socket.terminate();
+    } catch {}
   }
 
   private disconnectRobot(robotId: string) {
     const connection = this.connections.get(robotId);
     if (!connection) return;
     connection.manualClose = true;
+    this.clearConnectionTimers(connection);
     this.connections.delete(robotId);
     this.clearSnapshotTimer(robotId);
     try {
@@ -435,30 +474,11 @@ export class EmergencyRegistry {
     } catch {}
   }
 
-  private clearReconnectTimer(robotId: string) {
-    const timer = this.reconnectTimers.get(robotId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.reconnectTimers.delete(robotId);
-  }
-
   private clearSnapshotTimer(robotId: string) {
     const timer = this.snapshotTimers.get(robotId);
     if (!timer) return;
     clearTimeout(timer);
     this.snapshotTimers.delete(robotId);
-  }
-
-  private scheduleReconnect(robotId: string) {
-    if (this.reconnectTimers.has(robotId) || this.stopped) return;
-    const attempts = this.reconnectAttempts.get(robotId) ?? 0;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempts, RECONNECT_MAX_MS);
-    this.reconnectAttempts.set(robotId, attempts + 1);
-    const timer = setTimeout(() => {
-      this.reconnectTimers.delete(robotId);
-      this.connectRobot(robotId);
-    }, delay);
-    this.reconnectTimers.set(robotId, timer);
   }
 
   private scheduleSnapshotTimeout(robotId: string) {

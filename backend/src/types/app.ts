@@ -1,7 +1,6 @@
-// @ts-nocheck
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
+import type { Span } from '@opentelemetry/api';
 import type { PrismaClient, User as PrismaUser } from '@prisma/client';
-import type { Auth } from '../config/auth.js';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { EmergencyRegistry } from '../services/emergencyRegistry.js';
 import type { MissionRegistry } from '../services/missionRegistry.js';
 import type { ScopedPrisma } from '../services/orgScope.js';
@@ -15,69 +14,43 @@ export interface AuditEvent {
   metadata?: Record<string, unknown> | null;
 }
 
+export type SessionUser = Pick<
+  PrismaUser,
+  'id' | 'orgId' | 'username' | 'email' | 'role' | 'displayName' | 'isActive' | 'mustResetPassword'
+>;
+
 export interface AppSession {
-  user: PrismaUser | null;
+  user: SessionUser | null;
   session: { id: string; token?: string; expiresAt: Date; activeOrgId?: string | null };
 }
 
-export interface AppFastifyReply {
-  code: (statusCode: number) => AppFastifyReply;
-  status: (statusCode: number) => AppFastifyReply;
-  send: (payload?: unknown) => AppFastifyReply;
-  header: (name: string, value: string | number | string[]) => AppFastifyReply;
-  removeHeader: (name: string) => AppFastifyReply;
-  setCookie: (name: string, value: string, options?: Record<string, unknown>) => AppFastifyReply;
-  statusCode: number;
-  raw: ServerResponse;
+declare module 'fastify' {
+  interface FastifyInstance {
+    prisma: PrismaClient;
+    emergencyRegistry?: EmergencyRegistry;
+    missionRegistry?: MissionRegistry;
+    audit(event: AuditEvent): Promise<void>;
+  }
+
+  interface FastifyRequest {
+    startTime?: number;
+    requestSpan: Span | null;
+    // Set by requireActiveSession; db is a Prisma client confined to this organization.
+    orgId: string | null;
+    db: ScopedPrisma;
+    getUserSession(): Promise<AppSession | null>;
+    // Reads the session again, ignoring this request's cached copy; for long-lived sockets.
+    readFreshSession(): Promise<AppSession | null>;
+    renewSessionIfStale(reply: FastifyReply): Promise<void>;
+    getCurrentUser(): Promise<SessionUser | null>;
+    isAuthenticated(): Promise<boolean>;
+    hasRole(role: string): Promise<boolean>;
+    audit?: FastifyInstance['audit'];
+  }
 }
 
-export interface AppFastifyRequest {
-  url: string;
-  method: string;
-  ip: string;
-  headers: IncomingHttpHeaders;
-  body: any;
-  params: Record<string, string>;
-  raw: IncomingMessage;
-  startTime?: number;
-  server: AppFastifyInstance;
-  // Set by requireActiveSession; db is a Prisma client confined to this organization.
-  orgId: string | null;
-  db: ScopedPrisma;
-  ws?: boolean;
-  getUserSession(): Promise<AppSession | null>;
-  // Reads the session again, ignoring this request's cached copy; for long-lived sockets.
-  readFreshSession(): Promise<AppSession | null>;
-  renewSessionIfStale(reply: AppFastifyReply): Promise<void>;
-  getCurrentUser(): Promise<PrismaUser | null>;
-  isAuthenticated(): Promise<boolean>;
-  hasRole(role: string): Promise<boolean>;
-  audit?: AppFastifyInstance['audit'];
-}
+export type IdParams = { Params: { id: string } };
 
-import type { FastifyInstance } from 'fastify';
-
-export type AppFastifyInstance = FastifyInstance & {
-  prisma: PrismaClient;
-  auth: Auth;
-  emergencyRegistry?: EmergencyRegistry;
-  missionRegistry?: MissionRegistry;
-  audit(event: AuditEvent): Promise<void>;
-  register: <T = any>(...args: any[]) => T;
-  get: <T = any>(...args: any[]) => T;
-  post: <T = any>(...args: any[]) => T;
-  put: <T = any>(...args: any[]) => T;
-  patch: <T = any>(...args: any[]) => T;
-  delete: <T = any>(...args: any[]) => T;
-  all: <T = any>(...args: any[]) => T;
-  options: <T = any>(...args: any[]) => T;
-  route: <T = any>(...args: any[]) => T;
-  setErrorHandler: (...args: any[]) => any;
-  setNotFoundHandler: (...args: any[]) => any;
-  listen: (...args: any[]) => any;
-  close: () => Promise<void>;
-  decorate: (...args: any[]) => any;
-  decorateRequest: (...args: any[]) => any;
-  addHook: (...args: any[]) => any;
-  log: any;
-};
+export type AppFastifyInstance = FastifyInstance;
+export type AppFastifyReply = FastifyReply;
+export type AppFastifyRequest = FastifyRequest;

@@ -29,30 +29,10 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  accounts Account[]
   sessions Session[]
 
   @@index([role])
   @@index([orgId])
-}
-
-model Account {
-  id                String  @id @default(auto()) @map("_id") @db.ObjectId
-  userId            String  @db.ObjectId
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
 }
 
 model Session {
@@ -71,21 +51,14 @@ model Session {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model Verification {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
-  identifier String
-  value      String
-  expires    DateTime
-
-  @@unique([identifier, value])
-}
-
 model AuditLog {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   orgId     String?  @db.ObjectId
   userId    String   @db.ObjectId
   role      String
   action    String
+  // Whom the action was done to, when it was done to another user.
+  targetUserId String? @db.ObjectId
   timestamp DateTime @default(now())
   metadata  Json?
 

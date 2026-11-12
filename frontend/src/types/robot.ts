@@ -70,6 +70,7 @@ export interface Robot {
     currentMissionId?: string;
     message?: string;
     lastEvent?: string;
+    lastEventAt?: number;
     updatedAt?: string;
     lastEventStatus?: string;
     lastRequestType?: string;

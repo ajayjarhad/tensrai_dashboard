@@ -7,7 +7,7 @@ import authPlugin from './plugins/auth.js';
 import databasePlugin from './plugins/database.js';
 import { appErrorHandler } from './plugins/errorHandler.js';
 import observabilityPlugin from './plugins/observability.js';
-import securityPlugin from './plugins/security.js';
+import securityPlugin, { TRUSTED_PROXIES } from './plugins/security.js';
 import tenantPlugin from './plugins/tenant.js';
 import mapRoutes from './routes/maps.js';
 import missionRunRoutes from './routes/missionRuns.js';
@@ -27,7 +27,7 @@ const server = createFastify({
   disableRequestLogging: true,
   // nginx runs on the private Docker network; without this every client looks like nginx to the
   // rate limiter. Public addresses aren't trusted, so a direct client can't spoof the header.
-  trustProxy: 'loopback,uniquelocal',
+  trustProxy: TRUSTED_PROXIES,
   logger: {
     level: process.env['LOG_LEVEL'] ?? 'warn',
     transport: {

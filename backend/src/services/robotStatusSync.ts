@@ -59,7 +59,7 @@ const resolveActiveMapFromStatus = async (
   currentMap: string | null | undefined,
   currentMissionId: string | number | null | undefined
 ) => {
-  const prisma = deps.prisma as any;
+  const prisma = deps.prisma;
   try {
     const rows = await prisma.robotMap.findMany({
       where: { robotId },
@@ -131,7 +131,7 @@ export const syncRobotStatusUpdate = async (
     };
   }
 
-  const prisma = deps.prisma as any;
+  const prisma = deps.prisma;
   const robot = await prisma.robot.findUnique({
     where: { id: robotId },
     select: {

@@ -10,13 +10,7 @@
     "lib": ["ES2022"],
     "types": ["node"],
     "verbatimModuleSyntax": false,
-    "noUncheckedIndexedAccess": false,
-    "paths": {
-      "@shared": ["../shared/src/index.ts"],
-      "@shared/*": ["../shared/src/*"],
-      "@tensrai/shared": ["../shared/src/index.ts"],
-      "@tensrai/shared/*": ["../shared/src/*"]
-    }
+    "noUncheckedIndexedAccess": false
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

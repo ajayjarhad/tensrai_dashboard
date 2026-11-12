@@ -3,7 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 // Everything belongs to an organization unless it is listed here, so a new model without an orgId
 // fails on its first query rather than leaking. orgScope.test.ts holds every model to this rule.
 // Only top-level queries are intercepted: nested `include` and nested writes are not scoped.
-export const GLOBAL_MODELS = new Set(['Organization', 'Account', 'Session', 'Verification']);
+export const GLOBAL_MODELS = new Set(['Organization', 'Session']);
 
 const FILTERED_OPERATIONS = new Set([
   'findFirst',

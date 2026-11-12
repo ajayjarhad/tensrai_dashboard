@@ -5,6 +5,8 @@ import rateLimit from '@fastify/rate-limit';
 import fp from 'fastify-plugin';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
+export const TRUSTED_PROXIES = 'loopback,uniquelocal';
+
 /**
  * Security plugin for Fastify
  * Sets up security headers, CORS, and rate limiting
@@ -76,7 +78,7 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
   await fastify.register(rateLimit, { global: false });
 
   await fastify.register(cors, {
-    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+    origin: (origin, cb) => {
       if (isAllowedOrigin(origin)) {
         return cb(null, true);
       }
@@ -154,21 +156,6 @@ const securityPlugin = async (fastify: AppFastifyInstance) => {
       timestamp: new Date().toISOString(),
     },
   }));
-
-  // Helper for routes that need explicit CORS headers (auth plugin does its own)
-  fastify.decorate('applyCorsHeaders', (reply: AppFastifyReply, origin?: string | null) => {
-    if (!isAllowedOrigin(origin)) return;
-    const selectedOrigin = origin || frontendUrl || 'http://localhost:8080';
-    reply.header('Access-Control-Allow-Origin', selectedOrigin);
-    reply.header('Access-Control-Allow-Credentials', 'true');
-    reply.header(
-      'Access-Control-Allow-Headers',
-      'Origin, X-Requested-With, Accept, Authorization, Content-Type, Cache-Control, Pragma'
-    );
-    reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    reply.header('Access-Control-Expose-Headers', 'Set-Cookie');
-    reply.header('Vary', 'Origin');
-  });
 };
 
 export default fp(securityPlugin, {

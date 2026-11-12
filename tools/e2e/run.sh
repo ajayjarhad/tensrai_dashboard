@@ -44,7 +44,8 @@ MAPS="$REPO/dashboard_ros/maps"
 mock() { # name, control port, serve map1 as the default map, extra docker args
   local name=$1 control=$2 swap=$3
   shift 3
-  docker run -d --name "mock-$name" -p "127.0.0.1:$control:9000" "$@" \
+  # --no-healthcheck: the image's check probes the backend's port, which a mock never opens.
+  docker run -d --name "mock-$name" --no-healthcheck -p "127.0.0.1:$control:9000" "$@" \
     -v "$HERE:/mock:ro" -v "$MAPS:/maps:ro" -e "ROBOT_NAME=$name" -e "SWAP_MAPS=$swap" \
     --entrypoint bun $PROJECT-backend /mock/mock-robot.ts >/dev/null
 }

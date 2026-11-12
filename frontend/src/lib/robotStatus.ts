@@ -1,4 +1,4 @@
-import type { RobotEmergencyConnectionStatus } from '@tensrai/shared';
+import { isMissionActivePhase, type RobotEmergencyConnectionStatus } from '@tensrai/shared';
 import { type Robot, RobotMode } from '@/types/robot';
 
 type EmergencyRuntimeSource = 'live' | 'fallback' | 'unknown';
@@ -16,6 +16,25 @@ export const shouldRearmEmergencyPopup = (
   connectionStatus: RobotEmergencyConnectionStatus | undefined,
   apiStatus: RobotMode | undefined
 ) => connectionStatus === 'connected' && !isEmergencyStatus(apiStatus);
+
+// Whether to fetch the robot list again because a robot's e-stop reading changed, so a release
+// reaches the popup re-arm above without waiting for the 10 s poll. `seen` holds each robot's
+// last reading from its first bridge connection on. Before that, the list just fetched is as new
+// as anything the bridge reports, so the first connection only matters for an e-stopped robot.
+export const emergencyChangeNeedsRefetch = (seen: Map<string, string>, robots: Robot[]) => {
+  let needed = false;
+  for (const robot of robots) {
+    const connection = robot.emergency?.connectionStatus;
+    const active = Boolean(robot.emergency?.effectiveEmergencyActive);
+    const previous = seen.get(robot.id);
+    if (previous === undefined && connection !== 'connected') continue;
+    const reading = `${connection}:${active}`;
+    seen.set(robot.id, reading);
+    needed ||=
+      previous === undefined ? active || isEmergencyStatus(robot.status) : previous !== reading;
+  }
+  return needed;
+};
 
 export const getRobotEmergencyMode = (robot: Robot): RobotMode | null => {
   if (hasLiveEmergencyState(robot)) {
@@ -35,12 +54,7 @@ export const getRobotDisplayMode = (robot: Robot): RobotMode => {
   const emergencyMode = getRobotEmergencyMode(robot);
   if (emergencyMode) return emergencyMode;
 
-  if (
-    robot.mission?.phase === 'running' ||
-    robot.mission?.phase === 'paused' ||
-    robot.mission?.phase === 'showing' ||
-    robot.mission?.phase === 'start_pending'
-  ) {
+  if (isMissionActivePhase(robot.mission?.phase)) {
     return RobotMode.MISSION;
   }
   if (robot.runtimeMode === 'teleop') return RobotMode.TELEOP;

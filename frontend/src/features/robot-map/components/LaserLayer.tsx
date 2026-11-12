@@ -1,4 +1,4 @@
-import { Shape } from 'react-konva';
+import { Shape } from '@/lib/map/konva';
 
 interface LaserLayerProps {
   points: Float32Array;

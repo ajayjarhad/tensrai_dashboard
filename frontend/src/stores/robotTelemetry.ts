@@ -9,11 +9,13 @@ import type {
   EmergencyCommand,
   LaserScan,
   ModeCommand,
+  OdometryMessage,
   PathMessage,
   Pose2D,
   TeleopCommand,
 } from '../types/telemetry';
 
+const AMCL_LATCH_MS = 8000;
 const TF_FRESH_MS = 4000;
 const ODOM_MIN_INTERVAL_MS = 100;
 const LASER_MIN_INTERVAL_MS = 160;
@@ -71,6 +73,154 @@ const normalizeAngle = (theta: number) => {
 
 const isFinitePose = (pose: Pose2D | undefined): pose is Pose2D =>
   !!pose && Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.theta);
+
+const tooSoon = (lastAt: number | undefined, minIntervalMs: number, now: number) =>
+  !!lastAt && now - lastAt < minIntervalMs;
+
+const isThrottled = (channel: string, current: RobotTelemetry, now: number) => {
+  if (channel === 'odom') return tooSoon(current.lastOdomAt, ODOM_MIN_INTERVAL_MS, now);
+  if (channel === 'laser') return tooSoon(current.lastLaserAt, LASER_MIN_INTERVAL_MS, now);
+  if (channel === 'waypoints') return tooSoon(current.lastPathAt, PATH_MIN_INTERVAL_MS, now);
+  return false;
+};
+
+const applyAmcl = (next: RobotTelemetry, amcl: OdometryMessage, now: number) => {
+  const previous = next.amclPose;
+  const amclPose = odomToPose(amcl);
+  next.amclPose = amclPose;
+  next.lastAmclAt = now;
+
+  // If AMCL jumps significantly (e.g., after initialpose), latch the new pose for a short window
+  // so it doesn't immediately snap back toward odom on the UI.
+  const jumped =
+    !previous ||
+    Math.hypot(amclPose.x - previous.x, amclPose.y - previous.y) > 0.35 ||
+    Math.abs(amclPose.theta - previous.theta) > 0.35;
+  if (jumped) {
+    next.latchedPose = amclPose;
+    next.latchedUntil = now + AMCL_LATCH_MS;
+  }
+};
+
+const applyOdomData = (next: RobotTelemetry, data: unknown, now: number) => {
+  try {
+    // Always drive pose from odom to avoid AMCL snap/auto-orient.
+    next.odomPose = odomToPose(data as OdometryMessage);
+    next.lastOdomAt = now;
+  } catch {
+    // ignore bad odom
+  }
+};
+
+const applyTfPoseData = (next: RobotTelemetry, data: unknown, now: number) => {
+  const pose = data as { x?: unknown; y?: unknown; theta?: unknown; yaw?: number } | null;
+  if (typeof pose?.x === 'number' && typeof pose?.y === 'number') {
+    next.tfPose = {
+      x: pose.x,
+      y: pose.y,
+      theta: typeof pose.theta === 'number' ? pose.theta : (pose.yaw ?? 0),
+    };
+    next.lastTfAt = now;
+  }
+};
+
+const applyAmclData = (next: RobotTelemetry, data: unknown, now: number) => {
+  try {
+    const amcl = data as OdometryMessage | null;
+    if (amcl?.pose?.pose) applyAmcl(next, amcl, now);
+  } catch {
+    // ignore bad amcl
+  }
+};
+
+const applyLaserData = (next: RobotTelemetry, data: unknown, now: number) => {
+  const laser = data as LaserScan;
+  next.laser = laser;
+  next.lastLaserAt = now;
+  if (isFinitePose(laser?.scanPose)) {
+    next.laserPose = { ...laser.scanPose };
+  } else {
+    delete next.laserPose;
+  }
+};
+
+const applyChannelData = (next: RobotTelemetry, channel: string, data: unknown, now: number) => {
+  if (channel === 'odom') {
+    applyOdomData(next, data, now);
+  } else if (channel === 'pose') {
+    applyTfPoseData(next, data, now);
+  } else if (channel === 'amcl') {
+    applyAmclData(next, data, now);
+  } else if (channel === 'laser') {
+    applyLaserData(next, data, now);
+  } else if (channel === 'waypoints') {
+    next.path = data as PathMessage;
+    next.lastPathAt = now;
+  }
+};
+
+const logLaserDetail = (robotId: string, next: RobotTelemetry, now: number) => {
+  const lastLog = lastLaserDetailLogAt.get(robotId) ?? 0;
+  if (now - lastLog < 2000) return;
+  lastLaserDetailLogAt.set(robotId, now);
+
+  const { laser, laserPose, pose: markerPose } = next;
+  const renderPoseDelta =
+    markerPose && laserPose
+      ? {
+          dx: markerPose.x - laserPose.x,
+          dy: markerPose.y - laserPose.y,
+          dist: Math.hypot(markerPose.x - laserPose.x, markerPose.y - laserPose.y),
+          dTheta: normalizeAngle(markerPose.theta - laserPose.theta),
+        }
+      : null;
+  console.log(
+    '[laser]',
+    JSON.stringify({
+      stampMs: laser?.stampMs,
+      frame: laser?.frame,
+      scanPose: laser?.scanPose,
+      scanPoseSource: laser?.scanPoseSource,
+      pickedLaserPose: laserPose,
+      markerPose,
+      renderPoseDelta,
+      tfPose: next.tfPose,
+      amclPose: next.amclPose,
+      latched: next.latchedPose,
+    })
+  );
+};
+
+const resolveDisplayPose = (next: RobotTelemetry, now: number) => {
+  const tfFresh = next.lastTfAt ? now - next.lastTfAt < TF_FRESH_MS : false;
+
+  let latchActive = next.latchedPose && next.latchedUntil && now < next.latchedUntil;
+  if (latchActive && tfFresh && next.tfPose && next.latchedPose) {
+    const dx = next.tfPose.x - next.latchedPose.x;
+    const dy = next.tfPose.y - next.latchedPose.y;
+    const dPos = Math.hypot(dx, dy);
+    const dTheta = Math.abs(normalizeAngle(next.tfPose.theta - next.latchedPose.theta));
+    if (dPos < 0.1 && dTheta < 0.1) {
+      latchActive = false;
+      delete next.latchedPose;
+      delete next.latchedUntil;
+    }
+  }
+  if (latchActive && next.latchedPose) {
+    next.pose = next.latchedPose;
+    next.poseSource = 'amcl';
+  } else if (tfFresh && next.tfPose) {
+    next.pose = next.tfPose;
+    next.poseSource = 'tf';
+  } else {
+    if (next.amclPose) {
+      next.pose = next.amclPose;
+      next.poseSource = 'amcl';
+    }
+    delete next.latchedPose;
+    delete next.latchedUntil;
+  }
+};
 
 export const useRobotTelemetryStore = create<TelemetryState>(set => ({
   telemetry: {},
@@ -164,152 +314,12 @@ const createTelemetryClient = (robotId: string, set: TelemetrySet) => {
     set((state: TelemetryState) => {
       const now = Date.now();
       const current = state.telemetry[robotId] ?? { status: client.getStatus() };
-
-      if (
-        event.channel === 'odom' &&
-        current.lastOdomAt &&
-        now - current.lastOdomAt < ODOM_MIN_INTERVAL_MS
-      ) {
-        return state;
-      }
-      if (
-        event.channel === 'laser' &&
-        current.lastLaserAt &&
-        now - current.lastLaserAt < LASER_MIN_INTERVAL_MS
-      ) {
-        return state;
-      }
-      if (
-        event.channel === 'waypoints' &&
-        current.lastPathAt &&
-        now - current.lastPathAt < PATH_MIN_INTERVAL_MS
-      ) {
-        return state;
-      }
+      if (isThrottled(event.channel, current, now)) return state;
 
       const next: RobotTelemetry = { ...current, lastMessageAt: now };
-
-      if (event.channel === 'odom') {
-        try {
-          // Always drive pose from odom to avoid AMCL snap/auto-orient.
-          next.odomPose = odomToPose(event.data as any);
-          next.lastOdomAt = now;
-        } catch {
-          // ignore bad odom
-        }
-      } else if (event.channel === 'pose') {
-        const data = event.data as any;
-        if (typeof data?.x === 'number' && typeof data?.y === 'number') {
-          next.tfPose = {
-            x: data.x,
-            y: data.y,
-            theta: typeof data.theta === 'number' ? data.theta : (data.yaw ?? 0),
-          };
-          next.lastTfAt = now;
-        }
-      } else if (event.channel === 'amcl') {
-        try {
-          const amcl = event.data as { pose?: { pose?: any } };
-          if (amcl?.pose?.pose) {
-            const prevAmcl = current.amclPose;
-            next.amclPose = odomToPose(amcl as any);
-            next.lastAmclAt = now;
-            // If AMCL jumps significantly (e.g., after initialpose), latch the new pose for a short window
-            // so it doesn't immediately snap back toward odom on the UI.
-            if (prevAmcl && next.amclPose) {
-              const dx = next.amclPose.x - prevAmcl.x;
-              const dy = next.amclPose.y - prevAmcl.y;
-              const dPos = Math.hypot(dx, dy);
-              const dTheta = Math.abs(next.amclPose.theta - prevAmcl.theta);
-              if (dPos > 0.35 || dTheta > 0.35) {
-                next.latchedPose = next.amclPose;
-                next.latchedUntil = now + 8000; // 8s latch
-              }
-            } else if (next.amclPose) {
-              next.latchedPose = next.amclPose;
-              next.latchedUntil = now + 8000;
-            }
-          }
-        } catch {
-          // ignore bad amcl
-        }
-      } else if (event.channel === 'laser') {
-        const laser = event.data as LaserScan;
-        next.laser = laser;
-        next.lastLaserAt = now;
-        if (isFinitePose(laser?.scanPose)) {
-          next.laserPose = { ...laser.scanPose };
-        } else {
-          delete next.laserPose;
-        }
-        const lastLog = lastLaserDetailLogAt.get(robotId) ?? 0;
-        if (now - lastLog >= 2000) {
-          lastLaserDetailLogAt.set(robotId, now);
-          const markerPose = next.pose;
-          const renderPoseDelta =
-            markerPose && next.laserPose
-              ? {
-                  dx: markerPose.x - next.laserPose.x,
-                  dy: markerPose.y - next.laserPose.y,
-                  dist: Math.hypot(
-                    markerPose.x - next.laserPose.x,
-                    markerPose.y - next.laserPose.y
-                  ),
-                  dTheta: normalizeAngle(markerPose.theta - next.laserPose.theta),
-                }
-              : null;
-          console.log(
-            '[laser]',
-            JSON.stringify({
-              stampMs: (laser as any)?.stampMs,
-              frame: laser?.frame,
-              scanPose: laser?.scanPose,
-              scanPoseSource: laser?.scanPoseSource,
-              pickedLaserPose: next.laserPose,
-              markerPose,
-              renderPoseDelta,
-              tfPose: next.tfPose,
-              amclPose: next.amclPose,
-              latched: next.latchedPose,
-            })
-          );
-        }
-      } else if (event.channel === 'waypoints') {
-        next.path = event.data as PathMessage;
-        next.lastPathAt = now;
-      } else if (event.channel === 'state') {
-        // optional: map to status; for now, leave as is
-      }
-
-      const tfFresh = next.lastTfAt ? now - next.lastTfAt < TF_FRESH_MS : false;
-
-      let latchActive = next.latchedPose && next.latchedUntil && now < next.latchedUntil;
-      if (latchActive && tfFresh && next.tfPose && next.latchedPose) {
-        const dx = next.tfPose.x - next.latchedPose.x;
-        const dy = next.tfPose.y - next.latchedPose.y;
-        const dPos = Math.hypot(dx, dy);
-        const dTheta = Math.abs(normalizeAngle(next.tfPose.theta - next.latchedPose.theta));
-        if (dPos < 0.1 && dTheta < 0.1) {
-          latchActive = false;
-          delete next.latchedPose;
-          delete next.latchedUntil;
-        }
-      }
-      if (latchActive && next.latchedPose) {
-        next.pose = next.latchedPose;
-        next.poseSource = 'amcl';
-      } else if (tfFresh && next.tfPose) {
-        next.pose = next.tfPose;
-        next.poseSource = 'tf';
-      } else if (next.amclPose) {
-        next.pose = next.amclPose;
-        next.poseSource = 'amcl';
-        delete next.latchedPose;
-        delete next.latchedUntil;
-      } else {
-        delete next.latchedPose;
-        delete next.latchedUntil;
-      }
+      applyChannelData(next, event.channel, event.data, now);
+      if (event.channel === 'laser') logLaserDetail(robotId, next, now);
+      resolveDisplayPose(next, now);
 
       return {
         telemetry: {

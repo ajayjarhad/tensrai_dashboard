@@ -29,7 +29,9 @@
     "type-check:backend": "cd backend && DATABASE_URL=\"${DATABASE_URL:-mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0}\" bun run generate && bun run type-check",
     "prepare": "husky install",
     "health-check": "bun run type-check && bun run lint",
-    "e2e": "tools/e2e/run.sh"
+    "e2e": "tools/e2e/run.sh",
+    "robots": "docker compose -p dashboard-robots -f docker-compose.yml -f tools/e2e/compose-robots.yml up -d --build web robot-1 robot-2 robot-3",
+    "robots:stop": "docker compose -p dashboard-robots -f docker-compose.yml -f tools/e2e/compose-robots.yml stop"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.6",

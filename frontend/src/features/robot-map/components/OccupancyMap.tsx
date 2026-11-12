@@ -70,11 +70,7 @@ export function OccupancyMap({
   highlightTagIds,
   dimNonMissionTags,
 }: OccupancyMapProps) {
-  const mapState = useOccupancyMap({
-    mapId,
-    autoLoad: true,
-    useOptimizedParser: true,
-  });
+  const mapState = useOccupancyMap(mapId);
 
   useEffect(() => {
     if (onMapFeaturesChange) {

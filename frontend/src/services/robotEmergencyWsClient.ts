@@ -1,21 +1,13 @@
 import { parseRobotEmergencyEvent, type RobotEmergencyBridgeEvent } from '@tensrai/shared';
 import { resolveWsBaseUrl } from '@/lib/api';
+import { createReconnectingSocket, frameText } from './reconnectingSocket';
 
-type EventHandler = (event: RobotEmergencyBridgeEvent) => void;
-type StatusHandler = (status: ConnectionStatus) => void;
 type EmergencyWsClientOptions = {
   robotId: string;
   robotName?: string | undefined;
   ipAddress?: string | undefined;
   emergencyBridgePort?: number | undefined;
 };
-
-export type ConnectionStatus =
-  | 'unconfigured'
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'error';
 
 const DEFAULT_EMERGENCY_PORT = 8766;
 
@@ -60,166 +52,40 @@ const isValidWsUrl = (value: string) => {
 };
 
 export const createRobotEmergencyWsClient = (options: EmergencyWsClientOptions) => {
-  let socket: WebSocket | null = null;
-  let status: ConnectionStatus = 'disconnected';
-  let reconnectAttempts = 0;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let connectTimer: ReturnType<typeof setTimeout> | null = null;
-  let shouldReconnect = true;
-  const eventHandlers = new Set<EventHandler>();
-  const statusHandlers = new Set<StatusHandler>();
-
   const wsUrl = resolveEmergencyWsUrl(options);
 
-  const notifyStatus = (next: ConnectionStatus) => {
-    status = next;
-    statusHandlers.forEach(handler => {
-      handler(next);
-    });
-  };
-
-  const clearConnectTimer = () => {
-    if (!connectTimer) return;
-    clearTimeout(connectTimer);
-    connectTimer = null;
-  };
-
-  const scheduleConnectTimeout = () => {
-    clearConnectTimer();
-    connectTimer = setTimeout(() => {
-      if (!socket || socket.readyState !== WebSocket.CONNECTING) return;
-      notifyStatus('error');
+  const connection = createReconnectingSocket<RobotEmergencyBridgeEvent, 'unconfigured'>({
+    blockedStatus: () => {
+      if (!wsUrl) return 'unconfigured';
+      return isValidWsUrl(wsUrl) ? null : 'error';
+    },
+    createSocket: () => {
       try {
-        socket.close();
-      } catch {}
-    }, 8_000);
-  };
-
-  const scheduleReconnect = () => {
-    if (!shouldReconnect || reconnectTimer) return;
-    const delay = Math.min(1_000 * 2 ** reconnectAttempts, 10_000);
-    reconnectAttempts += 1;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connect();
-    }, delay);
-  };
-
-  const connect = () => {
-    shouldReconnect = true;
-    if (
-      socket &&
-      (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
-    }
-
-    if (!wsUrl) {
-      notifyStatus('unconfigured');
-      return;
-    }
-
-    if (!isValidWsUrl(wsUrl)) {
-      notifyStatus('error');
-      return;
-    }
-
-    notifyStatus('connecting');
-    try {
-      socket = new WebSocket(wsUrl);
-    } catch {
-      notifyStatus('error');
-      return;
-    }
-    scheduleConnectTimeout();
-
-    socket.onopen = () => {
-      clearConnectTimer();
-      reconnectAttempts = 0;
-      notifyStatus('connected');
-    };
-
-    socket.onmessage = (event: MessageEvent) => {
-      const rawText =
-        typeof event.data === 'string'
-          ? event.data
-          : event.data instanceof Blob
-            ? ''
-            : String(event.data ?? '');
-
-      try {
-        const parsed = parseRobotEmergencyEvent(JSON.parse(rawText));
-        if (!parsed) return;
-        eventHandlers.forEach(handler => {
-          handler(parsed);
-        });
+        // blockedStatus has already ruled out a missing URL.
+        return new WebSocket(wsUrl as string);
       } catch {
-        // Ignore malformed frames from upstream emergency bridge.
+        return null;
       }
-    };
+    },
+    parseFrame: data => parseRobotEmergencyEvent(JSON.parse(frameText(data))) ?? undefined,
+  });
 
-    socket.onerror = () => {
-      notifyStatus('error');
-    };
-
-    socket.onclose = () => {
-      clearConnectTimer();
-      notifyStatus('disconnected');
-      if (shouldReconnect) scheduleReconnect();
-    };
-  };
-
-  const disconnect = () => {
-    shouldReconnect = false;
-    clearConnectTimer();
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    if (socket) {
-      socket.onclose = null;
-      try {
-        socket.close();
-      } catch {}
-    }
-    socket = null;
-    notifyStatus('disconnected');
-  };
-
-  const sendSoftwareEmergency = (desiredStatus: boolean) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    try {
-      socket.send(
-        JSON.stringify({
-          ...(CLOUD_DASHBOARD ? { type: 'SOFTWARE_EMERGENCY' } : { event: 'SOFTWARE_EMERGENCY' }),
-          payload: { status: desiredStatus },
-        })
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const addEventListener = (handler: EventHandler) => {
-    eventHandlers.add(handler);
-    return () => eventHandlers.delete(handler);
-  };
-
-  const addStatusListener = (handler: StatusHandler) => {
-    statusHandlers.add(handler);
-    handler(status);
-    return () => statusHandlers.delete(handler);
-  };
+  const sendSoftwareEmergency = (desiredStatus: boolean) =>
+    connection.sendIfOpen(
+      JSON.stringify({
+        ...(CLOUD_DASHBOARD ? { type: 'SOFTWARE_EMERGENCY' } : { event: 'SOFTWARE_EMERGENCY' }),
+        payload: { status: desiredStatus },
+      })
+    );
 
   return {
-    connect,
-    disconnect,
+    connect: connection.connect,
+    disconnect: connection.disconnect,
     sendSoftwareEmergency,
-    addEventListener,
-    addStatusListener,
-    getStatus: () => status,
-    isOpen: () => socket?.readyState === WebSocket.OPEN,
+    addEventListener: connection.addEventListener,
+    addStatusListener: connection.addStatusListener,
+    getStatus: connection.getStatus,
+    isOpen: () => connection.readyState() === WebSocket.OPEN,
     getUrl: () => wsUrl ?? '',
   };
 };

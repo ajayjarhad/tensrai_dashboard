@@ -9,7 +9,7 @@ import { ROLE_PERMISSIONS } from '@tensrai/shared';
 import { HTTPError } from 'ky';
 import React from 'react';
 import { create } from 'zustand';
-import { devtools, persist } from 'zustand/middleware';
+import { devtools, type PersistOptions, persist } from 'zustand/middleware';
 import { apiClient } from '@/lib/api';
 import { navigateAfterLogin, navigateToLogin, setSessionRejectedHandler } from '@/lib/navigation';
 import { queryClient } from '@/lib/query-client';
@@ -48,6 +48,18 @@ type PersistApi = {
   onHydrate: (callback: (state: AuthStore) => void) => () => void;
   onFinishHydration: (callback: (state: AuthStore) => void) => () => void;
   hasHydrated: () => boolean;
+};
+
+type SavedAuth = Pick<AuthState, 'user' | 'isAuthenticated'>;
+
+const savedAuth = ({ user, isAuthenticated }: SavedAuth): SavedAuth => ({ user, isAuthenticated });
+
+export const authPersistOptions: PersistOptions<AuthStore, SavedAuth> = {
+  name: 'auth-storage',
+  // Version 0 also saved the session, token included, where any script on the page could read it.
+  version: 1,
+  migrate: (saved: unknown) => savedAuth(saved as SavedAuth),
+  partialize: savedAuth,
 };
 
 export const useAuthStore = create<AuthStore>()(
@@ -217,13 +229,7 @@ export const useAuthStore = create<AuthStore>()(
             },
           }),
           {
-            name: 'auth-storage',
-            partialize: state => ({
-              user: state.user,
-              isAuthenticated: state.isAuthenticated,
-              session: state.session,
-              // Don't persist loading states, errors
-            }),
+            ...authPersistOptions,
             onRehydrateStorage: () => state => {
               // Reset loading states on rehydration
               if (state) {

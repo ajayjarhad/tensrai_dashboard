@@ -68,12 +68,7 @@ export function Sidebar({
 
             <RobotDetails robot={selectedRobot} mapName={mapName ?? ''} />
 
-            <MissionActions
-              isOpen={isOpen}
-              showMissionControls={false}
-              onManualControl={onManualControl}
-              onSetPose={onSetPose}
-            />
+            <MissionActions onManualControl={onManualControl} onSetPose={onSetPose} />
           </div>
         ) : isOpen ? (
           <RobotList

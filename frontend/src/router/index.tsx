@@ -2,20 +2,45 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Navigate,
   Outlet,
   redirect,
 } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
 import { ArrowLeft, Home } from 'lucide-react';
-import { RobotManagement, UserCreation, UserManagement } from '@/features/admin/components';
-import { FirstTimePasswordForm, LoginForm } from '@/features/auth/components';
-import { Dashboard } from '@/features/robot-map/components/Dashboard';
-import { OrganizationsPage } from '@/features/staff/components/OrganizationsPage';
+import { Suspense, useEffect } from 'react';
 import { StaffOrgBanner } from '@/features/staff/components/StaffOrgBanner';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
+import { queryClient } from '@/lib/query-client';
 import { useAuth, useAuthStore } from '@/stores/auth';
+
+// Each page is its own chunk, so sign-in doesn't download the map renderer or the admin screens.
+const Dashboard = lazyRouteComponent(
+  () => import('@/features/robot-map/components/Dashboard'),
+  'Dashboard'
+);
+const adminPage = (name: 'RobotManagement' | 'UserCreation' | 'UserManagement') =>
+  lazyRouteComponent(() => import('@/features/admin/components'), name);
+// Separate chunks: the password-setup form brings zod and react-hook-form, the login form doesn't.
+const LoginForm = lazyRouteComponent(
+  () => import('@/features/auth/components/login-form'),
+  'LoginForm'
+);
+const FirstTimePasswordForm = lazyRouteComponent(
+  () => import('@/features/auth/components/first-time-password-form'),
+  'FirstTimePasswordForm'
+);
+
+const PageLoading = ({ message }: { message: string }) => (
+  <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="text-center">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+      <p className="text-muted-foreground">{message}</p>
+    </div>
+  </div>
+);
 
 // Root Route
 const rootRoute = createRootRoute({
@@ -35,21 +60,19 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  loader: () => {
+    if (!useAuthStore.getState().isAuthenticated) return;
+    // The page fetches the same queries itself if this chunk fails to load.
+    import('@/features/robot-map/queries')
+      .then(({ prefetchDashboard }) => prefetchDashboard(queryClient))
+      .catch(() => undefined);
+  },
   component: () => {
     const { user, isAuthenticated, isLoading, hasHydrated } = useAuth();
 
     // Show loading while Zustand is rehydrating or checking auth state
     if (!hasHydrated || isLoading) {
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-background">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-            <p className="text-muted-foreground">
-              {hasHydrated ? 'Loading...' : 'Restoring session...'}
-            </p>
-          </div>
-        </div>
-      );
+      return <PageLoading message={hasHydrated ? 'Loading...' : 'Restoring session...'} />;
     }
 
     if (!isAuthenticated) {
@@ -60,7 +83,11 @@ const indexRoute = createRoute({
       return <Navigate to="/auth/first-time-setup" replace />;
     }
 
-    return <Dashboard />;
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <Dashboard />
+      </Suspense>
+    );
   },
 });
 
@@ -76,11 +103,20 @@ const loginRoute = createRoute({
   component: () => {
     const { isAuthenticated } = useAuth();
 
+    // Fetched while the operator types, so signing in doesn't wait for it.
+    useEffect(() => {
+      void Dashboard.preload?.();
+    }, []);
+
     if (isAuthenticated) {
       return <Navigate to="/" replace />;
     }
 
-    return <LoginForm />;
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <LoginForm />
+      </Suspense>
+    );
   },
 });
 
@@ -98,7 +134,11 @@ const firstTimeSetupRoute = createRoute({
       return <Navigate to="/" replace />;
     }
 
-    return <FirstTimePasswordForm />;
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <FirstTimePasswordForm />
+      </Suspense>
+    );
   },
 });
 
@@ -126,25 +166,19 @@ const adminRoute = createRoute({
 const userManagementRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/users',
-  component: () => {
-    return <UserManagement />;
-  },
+  component: adminPage('UserManagement'),
 });
 
 const createTempUserRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/create-temporary-user',
-  component: () => {
-    return <UserCreation />;
-  },
+  component: adminPage('UserCreation'),
 });
 
 const robotManagementRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/robots',
-  component: () => {
-    return <RobotManagement />;
-  },
+  component: adminPage('RobotManagement'),
 });
 
 // Staff Route
@@ -166,7 +200,10 @@ const staffRoute = createRoute({
       });
     }
   },
-  component: OrganizationsPage,
+  component: lazyRouteComponent(
+    () => import('@/features/staff/components/OrganizationsPage'),
+    'OrganizationsPage'
+  ),
 });
 
 // Unauthorized Route

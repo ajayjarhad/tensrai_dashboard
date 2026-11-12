@@ -2,6 +2,7 @@ import { DiagConsoleLogger, DiagLogLevel, diag } from '@opentelemetry/api';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { NodeSDK } from '@opentelemetry/sdk-node';
+import { isTracingEnabled, otlpUrl } from './utils/telemetryConfig.js';
 
 let sdk: NodeSDK | null = null;
 
@@ -10,15 +11,7 @@ export const initializeOpenTelemetry = (): NodeSDK => {
     return sdk;
   }
 
-  const isBunRuntime =
-    typeof (globalThis as any).Bun !== 'undefined' || typeof process.versions?.['bun'] === 'string';
-  const otelEnabledEnv = process.env['OTEL_ENABLED'];
-  const otelEnabled =
-    otelEnabledEnv !== undefined
-      ? otelEnabledEnv !== 'false'
-      : (process.env['NODE_ENV'] ?? 'development') === 'production' || !isBunRuntime;
-
-  if (!otelEnabled) {
+  if (!isTracingEnabled()) {
     console.log('OpenTelemetry disabled (set OTEL_ENABLED=true to enable)');
     return (sdk as unknown as NodeSDK) ?? ({} as NodeSDK);
   }
@@ -41,16 +34,8 @@ export const initializeOpenTelemetry = (): NodeSDK => {
     ? `${existingAttributes},${resourceAttributes}`
     : resourceAttributes;
 
-  // OTLP/HTTP exporter expects /v1/traces; avoid double-appending the path
-  const rawEndpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] || 'http://otel-collector:4318';
-  const normalizedEndpoint = rawEndpoint.startsWith('http') ? rawEndpoint : `http://${rawEndpoint}`;
-  const traceUrl = normalizedEndpoint.endsWith('/v1/traces')
-    ? normalizedEndpoint
-    : `${normalizedEndpoint.replace(/\/+$/, '')}/v1/traces`;
-
-  const traceExporter = new OTLPTraceExporter({
-    url: traceUrl,
-  }) as any;
+  const traceUrl = otlpUrl('traces');
+  const traceExporter = new OTLPTraceExporter({ url: traceUrl });
 
   sdk = new NodeSDK({
     serviceName,

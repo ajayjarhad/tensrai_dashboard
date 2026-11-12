@@ -1,6 +1,6 @@
 import type Konva from 'konva';
 import { forwardRef } from 'react';
-import { Circle, Group, Path } from 'react-konva';
+import { Circle, Group, Path } from '@/lib/map/konva';
 
 interface LocationPinProps {
   x: number;

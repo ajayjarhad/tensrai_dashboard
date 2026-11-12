@@ -1,10 +1,13 @@
 import EventEmitter from 'node:events';
 import type { PrismaClient } from '@prisma/client';
+import { isRobotMissionStatusEvent } from '@tensrai/shared';
 import WebSocket from 'ws';
+import { parsePositiveMs } from '../utils/env.js';
+import { LatestCall } from '../utils/latestCall.js';
+import { ReconnectSchedule } from './bridgeSocket.js';
 import { MissionRunStore } from './missionRunStore.js';
 import {
   hydrateMissionStateFromPersistedRun,
-  isMissionStatusEvent,
   recordMissionCommandIntent,
   updateMissionFromEvent,
 } from './missionStatus.js';
@@ -75,20 +78,6 @@ type ActiveConnection = {
 const MAX_MISSION_FRAME_CHARS = 64 * 1024;
 const DEFAULT_MISSION_BRIDGE_PORT = Number(process.env['ROS_MISSION_BRIDGE_PORT'] ?? 9487);
 const DEFAULT_MAPPING_BRIDGE_PORT = Number(process.env['ROS_MAPPING_BRIDGE_PORT'] ?? 8765);
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 10_000;
-
-const parsePositiveMs = (envKey: string, fallback: number) => {
-  const raw = process.env[envKey];
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
-};
-
-const MISSION_CONNECT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
-const MISSION_HEARTBEAT_INTERVAL_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_INTERVAL_MS', 30_000);
-const MISSION_HEARTBEAT_TIMEOUT_MS = parsePositiveMs('ROS_MISSION_HEARTBEAT_TIMEOUT_MS', 10_000);
 
 const formatError = (error: unknown) =>
   error instanceof Error
@@ -150,11 +139,18 @@ export class MissionRegistry extends EventEmitter {
   private stopped = false;
   private robotConfigs = new Map<string, RobotMissionConfig>();
   private connections = new Map<string, ActiveConnection>();
-  private reconnectTimers = new Map<string, NodeJS.Timeout>();
-  private reconnectAttempts = new Map<string, number>();
+  private reconnects = new ReconnectSchedule();
+  private reloads = new LatestCall();
   private pendingWrites = new Map<string, Promise<void>>();
   private statuses = new Map<string, MissionConnectionStatus>();
   private lastConnectionErrors = new Map<string, string>();
+  // Read per instance, not at import, so the settings never depend on which module loaded first.
+  private readonly connectTimeoutMs = parsePositiveMs('ROS_MISSION_CONNECT_TIMEOUT_MS', 8_000);
+  private readonly heartbeatIntervalMs = parsePositiveMs(
+    'ROS_MISSION_HEARTBEAT_INTERVAL_MS',
+    30_000
+  );
+  private readonly heartbeatTimeoutMs = parsePositiveMs('ROS_MISSION_HEARTBEAT_TIMEOUT_MS', 10_000);
   private runStore: MissionRunStore;
   private rememberNonEmergencyStatus:
     | ((robotId: string, status: 'TELEOP' | 'AUTONOMOUS') => void)
@@ -194,7 +190,7 @@ export class MissionRegistry extends EventEmitter {
         status,
         readyState,
         connectingAgeMs,
-        reconnectAttempt: this.reconnectAttempts.get(config.id) ?? 0,
+        reconnectAttempt: this.reconnects.attempt(config.id),
         connectedAt: connection?.connectedAt
           ? new Date(connection.connectedAt).toISOString()
           : null,
@@ -205,6 +201,7 @@ export class MissionRegistry extends EventEmitter {
   }
 
   async reloadFromDb() {
+    const isLatest = this.reloads.begin();
     try {
       this.log.info({}, 'Loading mission registry from DB');
       await this.runStore.hydrateActiveRuns();
@@ -227,6 +224,8 @@ export class MissionRegistry extends EventEmitter {
           },
         })
       );
+      // A reload that began later read newer data; applying this one after it would undo it.
+      if (!isLatest()) return;
 
       this.log.info({ robotCount: robots.length }, 'Mission registry robot configs loaded');
       const desiredIds = new Set<string>();
@@ -303,7 +302,7 @@ export class MissionRegistry extends EventEmitter {
         url,
         readyState: connection.socket.readyState,
         connectingAgeMs: Date.now() - connection.startedAt,
-        timeoutMs: MISSION_CONNECT_TIMEOUT_MS,
+        timeoutMs: this.connectTimeoutMs,
       },
       'Mission bridge connection is stale during reload; reconnecting'
     );
@@ -318,15 +317,13 @@ export class MissionRegistry extends EventEmitter {
       this.statuses.delete(robotId);
       this.lastConnectionErrors.delete(robotId);
       this.disconnectRobot(robotId);
-      this.clearReconnectTimer(robotId);
+      this.reconnects.cancel(robotId);
     }
   }
 
   stop() {
     this.stopped = true;
-    for (const robotId of Array.from(this.reconnectTimers.keys())) {
-      this.clearReconnectTimer(robotId);
-    }
+    this.reconnects.cancelAll();
     for (const robotId of Array.from(this.connections.keys())) {
       this.disconnectRobot(robotId);
     }
@@ -412,7 +409,7 @@ export class MissionRegistry extends EventEmitter {
     if (!config?.url || this.stopped) return;
 
     this.disconnectRobot(robotId);
-    this.clearReconnectTimer(robotId);
+    this.reconnects.cancel(robotId);
     this.statuses.set(robotId, 'connecting');
 
     this.log.info({ robotId, url: config.url }, 'Connecting to mission bridge');
@@ -445,9 +442,9 @@ export class MissionRegistry extends EventEmitter {
         connection,
         'connect_timeout',
         'Mission bridge connect timed out; scheduling reconnect',
-        { timeoutMs: MISSION_CONNECT_TIMEOUT_MS }
+        { timeoutMs: this.connectTimeoutMs }
       );
-    }, MISSION_CONNECT_TIMEOUT_MS);
+    }, this.connectTimeoutMs);
 
     socket.on('open', () => {
       if (this.connections.get(robotId) !== connection) return;
@@ -455,7 +452,7 @@ export class MissionRegistry extends EventEmitter {
       connection.connectedAt = Date.now();
       connection.awaitingPong = false;
       connection.lastPongAt = Date.now();
-      this.reconnectAttempts.set(robotId, 0);
+      this.reconnects.connected(robotId);
       this.statuses.set(robotId, 'connected');
       this.lastConnectionErrors.delete(robotId);
       this.log.info({ robotId, url: config.url }, 'Connected to mission bridge');
@@ -528,7 +525,7 @@ export class MissionRegistry extends EventEmitter {
   private isStaleConnecting(connection: ActiveConnection, now = Date.now()) {
     return (
       connection.socket.readyState === WebSocket.CONNECTING &&
-      now - connection.startedAt >= MISSION_CONNECT_TIMEOUT_MS
+      now - connection.startedAt >= this.connectTimeoutMs
     );
   }
 
@@ -585,8 +582,8 @@ export class MissionRegistry extends EventEmitter {
           'heartbeat_missed_pong',
           'Mission bridge heartbeat missed pong; scheduling reconnect',
           {
-            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
-            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+            timeoutMs: this.heartbeatTimeoutMs,
+            intervalMs: this.heartbeatIntervalMs,
           }
         );
         return;
@@ -615,12 +612,12 @@ export class MissionRegistry extends EventEmitter {
           'heartbeat_missed_pong',
           'Mission bridge heartbeat missed pong; scheduling reconnect',
           {
-            timeoutMs: MISSION_HEARTBEAT_TIMEOUT_MS,
-            intervalMs: MISSION_HEARTBEAT_INTERVAL_MS,
+            timeoutMs: this.heartbeatTimeoutMs,
+            intervalMs: this.heartbeatIntervalMs,
           }
         );
-      }, MISSION_HEARTBEAT_TIMEOUT_MS);
-    }, MISSION_HEARTBEAT_INTERVAL_MS);
+      }, this.heartbeatTimeoutMs);
+    }, this.heartbeatIntervalMs);
   }
 
   private resetConnection(
@@ -682,28 +679,14 @@ export class MissionRegistry extends EventEmitter {
   }
 
   private scheduleReconnect(robotId: string) {
-    if (this.stopped || this.reconnectTimers.has(robotId)) return;
-    if (!this.robotConfigs.get(robotId)?.url) return;
-    const attempt = this.reconnectAttempts.get(robotId) ?? 0;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
-    this.reconnectAttempts.set(robotId, attempt + 1);
-    const config = this.robotConfigs.get(robotId);
+    const url = this.robotConfigs.get(robotId)?.url;
+    if (this.stopped || !url) return;
+    const delay = this.reconnects.schedule(robotId, () => this.connectRobot(robotId));
+    if (delay === undefined) return;
     this.log.warn(
-      { robotId, url: config?.url ?? null, attempt: attempt + 1, delay },
+      { robotId, url, attempt: this.reconnects.attempt(robotId), delay },
       'Scheduled mission bridge reconnect'
     );
-    const timer = setTimeout(() => {
-      this.reconnectTimers.delete(robotId);
-      this.connectRobot(robotId);
-    }, delay);
-    this.reconnectTimers.set(robotId, timer);
-  }
-
-  private clearReconnectTimer(robotId: string) {
-    const timer = this.reconnectTimers.get(robotId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.reconnectTimers.delete(robotId);
   }
 
   private async handleSocketMessage(robotId: string, payloadText: string) {
@@ -715,7 +698,7 @@ export class MissionRegistry extends EventEmitter {
       return;
     }
     const parsed = parseGatewayEvent(payloadText);
-    if (!parsed?.event || !isMissionStatusEvent(parsed.event)) {
+    if (!parsed?.event || !isRobotMissionStatusEvent(parsed.event)) {
       return;
     }
 
@@ -732,7 +715,7 @@ export class MissionRegistry extends EventEmitter {
 
     this.emit(`robot-event:${robotId}`, normalizedPayloadText);
 
-    updateMissionFromEvent(robotId, parsed.event, normalizedPayload);
+    updateMissionFromEvent(robotId, parsed.event, normalizedPayload, commandId);
 
     await this.inRobotOrder(robotId, async () => {
       if (parsed.event === 'ROBOT_STATUS_UPDATE') {

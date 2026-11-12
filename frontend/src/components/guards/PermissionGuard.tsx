@@ -8,7 +8,7 @@ interface PermissionGuardProps {
   fallback?: React.ReactNode;
 }
 
-export const PermissionGuard: React.FC<PermissionGuardProps> = ({
+const PermissionGuard: React.FC<PermissionGuardProps> = ({
   permission,
   children,
   fallback = null,
@@ -32,43 +32,6 @@ export const PermissionGuard: React.FC<PermissionGuardProps> = ({
   return <>{children}</>;
 };
 
-// Convenience components for common permissions
-export const AdminGuard: React.FC<{
-  children: React.ReactNode;
-  fallback?: React.ReactNode;
-}> = ({ children, fallback }) => (
-  <PermissionGuard permission={PERMISSIONS.USER_MANAGEMENT} fallback={fallback}>
-    {children}
-  </PermissionGuard>
-);
-
-export const DashboardViewGuard: React.FC<{
-  children: React.ReactNode;
-  fallback?: React.ReactNode;
-}> = ({ children, fallback }) => (
-  <PermissionGuard permission={PERMISSIONS.DASHBOARD_VIEW} fallback={fallback}>
-    {children}
-  </PermissionGuard>
-);
-
-export const RobotStatusGuard: React.FC<{
-  children: React.ReactNode;
-  fallback?: React.ReactNode;
-}> = ({ children, fallback }) => (
-  <PermissionGuard permission={PERMISSIONS.ROBOT_STATUS_READ} fallback={fallback}>
-    {children}
-  </PermissionGuard>
-);
-
-export const RobotControlGuard: React.FC<{
-  children: React.ReactNode;
-  fallback?: React.ReactNode;
-}> = ({ children, fallback }) => (
-  <PermissionGuard permission={PERMISSIONS.ROBOT_CONTROL} fallback={fallback}>
-    {children}
-  </PermissionGuard>
-);
-
 export const EmergencyStopGuard: React.FC<{
   children: React.ReactNode;
   fallback?: React.ReactNode;
@@ -77,14 +40,3 @@ export const EmergencyStopGuard: React.FC<{
     {children}
   </PermissionGuard>
 );
-
-// Hook for programmatic permission checking
-export const usePermissionGuard = (permission: Permission) => {
-  const { hasPermission, isLoading, user } = useAuth();
-
-  return {
-    hasPermission: hasPermission(permission),
-    isLoading,
-    user,
-  };
-};

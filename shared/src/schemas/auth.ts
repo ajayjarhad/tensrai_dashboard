@@ -16,6 +16,3 @@ export const FirstTimePasswordSetupSchema = z
     message: 'Passwords do not match',
     path: ['confirmPassword'],
   });
-
-export type LoginCredentialsInput = z.infer<typeof LoginCredentialsSchema>;
-export type FirstTimePasswordSetupInput = z.infer<typeof FirstTimePasswordSetupSchema>;

@@ -9,7 +9,6 @@ const EMPTY_POINTS = new Float32Array(0);
 type OverlayState = {
   laserPoints: Float32Array;
   pathPoints: Float32Array;
-  overlayBitmap?: ImageBitmap | undefined;
 };
 
 interface UseTelemetryOverlayDataOptions {
@@ -18,7 +17,6 @@ interface UseTelemetryOverlayDataOptions {
   path?: PathMessage | null | undefined;
   robotPose?: Pose2D | null | undefined;
   laserPose?: Pose2D | null | undefined;
-  stageScale?: number | undefined;
 }
 
 export function useTelemetryOverlayData({
@@ -27,7 +25,6 @@ export function useTelemetryOverlayData({
   path,
   robotPose,
   laserPose,
-  stageScale,
 }: UseTelemetryOverlayDataOptions): OverlayState {
   const workerRef = useRef<Worker | null>(null);
   const latestRequestIdRef = useRef(0);
@@ -35,7 +32,6 @@ export function useTelemetryOverlayData({
     laserPoints: EMPTY_POINTS,
     pathPoints: EMPTY_POINTS,
   });
-  const bitmapRef = useRef<ImageBitmap | null>(null);
 
   useEffect(() => {
     const worker = new TelemetryOverlayWorker();
@@ -43,27 +39,15 @@ export function useTelemetryOverlayData({
 
     const handleMessage = (event: MessageEvent<TelemetryOverlayResponse>) => {
       if (event.data.requestId !== latestRequestIdRef.current) return;
-      if (bitmapRef.current) {
-        bitmapRef.current.close();
-        bitmapRef.current = null;
-      }
-      if (event.data.overlayBitmap) {
-        bitmapRef.current = event.data.overlayBitmap;
-      }
       setState({
         laserPoints: event.data.laserPoints,
         pathPoints: event.data.pathPoints,
-        overlayBitmap: event.data.overlayBitmap ?? undefined,
       });
     };
 
     worker.addEventListener('message', handleMessage);
 
     return () => {
-      if (bitmapRef.current) {
-        bitmapRef.current.close();
-        bitmapRef.current = null;
-      }
       worker.removeEventListener('message', handleMessage);
       worker.terminate();
       workerRef.current = null;
@@ -73,14 +57,9 @@ export function useTelemetryOverlayData({
   useEffect(() => {
     const worker = workerRef.current;
     if (!worker || !transforms) {
-      if (bitmapRef.current) {
-        bitmapRef.current.close();
-        bitmapRef.current = null;
-      }
       setState({
         laserPoints: EMPTY_POINTS,
         pathPoints: EMPTY_POINTS,
-        overlayBitmap: undefined,
       });
       return;
     }
@@ -93,11 +72,10 @@ export function useTelemetryOverlayData({
       path: path ?? null,
       robotPose: robotPose ?? null,
       laserPose: laserPose ?? null,
-      stageScale,
       laserStep: 2,
       maxLaserPoints: 450,
     });
-  }, [laser, path, robotPose, laserPose, stageScale, transforms]);
+  }, [laser, path, robotPose, laserPose, transforms]);
 
   return state;
 }

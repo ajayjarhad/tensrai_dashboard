@@ -160,18 +160,6 @@ export const apiClient = {
     api.delete<T>(url, withOptions(options)).json<T>(),
 };
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public status?: number,
-    public code?: string,
-    public details?: any
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -179,38 +167,3 @@ export interface ApiResponse<T = any> {
   message?: string;
   code?: string;
 }
-
-export const unwrapApiResponse = async <T>(apiCall: () => Promise<ApiResponse<T>>): Promise<T> => {
-  try {
-    const response = await apiCall();
-
-    if (!response.success) {
-      throw new ApiError(
-        response.error || response.message || 'API request failed',
-        undefined,
-        response.code
-      );
-    }
-
-    if (response.data === undefined) {
-      throw new ApiError('API response missing data field');
-    }
-
-    return response.data;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      throw error;
-    }
-    const message = error instanceof Error ? error.message : 'API request failed';
-    throw new ApiError(message, undefined, undefined, error);
-  }
-};
-
-export const fetchApi = async <T>(apiCall: () => Promise<T>, errorMessage?: string): Promise<T> => {
-  try {
-    return await apiCall();
-  } catch (error) {
-    const message = errorMessage || (error instanceof Error ? error.message : 'API request failed');
-    throw new ApiError(message, undefined, undefined, error);
-  }
-};

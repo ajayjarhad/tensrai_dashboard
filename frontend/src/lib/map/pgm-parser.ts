@@ -75,7 +75,14 @@ function skipWhitespace(dataView: DataView, offset: number): number {
   let currentOffset = offset;
   while (currentOffset < dataView.byteLength) {
     const char = String.fromCharCode(dataView.getUint8(currentOffset));
-    if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+    if (char === '#') {
+      while (
+        currentOffset < dataView.byteLength &&
+        String.fromCharCode(dataView.getUint8(currentOffset)) !== '\n'
+      ) {
+        currentOffset++;
+      }
+    } else if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
       currentOffset++;
     } else {
       break;
@@ -124,17 +131,4 @@ function readNumber(dataView: DataView, offset: number): number {
   }
 
   return parseInt(numStr, 10);
-}
-
-/**
- * Validate PGM data structure
- */
-export function validatePGM(parsed: ParsedPGM): boolean {
-  return (
-    parsed.width > 0 &&
-    parsed.height > 0 &&
-    parsed.maxVal > 0 &&
-    parsed.maxVal <= 255 &&
-    parsed.data.length === parsed.width * parsed.height
-  );
 }

@@ -1,5 +1,5 @@
 import React, { useCallback, useSyncExternalStore } from 'react';
-import { Group, Rect, RegularPolygon } from 'react-konva';
+import { Group, Rect, RegularPolygon } from '@/lib/map/konva';
 import { RobotMode } from '@/types/robot';
 
 interface RobotMarkerProps {

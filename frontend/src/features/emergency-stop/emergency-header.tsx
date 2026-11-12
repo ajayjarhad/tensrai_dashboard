@@ -10,7 +10,7 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
     {
       className,
       summary,
-      pendingDispatch = false,
+      pendingDesiredStatus = null,
       canSendEmergency = false,
       canReleaseSoftware = false,
       onEmergencyAll,
@@ -21,18 +21,6 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
   ) => {
     const headerId = generateId('header');
     const emergencyButtonId = generateId('emergency');
-    const buttonShowsRelease = canReleaseSoftware;
-    const buttonDisabled = buttonShowsRelease
-      ? !canReleaseSoftware || pendingDispatch
-      : !canSendEmergency || pendingDispatch;
-    const buttonLabel = buttonShowsRelease ? 'Release' : 'Emergency';
-    const handleClick = () => {
-      if (buttonShowsRelease) {
-        onReleaseSoftware?.();
-        return;
-      }
-      onEmergencyAll?.();
-    };
 
     return (
       <header
@@ -48,22 +36,46 @@ const EmergencyHeader = React.forwardRef<HTMLElement, EmergencyHeaderProps>(
       >
         <div className="flex items-center space-x-3 min-w-0">
           <img src="/assets/logo.png" alt="Tensrai" className="h-8 w-8 object-contain" />
-          <h1 className="text-2xl font-bold tracking-tight text-foreground font-sans">Tensrai</h1>
+          <h1
+            className={cn(
+              'text-2xl font-bold tracking-tight text-foreground font-sans',
+              canReleaseSoftware && 'hidden sm:block'
+            )}
+          >
+            Tensrai
+          </h1>
         </div>
 
         <EmergencyStopGuard>
-          <Button
-            id={emergencyButtonId}
-            type="button"
-            variant={buttonShowsRelease ? 'outline' : 'destructive'}
-            size="lg"
-            onClick={handleClick}
-            disabled={buttonDisabled}
-            className="h-11 px-5 font-bold tracking-wide justify-center safety-critical"
-          >
-            <AlertTriangle className="w-5 h-5 mr-2" />
-            {buttonLabel}
-          </Button>
+          {/* Release sits on the inside so Emergency doesn't move when it appears. */}
+          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+            {canReleaseSoftware && (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={onReleaseSoftware}
+                disabled={pendingDesiredStatus !== null}
+                className="h-11 px-3 sm:px-5 font-bold tracking-wide justify-center safety-critical"
+              >
+                Release
+              </Button>
+            )}
+            {/* Only a stop already on its way holds this back: a release waiting on a slow robot's
+                ack must not delay a stop. */}
+            <Button
+              id={emergencyButtonId}
+              type="button"
+              variant="destructive"
+              size="lg"
+              onClick={onEmergencyAll}
+              disabled={!canSendEmergency || pendingDesiredStatus === true}
+              className="h-11 px-3 sm:px-5 font-bold tracking-wide justify-center safety-critical"
+            >
+              <AlertTriangle className="w-5 h-5 mr-2" />
+              Emergency
+            </Button>
+          </div>
         </EmergencyStopGuard>
       </header>
     );
