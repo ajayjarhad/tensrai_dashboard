@@ -1,5 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 import type { PrismaClient } from '@prisma/client';
+import { deactivatedOrgIds, isOrgDeactivated } from './orgStatus.js';
 
 // Robot bridges have no auth, so whatever the backend connects to obeys it. An organization may
 // point a robot at any address, but the backend only connects once that address is APPROVED for
@@ -98,18 +99,24 @@ export const requestRobotAddress = async (
 type RobotTarget = { orgId: string; ipAddress?: string | null };
 
 // Robots keep their configured address everywhere except on the way to a connection: a blank one
-// is what the registries already treat as "not configured".
+// is what the registries already treat as "not configured". A deactivated organization's robots
+// keep their approved addresses but are not connected until it is reactivated.
 export const withApprovedAddress = async <T extends RobotTarget>(
   prisma: PrismaClient,
   robots: T[]
 ): Promise<T[]> => {
-  const approved = await prisma.robotAddress.findMany({
-    where: { status: 'APPROVED' },
-    select: { orgId: true, ip: true },
-  });
+  const [approved, switchedOff] = await Promise.all([
+    prisma.robotAddress.findMany({
+      where: { status: 'APPROVED' },
+      select: { orgId: true, ip: true },
+    }),
+    deactivatedOrgIds(prisma),
+  ]);
   const owned = new Set(approved.map(address => `${address.orgId}|${address.ip}`));
   return robots.map(robot =>
-    robot.ipAddress && owned.has(`${robot.orgId}|${robot.ipAddress}`)
+    robot.ipAddress &&
+    !switchedOff.has(robot.orgId) &&
+    owned.has(`${robot.orgId}|${robot.ipAddress}`)
       ? robot
       : { ...robot, ipAddress: null }
   );
@@ -117,6 +124,7 @@ export const withApprovedAddress = async <T extends RobotTarget>(
 
 export const isAddressApproved = async (prisma: PrismaClient, robot: Partial<RobotTarget>) => {
   if (!robot.ipAddress || !robot.orgId) return false;
+  if (await isOrgDeactivated(prisma, robot.orgId)) return false;
   const address = await prisma.robotAddress.findFirst({
     where: { orgId: robot.orgId, ip: robot.ipAddress, status: 'APPROVED' },
     select: { id: true },

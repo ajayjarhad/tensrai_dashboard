@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { requireStaff } from '../middleware/auth.js';
 import { appErrorHandler } from '../plugins/errorHandler.js';
-import { addOrgAdmin, createOrgWithAdmin, moveRobotToOrg } from '../services/org.service.js';
+import {
+  addOrgAdmin,
+  createOrgWithAdmin,
+  deactivateOrg,
+  moveRobotToOrg,
+  reactivateOrg,
+} from '../services/org.service.js';
 import {
   heldByAnotherOrg,
   parseRobotAddress,
@@ -87,9 +93,10 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     new Map(rows.map(row => [row.orgId, row._count._all]));
 
   server.get('/staff/orgs', async () => {
-    const [orgs, users, robots, pending] = await Promise.all([
+    const [orgs, users, staffUsers, robots, pending] = await Promise.all([
       prisma().organization.findMany({ orderBy: { name: 'asc' } }),
       prisma().user.groupBy({ by: ['orgId'], _count: { _all: true } }),
+      prisma().user.groupBy({ by: ['orgId'], where: { role: 'STAFF' }, _count: { _all: true } }),
       prisma().robot.groupBy({ by: ['orgId'], _count: { _all: true } }),
       prisma().robotAddress.groupBy({
         by: ['orgId'],
@@ -98,6 +105,7 @@ const staffRoutes = async (server: AppFastifyInstance) => {
       }),
     ]);
     const userCounts = countByOrg(users);
+    const staffCounts = countByOrg(staffUsers);
     const robotCounts = countByOrg(robots);
     const pendingCounts = countByOrg(pending);
 
@@ -111,6 +119,8 @@ const staffRoutes = async (server: AppFastifyInstance) => {
         users: userCounts.get(org.id) ?? 0,
         robots: robotCounts.get(org.id) ?? 0,
         pendingAddresses: pendingCounts.get(org.id) ?? 0,
+        holdsStaff: (staffCounts.get(org.id) ?? 0) > 0,
+        deactivatedAt: org.deactivatedAt ?? null,
       })),
     };
   });
@@ -128,6 +138,22 @@ const staffRoutes = async (server: AppFastifyInstance) => {
     const result = await addOrgAdmin(prisma(), id, login, await actorOf(request));
     await audit(request, 'ORG_ADMIN_ADDED', id, { username: login.username });
     return reply.status(201).send({ success: true, data: result });
+  });
+
+  server.post('/staff/orgs/:id/deactivate', async (request: any) => {
+    const { id } = request.params;
+    await deactivateOrg(prisma(), id);
+    reloadRobotConnections(server);
+    await audit(request, 'ORG_DEACTIVATED', id, {});
+    return { success: true };
+  });
+
+  server.post('/staff/orgs/:id/reactivate', async (request: any) => {
+    const { id } = request.params;
+    await reactivateOrg(prisma(), id);
+    reloadRobotConnections(server);
+    await audit(request, 'ORG_REACTIVATED', id, {});
+    return { success: true };
   });
 
   // The acting organization lives on the session, so REST and sockets both follow it.

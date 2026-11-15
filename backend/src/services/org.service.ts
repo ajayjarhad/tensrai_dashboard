@@ -2,6 +2,30 @@ import type { PrismaClient } from '@prisma/client';
 import { createUserWithTempPassword, ServiceError } from './user.service.js';
 
 type Actor = { id: string; role: string };
+
+const orgOr404 = async (prisma: PrismaClient, orgId: string) => {
+  const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true } });
+  if (!org) throw new ServiceError(404, 'Organization not found');
+  return org;
+};
+
+// Reversible: nothing is deleted. Its people are signed out now, and the session and sign-in checks
+// refuse them until it is reactivated.
+export const deactivateOrg = async (prisma: PrismaClient, orgId: string) => {
+  await orgOr404(prisma, orgId);
+  if (await prisma.user.count({ where: { orgId, role: 'STAFF' } })) {
+    throw new ServiceError(409, 'The organization staff belong to cannot be deactivated');
+  }
+  await prisma.$transaction([
+    prisma.organization.update({ where: { id: orgId }, data: { deactivatedAt: new Date() } }),
+    prisma.session.deleteMany({ where: { user: { orgId } } }),
+  ]);
+};
+
+export const reactivateOrg = async (prisma: PrismaClient, orgId: string) => {
+  await orgOr404(prisma, orgId);
+  await prisma.organization.update({ where: { id: orgId }, data: { deactivatedAt: null } });
+};
 type AdminLogin = { username: string; email: string };
 
 const assertLoginAvailable = async (prisma: PrismaClient, { username, email }: AdminLogin) => {

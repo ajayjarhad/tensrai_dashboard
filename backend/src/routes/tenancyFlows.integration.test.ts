@@ -26,6 +26,7 @@ if (url) {
   const { EmergencyRegistry } = await import('../services/emergencyRegistry.js');
   const { MissionRegistry } = await import('../services/missionRegistry.js');
   const { scopedPrisma } = await import('../services/orgScope.js');
+  const { isAddressApproved, withApprovedAddress } = await import('../services/robotAddress.js');
 
   const createFastify = fastify as unknown as (options?: object) => any;
   const prisma = new PrismaClient({ datasourceUrl: url });
@@ -628,6 +629,63 @@ if (url) {
       payload: '{not json',
     });
     expect(malformed.statusCode).toBe(400);
+  });
+
+  // -- deactivating an organization
+
+  test('a deactivated org is signed out and refused, and its robots are not connected', async () => {
+    const orgC = await makeOrg('flow-c');
+    createdOrgIds.push(orgC.id);
+    const adminC = await makeUser('admin-c', orgC.id, 'ADMIN');
+    const robotC = await prisma.robot.create({
+      data: { orgId: orgC.id, name: `robot-c-${run}`, ipAddress: '192.0.2.77' },
+    });
+    await prisma.robotAddress.create({
+      data: { orgId: orgC.id, ip: '192.0.2.77', status: 'APPROVED' },
+    });
+    const connectable = async () =>
+      (await withApprovedAddress(prisma, [robotC]))[0]?.ipAddress === '192.0.2.77' &&
+      (await isAddressApproved(prisma, robotC));
+    const cookie = await cookieFor(adminC);
+    expect((await call(cookie, 'GET', '/api/robots')).statusCode).toBe(200);
+    expect(await connectable()).toBe(true);
+
+    const off = await call(staffCookie, 'POST', `/api/staff/orgs/${orgC.id}/deactivate`);
+    expect(off.statusCode).toBe(200);
+    expect((await call(cookie, 'GET', '/api/robots')).statusCode).toBe(401);
+    expect((await signIn(adminC.username)).json().error).toBe('Invalid username or password');
+    expect(await connectable()).toBe(false);
+
+    // A session that somehow survives is still refused while the org is off.
+    const token = `kept-${run}`;
+    await prisma.session.create({
+      data: { id: token, token, userId: adminC.id, expiresAt: new Date(Date.now() + 60_000) },
+    });
+    const kept = `${adminACookie.split('=')[0]}=${token}`;
+    expect((await call(kept, 'GET', '/api/robots')).json().code).toBe('ACCOUNT_DISABLED');
+
+    const listed = (await call(staffCookie, 'GET', '/api/staff/orgs')).json().data;
+    expect(listed.find((org: any) => org.id === orgC.id).deactivatedAt).toBeTruthy();
+
+    const on = await call(staffCookie, 'POST', `/api/staff/orgs/${orgC.id}/reactivate`);
+    expect(on.statusCode).toBe(200);
+    expect((await signIn(adminC.username)).statusCode).toBe(200);
+    expect(await connectable()).toBe(true);
+    expect(
+      await prisma.auditLog.count({
+        where: { orgId: orgC.id, action: { in: ['ORG_DEACTIVATED', 'ORG_REACTIVATED'] } },
+      })
+    ).toBe(2);
+  });
+
+  test('the organization staff belong to cannot be deactivated', async () => {
+    const res = await call(staffCookie, 'POST', `/api/staff/orgs/${orgStaff.id}/deactivate`);
+    expect(res.statusCode).toBe(409);
+    const listed = (await call(staffCookie, 'GET', '/api/staff/orgs')).json().data;
+    expect(listed.find((org: any) => org.id === orgStaff.id)).toMatchObject({
+      holdsStaff: true,
+      deactivatedAt: null,
+    });
   });
 
   test('removes the test data', async () => {

@@ -7,6 +7,7 @@ import fp from 'fastify-plugin';
 import { auth, SESSION_TTL_SECONDS, SESSION_UPDATE_AGE_SECONDS } from '../config/auth.js';
 import { authMetrics } from '../metrics/index.js';
 import { actingOrgId } from '../middleware/auth.js';
+import { isLockedOut } from '../services/orgStatus.js';
 import type { AppFastifyInstance, AppFastifyReply, AppFastifyRequest } from '../types/app.js';
 
 const toFetchHeaders = (headers: IncomingHttpHeaders) => {
@@ -203,7 +204,7 @@ export async function authenticateUserWithPrisma(
     })) as PrismaAuthUser | null;
 
     const validatedUser = ensureActiveUser(user);
-    if (!validatedUser.ok) {
+    if (!validatedUser.ok || (await isLockedOut(prisma, validatedUser.value))) {
       await bcrypt.compare(password, TIMING_EQUALIZER_HASH);
       return createErrorResponse('password', INVALID_CREDENTIALS);
     }

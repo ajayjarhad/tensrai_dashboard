@@ -12,6 +12,9 @@ model Organization {
   name      String   @unique
   slug      String   @unique
   createdAt DateTime @default(now())
+  // Set while staff have the organization switched off: nobody in it can sign in, and its robots
+  // are not connected. Nothing is deleted, so reactivating brings it all back.
+  deactivatedAt DateTime?
 }
 
 model User {

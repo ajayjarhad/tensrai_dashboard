@@ -1,4 +1,5 @@
 import { trace } from '@opentelemetry/api';
+import { isLockedOut } from '../services/orgStatus.js';
 import type { AppFastifyReply, AppFastifyRequest, AppSession } from '../types/app.js';
 import { type Permission, ROLE, ROLE_PERMISSIONS } from '../types/shared-shim.js';
 import { AuthTracer } from '../utils/tracing.js';
@@ -82,6 +83,13 @@ export const requireActiveSession = async (
     });
   }
 
+  if (await isLockedOut(request.server.prisma, user)) {
+    return reply.code(403).send({
+      error: 'Organization is deactivated',
+      code: 'ACCOUNT_DISABLED',
+    });
+  }
+
   if (user.mustResetPassword) {
     return reply.code(428).send({
       error: 'Password setup required',
@@ -160,6 +168,7 @@ export const stillHasRobotAccess = async (
   const session = await request.readFreshSession();
   const user = session?.user;
   if (!session || !user?.isActive || user.mustResetPassword) return false;
+  if (await isLockedOut(request.server.prisma, user)) return false;
 
   const orgId = actingOrgId(session);
   if (!orgId) return false;

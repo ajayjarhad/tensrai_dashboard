@@ -7,6 +7,8 @@ export interface StaffOrg {
   users: number;
   robots: number;
   pendingAddresses: number;
+  holdsStaff: boolean;
+  deactivatedAt: string | null;
 }
 
 export type AddressStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -42,6 +44,8 @@ export const addOrgAdmin = async (orgId: string, input: { username: string; emai
   (await apiClient.post<Envelope<NewAdmin>>(`staff/orgs/${orgId}/admins`, input)).data;
 
 export const enterOrg = (orgId: string) => apiClient.post(`staff/orgs/${orgId}/enter`);
+export const deactivateOrg = (orgId: string) => apiClient.post(`staff/orgs/${orgId}/deactivate`);
+export const reactivateOrg = (orgId: string) => apiClient.post(`staff/orgs/${orgId}/reactivate`);
 export const exitOrg = () => apiClient.post('staff/exit');
 
 export const getAddresses = async () =>

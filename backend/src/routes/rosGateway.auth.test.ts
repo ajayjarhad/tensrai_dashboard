@@ -17,6 +17,7 @@ const SOCKET_PATHS = [
 const app = createTestApp();
 app.decorate('prisma', {
   robot: fakeRobotModel([{ id: 'r1', orgId: ORG_A }]),
+  organization: { findUnique: async () => null, findMany: async () => [] },
   robotAddress: { findMany: async () => [] },
 });
 await app.register(rosGateway);

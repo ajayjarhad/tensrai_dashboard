@@ -146,6 +146,7 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
         return { count };
       },
     },
+    organization: { findUnique: async () => null, findMany: async () => [] },
     robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
     $transaction: async (ops: any[]) => Promise.all(ops),
   };
@@ -330,6 +331,7 @@ test('reuses the active map sync status instead of opening a duplicate socket', 
     robot: {
       update: async () => ({}),
     },
+    organization: { findUnique: async () => null, findMany: async () => [] },
     robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
   const fastify = { log: createLogger(), prisma };
@@ -391,7 +393,10 @@ test('refuses a map that decompresses to more than the limit', async () => {
 
 test('never connects to a robot whose address is not approved', async () => {
   const server = await startMappingServer();
-  const prisma = { robotAddress: { findFirst: async () => null } };
+  const prisma = {
+    organization: { findUnique: async () => null, findMany: async () => [] },
+    robotAddress: { findFirst: async () => null },
+  };
 
   const status = await fetchMapViaMappingBridge(
     { log: createLogger(), prisma },
@@ -417,6 +422,7 @@ test('fails a map sync that cannot complete the websocket handshake', async () =
     robot: {
       update: async () => ({}),
     },
+    organization: { findUnique: async () => null, findMany: async () => [] },
     robotAddress: { findFirst: async () => ({ id: 'approved-address' }) },
   };
   const fastify = { log: createLogger(), prisma, mapSyncConnectTimeoutMs: 50 };
@@ -439,6 +445,7 @@ test('fails a map sync that cannot complete the websocket handshake', async () =
 test('manual map sync route rejects a saved robot without mapping bridge config', async () => {
   const app = createTestApp();
   app.decorate('prisma', {
+    organization: { findUnique: async () => null },
     robot: {
       findFirst: async () => ({ id: 'robot-no-map-bridge' }),
       findUnique: async () => ({
@@ -591,6 +598,7 @@ test('robots syncing different floors under one filename keep separate maps', as
 
 const approved = () => ({
   ...twoRobots().prisma,
+  organization: { findUnique: async () => null, findMany: async () => [] },
   robotAddress: { findFirst: async () => ({ id: 'approved' }) },
 });
 

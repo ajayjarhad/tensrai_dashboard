@@ -49,7 +49,7 @@ const prisma = {
       return {};
     },
   },
-  organization: { findMany: async () => [] },
+  organization: { findUnique: async () => null, findMany: async () => [] },
   robotAddress: {
     groupBy: async () => [],
     findMany: async () => [],
