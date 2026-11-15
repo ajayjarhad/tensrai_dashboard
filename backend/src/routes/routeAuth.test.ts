@@ -15,6 +15,7 @@ const SELF_GUARDED = '/api/auth/first-time-setup';
 type RouteInfo = { method: string; url: string };
 
 const userUpdates: any[] = [];
+const auditEvents: any[] = [];
 
 const prisma = {
   robot: {
@@ -27,7 +28,13 @@ const prisma = {
     findMany: async () => [],
     groupBy: async () => [],
     findUnique: async ({ where }: any) => {
-      if (where.id === 'colleague') return { id: 'colleague', role: 'USER', username: 'colleague' };
+      if (where.id === 'colleague') {
+        return { id: 'colleague', role: 'USER', username: 'colleague', isActive: true };
+      }
+      if (where.id === 'switched-off') {
+        return { id: 'switched-off', role: 'USER', username: 'switched-off', isActive: false };
+      }
+      if (where.id === 'u-admin') return { id: 'u-admin', role: 'ADMIN', username: 'admin' };
       if (where.id === 'staff-member') return { id: 'staff-member', role: 'STAFF' };
       return null;
     },
@@ -36,7 +43,12 @@ const prisma = {
       return { id: where.id, ...data };
     },
   },
-  auditLog: { create: async () => ({}) },
+  auditLog: {
+    create: async ({ data }: any) => {
+      auditEvents.push(data);
+      return {};
+    },
+  },
   organization: { findMany: async () => [] },
   robotAddress: {
     groupBy: async () => [],
@@ -329,4 +341,50 @@ test('an unknown user is a 404 with no database detail in the response', async (
     expect([method, url, res.statusCode]).toEqual([method, url, 404]);
     expect(res.body).not.toMatch(/prisma|invocation/i);
   }
+});
+
+test('nobody can switch off, demote or force a password reset on their own account', async () => {
+  for (const [who, id, payload] of [
+    ['admin', 'u-admin', { isActive: false }],
+    ['admin', 'u-admin', { role: 'USER' }],
+    ['admin', 'u-admin', { mustResetPassword: true }],
+    ['staff', 'u-staff', { isActive: false }],
+  ] as const) {
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/users/${id}`,
+      headers: asUser(who),
+      payload,
+    });
+    expect([who, payload, res.statusCode]).toEqual([who, payload, 400]);
+  }
+
+  const rename = await app.inject({
+    method: 'PUT',
+    url: '/api/users/u-admin',
+    headers: asUser('admin'),
+    payload: { displayName: 'Still me' },
+  });
+  expect(rename.statusCode).toBe(200);
+});
+
+test('switching an account off or back on is in the audit log', async () => {
+  auditEvents.length = 0;
+  for (const [id, isActive] of [
+    ['colleague', false],
+    ['switched-off', true],
+  ] as const) {
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/users/${id}`,
+      headers: asUser('admin'),
+      payload: { isActive },
+    });
+    expect(res.statusCode).toBe(200);
+  }
+
+  expect(auditEvents.map(event => [event.action, event.metadata?.targetUsername])).toEqual([
+    ['USER_DEACTIVATED', 'colleague'],
+    ['USER_REACTIVATED', 'switched-off'],
+  ]);
 });

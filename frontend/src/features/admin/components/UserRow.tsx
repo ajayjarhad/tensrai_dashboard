@@ -17,6 +17,42 @@ interface UserRowProps {
   >;
 }
 
+// Your own account shows its status without the switch: turning it off would lock you out.
+function StatusCell({
+  isActive,
+  canToggle,
+  pending,
+  onToggle,
+}: {
+  isActive: boolean;
+  canToggle: boolean;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  const status = isActive ? 'Active' : 'Inactive';
+  if (!canToggle) {
+    return (
+      <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full text-foreground">
+        {status}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={pending}
+      className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full cursor-pointer focus-ring ${
+        isActive
+          ? 'bg-card text-foreground hover:bg-accent'
+          : 'bg-muted text-muted-foreground hover:bg-accent'
+      } ${pending ? 'opacity-50 cursor-not-allowed' : ''}`}
+    >
+      {pending ? 'Updating...' : status}
+    </button>
+  );
+}
+
 export function UserRow({
   user,
   currentUser,
@@ -28,6 +64,7 @@ export function UserRow({
   updateUserMutation,
 }: UserRowProps) {
   const canManage = user.role !== ROLE.STAFF || currentUser?.role === ROLE.STAFF;
+  const isYou = user.id === currentUser?.id;
 
   return (
     <tr key={user.id}>
@@ -51,18 +88,12 @@ export function UserRow({
         </span>
       </td>
       <td className="px-6 py-4 whitespace-nowrap">
-        <button
-          type="button"
-          onClick={() => onToggleStatus(user.id, !user.isActive)}
-          disabled={updateUserMutation.isPending}
-          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full cursor-pointer focus-ring ${
-            user.isActive
-              ? 'bg-card text-foreground hover:bg-accent'
-              : 'bg-muted text-muted-foreground hover:bg-accent'
-          } ${updateUserMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          {updateUserMutation.isPending ? 'Updating...' : user.isActive ? 'Active' : 'Inactive'}
-        </button>
+        <StatusCell
+          isActive={user.isActive}
+          canToggle={canManage && !isYou}
+          pending={updateUserMutation.isPending}
+          onToggle={() => onToggleStatus(user.id, !user.isActive)}
+        />
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm text-muted-foreground">
         {new Date(user.createdAt).toLocaleDateString()}
@@ -81,7 +112,7 @@ export function UserRow({
             Reset password
           </button>
         )}
-        {canManage && user.id !== currentUser?.id && (
+        {canManage && !isYou && (
           <button
             type="button"
             onClick={() => onDelete(user.id)}

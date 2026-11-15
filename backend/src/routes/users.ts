@@ -187,6 +187,18 @@ export default async function userRoutes(fastify: AppFastifyInstance) {
         const { id } = request.params;
         const updateData = request.body;
 
+        // Each of these can lock the only staff account out, with nobody left to undo it.
+        const locksYouOut = ['isActive', 'role', 'mustResetPassword'].some(
+          field => field in updateData
+        );
+        if (id === currentUser.id && locksYouOut) {
+          return reply.code(400).send({
+            success: false,
+            error:
+              "You can't switch off, change the role of, or force a password reset on your own account",
+          });
+        }
+
         const updatedUser = await updateUser(
           request.db,
           id,

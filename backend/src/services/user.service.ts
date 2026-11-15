@@ -332,6 +332,16 @@ export async function updateUser(
     });
   }
 
+  if (updateData.isActive !== undefined && updateData.isActive !== currentUser.isActive) {
+    await logAuditEvent(prisma, {
+      orgId: currentUser.orgId,
+      userId: adminUserId,
+      role: adminRole,
+      action: updateData.isActive ? 'USER_REACTIVATED' : 'USER_DEACTIVATED',
+      metadata: { targetUserId: userId, targetUsername: currentUser.username },
+    });
+  }
+
   return user;
 }
 
