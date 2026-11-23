@@ -1,8 +1,14 @@
 import { type Span, trace } from '@opentelemetry/api';
 import type { Prisma, Robot } from '@prisma/client';
+import { PERMISSIONS } from '@tensrai/shared';
 import { z } from 'zod';
 import { databaseMetrics, robotFleetMetrics } from '../metrics/index.js';
-import { requireActiveSession, requireAdmin, requireOwnedRobot } from '../middleware/auth.js';
+import {
+  requireActiveSession,
+  requireAdmin,
+  requireOwnedRobot,
+  requirePermission,
+} from '../middleware/auth.js';
 import { getMapSyncStatus, isMapSyncActive } from '../services/mapSyncStatus.js';
 import { getMissionState } from '../services/missionStatus.js';
 import type { ScopedPrisma } from '../services/orgScope.js';
@@ -13,6 +19,7 @@ import {
   reloadRobotConnections,
   requestRobotAddress,
 } from '../services/robotAddress.js';
+import { robotJob } from '../services/robotMapJobs.js';
 import { RosChannelSchema } from '../services/rosRobotManager.js';
 import { fetchMapViaMappingBridge } from '../services/saveMapFromMapping.js';
 import type { AppFastifyInstance, AppFastifyRequest, IdParams, SessionUser } from '../types/app.js';
@@ -301,20 +308,34 @@ const robotRoutes = async (server: AppFastifyInstance) => {
           .send({ success: false, error: 'Map is not assigned to this robot' });
       }
 
-      await prisma.$transaction([
-        prisma.robotMap.updateMany({
-          where: { robotId: id },
-          data: { isActive: false, isPinned: false },
-        }),
-        prisma.robotMap.update({
-          where: { robotId_mapId: { robotId: id, mapId } },
-          data: { isActive: true, isPinned: true },
-        }),
-        prisma.robot.update({ where: { id }, data: { mapId } }),
-      ]);
+      let activated = true;
+      try {
+        await prisma.$transaction([
+          prisma.robotMap.updateMany({
+            where: { robotId: id },
+            data: { isActive: false, isPinned: false },
+          }),
+          prisma.robotMap.update({
+            where: { robotId_mapId: { robotId: id, mapId } },
+            data: { isActive: true, isPinned: true },
+          }),
+          prisma.robot.update({ where: { id }, data: { mapId } }),
+        ]);
+      } catch (error) {
+        // The robot or its assignment was deleted after the check above; the refetch says which.
+        if (errorCode(error) !== 'P2025') throw error;
+        activated = false;
+      }
 
       const robot = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
-      if (!robot) throw new Error(`Robot ${id} was deleted during the update`);
+      if (!robot) {
+        return reply.status(404).send({ success: false, error: 'Robot not found' });
+      }
+      if (!activated) {
+        return reply
+          .status(404)
+          .send({ success: false, error: 'Map is not assigned to this robot' });
+      }
       return { success: true, data: shapeRobotWithMaps(robot).maps };
     }
   );
@@ -332,7 +353,9 @@ const robotRoutes = async (server: AppFastifyInstance) => {
     await prisma.robotMap.updateMany({ where: { robotId: id }, data: { isPinned: false } });
 
     const updated = await prisma.robot.findUnique({ where: { id }, include: robotMapInclude });
-    if (!updated) throw new Error(`Robot ${id} was deleted during the update`);
+    if (!updated) {
+      return reply.status(404).send({ success: false, error: 'Robot not found' });
+    }
     return { success: true, data: shapeRobotWithMaps(updated).maps };
   });
 
@@ -341,48 +364,59 @@ const robotRoutes = async (server: AppFastifyInstance) => {
     return { success: true, data: getMapSyncStatus(id) };
   });
 
-  server.post<IdParams>('/robots/:id/map-sync', async (request, reply) => {
-    const { id } = request.params;
-    const prisma = request.db;
-    const robot = await prisma.robot.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        orgId: true,
-        name: true,
-        ipAddress: true,
-        mappingBridgePort: true,
-      },
-    });
+  server.post<IdParams>(
+    '/robots/:id/map-sync',
+    { preHandler: requirePermission(PERMISSIONS.MAPS_SYNC) },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (robotJob(id)) {
+        return reply.status(409).send({
+          success: false,
+          code: 'ROBOT_BUSY',
+          error: 'The robot is busy with another map operation. Try again shortly.',
+        });
+      }
+      const prisma = request.db;
+      const robot = await prisma.robot.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          orgId: true,
+          name: true,
+          ipAddress: true,
+          mappingBridgePort: true,
+        },
+      });
 
-    if (!robot) {
-      return reply.status(404).send({ success: false, error: 'Robot not found' });
+      if (!robot) {
+        return reply.status(404).send({ success: false, error: 'Robot not found' });
+      }
+
+      if (!robot.ipAddress || !robot.mappingBridgePort) {
+        return reply
+          .status(400)
+          .send({ success: false, error: 'Robot mapping bridge is not configured' });
+      }
+
+      if (!(await isAddressApproved(server.prisma, robot))) {
+        return reply
+          .status(409)
+          .send({ success: false, error: 'Robot address is waiting for approval' });
+      }
+
+      const current = getMapSyncStatus(id);
+      if (isMapSyncActive(current)) {
+        return {
+          success: true,
+          data: current,
+          message: 'Map sync already in progress',
+        };
+      }
+
+      const status = await fetchMapViaMappingBridge(server, robot);
+      return { success: true, data: status ?? getMapSyncStatus(id) };
     }
-
-    if (!robot.ipAddress || !robot.mappingBridgePort) {
-      return reply
-        .status(400)
-        .send({ success: false, error: 'Robot mapping bridge is not configured' });
-    }
-
-    if (!(await isAddressApproved(server.prisma, robot))) {
-      return reply
-        .status(409)
-        .send({ success: false, error: 'Robot address is waiting for approval' });
-    }
-
-    const current = getMapSyncStatus(id);
-    if (isMapSyncActive(current)) {
-      return {
-        success: true,
-        data: current,
-        message: 'Map sync already in progress',
-      };
-    }
-
-    const status = await fetchMapViaMappingBridge(server, robot);
-    return { success: true, data: status ?? getMapSyncStatus(id) };
-  });
+  );
 
   // Create robot (Backend/Testing only)
   server.post<{ Body: z.infer<typeof CreateRobotSchema> }>(

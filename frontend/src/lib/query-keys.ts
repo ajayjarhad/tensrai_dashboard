@@ -16,6 +16,13 @@ const missions = {
   runs: (filters?: string) => [ROBOT_MAP, 'missions', 'runs', filters ?? 'all'] as const,
 };
 
+// Map management: the list carries each robot's sync state, the detail the map's features.
+const maps = {
+  all: ['maps'] as const,
+  lists: ['maps', 'list'] as const,
+  detail: (id: string) => ['maps', id] as const,
+};
+
 // Query keys for Admin feature
 const ADMIN = 'admin';
 const users = {
@@ -50,6 +57,7 @@ export const queryKeys = {
     session,
   },
   staff,
+  maps,
   robots: robots,
   missions: missions,
   users: users,

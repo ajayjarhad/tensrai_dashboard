@@ -85,7 +85,7 @@ To also seed demo accounts, set `SEED_ADMIN_*` / `SEED_USER_*` (`EMAIL`, `USERNA
 All customers share one deployment and database. Everything belongs to an organization, its admins control it, and the API only ever returns the signed-in user's organization.
 
 - **Org admins** manage their users and robots, including robot IP, ports and channels.
-- **Any member** of the organization that owns a robot can operate it: teleop, missions, e-stop, active map, map sync.
+- **Any member** of the organization that owns a robot can operate it: teleop, missions, e-stop, active map, and edit and sync its maps. Deleting a map needs an admin.
 - **Tensrai staff** use the Organizations screen: create organizations and first admins, approve robot addresses, enter an organization for support, move a robot between organizations. The API never grants this role:
 
 ```bash
@@ -99,7 +99,7 @@ bun run backend org:create "Acme Robotics" acme acme-admin admin@acme.com   # al
 
 **Adding a new resource.** Give the model an `orgId` and query it through `request.db` in routes. A model with no `orgId` fails on its first query, and a test fails until it is either given one or listed as global in `backend/src/services/orgScope.ts`.
 
-**Deploying.** The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step: existing data moves to a "Default" organization and existing robot addresses are approved. Run them yourself when deploying another way. Usernames and emails are unique across all organizations; robot names are unique per organization. Within an organization, robots share a map record only when both the filename and the content match, so two robots can each keep a different `map.yaml`.
+**Deploying.** The Docker backend runs `prisma db push` and `backfill:org` on every start, before seeding, so upgrading an existing install needs no manual step: existing data moves to a "Default" organization and existing robot addresses are approved. Run them yourself when deploying another way. Usernames and emails are unique across all organizations; robot names are unique per organization. Within an organization, robots share a map record only when the image, the YAML and the tags, missions and zones all match, so two robots can each keep a different `map.yaml`. The start also runs `backfill:map-revisions`, which fills what that comparison needs on maps stored before it.
 
 **Tests that need a database** run separately, against a Mongo replica set with the schema pushed:
 
@@ -107,6 +107,18 @@ bun run backend org:create "Acme Robotics" acme acme-admin admin@acme.com   # al
 cd backend
 TEST_DATABASE_URL='mongodb://localhost:27017/tenancy_test?replicaSet=rs0' bun run test:integration
 ```
+
+### Maps
+
+The **Maps** page lists every map in the organization with the robots that have it. Members can view, edit and sync maps; deleting one needs an admin.
+
+- **Upload** a map from its `.pgm` and `.yaml` (and `metadata.json` for tags and missions), or **Import from robot** to bring in the maps a robot made itself.
+- **Edit** opens the map editor. With no tool chosen, drag to pan and scroll to zoom. **Draw** (B) paints obstacles and **Eraser** (E) clears them; Shift-click draws a straight line. **Zone** (Z), **Path** (P) and **Tag** (T) add no-go, work, named, trigger, pick and drop zones, preferred paths and virtual walls, and mission and home tags. The More menu crops the map, edits its YAML and downloads it. Saving refuses a tag inside a no-go zone and an edit made on top of someone else's save.
+- **Merge maps**, in the More menu, joins maps of neighbouring areas into a new one: drag a layer into place, turn it by its handle, or line it up by clicking two features on both maps.
+- **Assign** sends a map to robots, and removing a robot there deletes the map from it; it says beforehand which file each robot will get and which missions would clash. **Sync** sends the latest saved version to the robots that have an older one. Each robot shows its state on the map's row: up to date, syncing, failed, or changed on the robot too, where **Resolve** shows what each copy has and asks you to choose one.
+- On a phone, maps show as cards: you can assign, sync and resolve there, while editing and merging need a larger screen.
+
+Saving only changes the dashboard's copy; robots get it when you sync. No-go zones, virtual walls and preferred paths reach the robot as a Nav2 keepout mask beside the map. [docs/robot-map-protocol.md](docs/robot-map-protocol.md) is the spec for the robot side; until a robot supports it, its chip says it can't receive maps yet, and importing from it still works.
 
 ### Development Workflow
 

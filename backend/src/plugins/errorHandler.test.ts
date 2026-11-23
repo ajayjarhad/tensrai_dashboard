@@ -25,6 +25,15 @@ test('an id MongoDB cannot parse is not found, not a server error', async () => 
   expect(JSON.stringify(body)).not.toContain('secret detail');
 });
 
+test('a record deleted mid-request is not found, not a server error', async () => {
+  const gone = Object.assign(new Error('Record to update not found: secret detail'), {
+    code: 'P2025',
+  });
+  const { status, body } = await statusFor(gone);
+  expect(status).toBe(404);
+  expect(JSON.stringify(body)).not.toContain('secret detail');
+});
+
 test('a query shape Prisma rejects is a bad request and reveals no details', async () => {
   const invalid = new Error('Invalid `prisma.missionRun.findMany()` invocation: secret detail');
   invalid.name = 'PrismaClientValidationError';

@@ -21,7 +21,10 @@ const config: Config = {
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
+        'input-strong': 'hsl(var(--input-strong))',
+        link: 'hsl(var(--link))',
         ring: 'hsl(var(--ring))',
+        'ring-strong': 'hsl(var(--ring-strong))',
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         primary: {
@@ -59,12 +62,22 @@ const config: Config = {
           warning: 'hsl(var(--status-warning))',
           error: 'hsl(var(--status-error))',
           active: 'hsl(var(--status-active))',
+          'error-ink': 'hsl(var(--status-error-ink))',
+          'online-ink': 'hsl(var(--status-online-ink))',
+          'offline-ink': 'hsl(var(--status-offline-ink))',
+          'warning-ink': 'hsl(var(--status-warning-ink))',
+          'active-ink': 'hsl(var(--status-active-ink))',
         },
 
         safety: {
           estop: 'hsl(var(--safety-estop))',
           caution: 'hsl(var(--safety-caution))',
           safe: 'hsl(var(--safety-safe))',
+          housing: 'hsl(var(--safety-housing))',
+        },
+
+        estop: {
+          fill: 'hsl(var(--estop-fill))',
         },
 
         telemetry: {

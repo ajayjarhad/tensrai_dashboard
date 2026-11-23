@@ -1,10 +1,12 @@
 import { expect, test } from 'bun:test';
 import { isValidElement, type ReactNode } from 'react';
 import { Button } from '../src/components/ui/button';
-import { EmergencyHeader } from '../src/features/emergency-stop/emergency-header';
+import {
+  FleetEmergencyControls,
+  type FleetEmergencyControlsProps,
+} from '../src/features/emergency-stop/FleetEmergencyControls';
 
 type ButtonProps = { children?: ReactNode; disabled?: boolean; onClick?: () => void };
-type HeaderRender = { render: (props: object, ref: null) => ReactNode };
 
 const textOf = (node: ReactNode): string => {
   if (typeof node === 'string') return node;
@@ -20,60 +22,67 @@ const findButtons = (node: ReactNode): ButtonProps[] => {
 
 // Reads the element tree rather than rendering it: there is no DOM here to click in, and the
 // permission guard around the buttons is covered by its own rules.
-const headerButtons = (props: object) => {
-  const tree = (EmergencyHeader as unknown as HeaderRender).render(props, null);
-  return Object.fromEntries(findButtons(tree).map(button => [textOf(button.children), button]));
-};
+const controlButtons = (props: FleetEmergencyControlsProps) =>
+  Object.fromEntries(
+    findButtons(FleetEmergencyControls(props)).map(button => [textOf(button.children), button])
+  );
 
-const labels = (props: object) => Object.keys(headerButtons(props));
+const labels = (props: FleetEmergencyControlsProps) => Object.keys(controlButtons(props));
 
+const STOP = 'Emergency stop';
 const partlyStopped = { canSendEmergency: true, canReleaseSoftware: true };
 
 test('with a soft-stopped robot the fleet can still be stopped and released', () => {
-  const { Emergency, Release } = headerButtons(partlyStopped);
+  const { [STOP]: stop, Release } = controlButtons(partlyStopped);
 
-  expect(Emergency?.disabled).toBe(false);
+  expect(stop?.disabled).toBe(false);
   expect(Release?.disabled).toBe(false);
 });
 
-test('Emergency stays in the outer position so Release appearing does not move it', () => {
-  expect(labels(partlyStopped)).toEqual(['Release', 'Emergency']);
+test('the stop stays in the outer position so Release appearing does not move it', () => {
+  expect(labels(partlyStopped)).toEqual(['Release', STOP]);
 });
 
-test('with nothing soft-stopped only Emergency is offered', () => {
-  expect(labels({ canSendEmergency: true, canReleaseSoftware: false })).toEqual(['Emergency']);
+test('with nothing soft-stopped only the stop is offered', () => {
+  expect(labels({ canSendEmergency: true, canReleaseSoftware: false })).toEqual([STOP]);
 });
 
 test('each button sends its own command', () => {
   const calls: string[] = [];
-  const { Emergency, Release } = headerButtons({
+  const { [STOP]: stop, Release } = controlButtons({
     ...partlyStopped,
     onEmergencyAll: () => calls.push('emergency'),
     onReleaseSoftware: () => calls.push('release'),
   });
 
-  Emergency?.onClick?.();
+  stop?.onClick?.();
   Release?.onClick?.();
 
   expect(calls).toEqual(['emergency', 'release']);
 });
 
-test('a release waiting on its acks does not block Emergency', () => {
-  const { Emergency, Release } = headerButtons({ ...partlyStopped, pendingDesiredStatus: false });
+test('a release waiting on its acks does not block the stop', () => {
+  const { [STOP]: stop, Release } = controlButtons({
+    ...partlyStopped,
+    pendingDesiredStatus: false,
+  });
 
-  expect(Emergency?.disabled).toBe(false);
+  expect(stop?.disabled).toBe(false);
   expect(Release?.disabled).toBe(true);
 });
 
 test('a stop waiting on its acks disables both buttons', () => {
-  const { Emergency, Release } = headerButtons({ ...partlyStopped, pendingDesiredStatus: true });
+  const { [STOP]: stop, Release } = controlButtons({
+    ...partlyStopped,
+    pendingDesiredStatus: true,
+  });
 
-  expect(Emergency?.disabled).toBe(true);
+  expect(stop?.disabled).toBe(true);
   expect(Release?.disabled).toBe(true);
 });
 
-test('Emergency is disabled when no robot can be reached', () => {
-  const { Emergency } = headerButtons({ canSendEmergency: false, canReleaseSoftware: false });
+test('the stop is disabled when no robot can be reached', () => {
+  const { [STOP]: stop } = controlButtons({ canSendEmergency: false, canReleaseSoftware: false });
 
-  expect(Emergency?.disabled).toBe(true);
+  expect(stop?.disabled).toBe(true);
 });

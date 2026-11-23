@@ -63,7 +63,7 @@ cd "$HERE" || exit 1
 rm -f "$OUT/state.json"
 export RESTARTS_BEFORE=0
 FAILED=0
-for suite in conformance e2e-1-setup e2e-2-telemetry e2e-3-missions e2e-4-maps e2e-5-break e2e-6-edge e2e-7-real-robot; do
+for suite in conformance e2e-1-setup e2e-2-telemetry e2e-3-missions e2e-4-maps e2e-5-break e2e-6-edge e2e-7-real-robot e2e-8-map-management; do
   timeout 400 bun "$suite.ts" > "$OUT/$suite.$LABEL.log" 2>&1 || FAILED=1
   echo "$suite: $(grep -E '^RESULT' "$OUT/$suite.$LABEL.log" | cut -c9-)"
   grep -E '^(FAIL|DIFF)|TypeError' "$OUT/$suite.$LABEL.log" | cut -c1-300

@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from '@tanstack/react-router';
 import { PERMISSIONS } from '@tensrai/shared';
-import { ArrowLeft, Plus, RefreshCcw } from 'lucide-react';
+import { Plus, RefreshCcw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { syncRobotMaps } from '@/features/maps/robotSync';
 import { apiClient } from '@/lib/api';
 import { evictFromCache } from '@/lib/map/loadMapAssets';
 import { queryKeys } from '@/lib/query-keys';
@@ -21,7 +21,6 @@ import {
   type RobotPayload,
   toRobotPayload,
 } from '../robotFormModel';
-import { AdminNav } from './AdminNav';
 import { RobotForm } from './RobotForm';
 import { RobotTable } from './RobotTable';
 
@@ -54,10 +53,9 @@ const evictRobotMapsFromCache = (robot: Robot) => {
 };
 
 const mapRefreshedMessage = (status: MapSyncStatus | null) =>
-  status?.phase === 'skipped' ? 'Map metadata refreshed' : 'Map refreshed';
+  status?.phase === 'skipped' ? 'Map metadata imported' : 'Maps imported';
 
 export function RobotManagement() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { isAdmin, hasPermission, user } = useAuth();
   const isStaff = hasPermission(PERMISSIONS.STAFF_CONSOLE);
@@ -74,8 +72,6 @@ export function RobotManagement() {
   const channelEditor = useChannelEditor();
   const { statusByRobotId: mapSyncByRobotId, runMapSync } = useMapSync();
   const emergencyByRobot = useRobotEmergencyStore(state => state.byRobot);
-  const syncEmergencyRobots = useRobotEmergencyStore(state => state.syncRobots);
-  const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
 
   // The dashboard shows this list from the cache as soon as it opens, so it has to be right before
   // anyone goes back. Without refetchType it would only be marked stale while the dashboard is closed.
@@ -152,18 +148,6 @@ export function RobotManagement() {
     return () => clearInterval(interval);
   }, [isAdminUser, loadRobots, loadAddressStatuses]);
 
-  useEffect(() => {
-    if (!isAdminUser) return;
-    syncEmergencyRobots(robots);
-  }, [isAdminUser, robots, syncEmergencyRobots]);
-
-  useEffect(
-    () => () => {
-      disconnectEmergencyRobots();
-    },
-    [disconnectEmergencyRobots]
-  );
-
   const displayedRobots = useMemo(
     () => robots.map(robot => mergeEmergencyRuntimeIntoRobot(robot, emergencyByRobot[robot.id])),
     [emergencyByRobot, robots]
@@ -230,7 +214,7 @@ export function RobotManagement() {
     const robotId = form.id;
     const savedRobot = robots.find(robot => robot.id === robotId);
     const fallbackMapId = savedRobot?.mapId ?? form.mapId;
-    const toastId = toast.loading('Refreshing map from robot');
+    const toastId = toast.loading('Importing from robot');
 
     setRefreshingMapRobotId(robotId);
     try {
@@ -258,6 +242,21 @@ export function RobotManagement() {
     }
   };
 
+  const handleSyncMaps = async (robot: Robot) => {
+    try {
+      const job = await syncRobotMaps(robot.id);
+      if (job) {
+        toast.success(
+          `Syncing ${job.mapIds.length} map${job.mapIds.length === 1 ? '' : 's'} to ${robot.name}`
+        );
+      } else {
+        toast.info(`${robot.name} has the latest version of every map`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : 'The sync did not start.');
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this robot?')) return;
     try {
@@ -282,20 +281,10 @@ export function RobotManagement() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-full bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => navigate({ to: '/' })}
-              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back to Dashboard
-            </button>
-            <AdminNav />
-          </div>
+          <h1 className="text-3xl font-bold text-foreground">Robot Management</h1>
           <div className="flex gap-2">
             <button
               type="button"
@@ -317,8 +306,6 @@ export function RobotManagement() {
             </button>
           </div>
         </div>
-
-        <h1 className="text-3xl font-bold text-foreground">Robot Management</h1>
 
         {error && (
           <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded mb-4">
@@ -342,6 +329,7 @@ export function RobotManagement() {
             currentOrgId={user?.orgId}
             onEdit={robot => handleEdit(robots.find(item => item.id === robot.id) ?? robot)}
             onDelete={handleDelete}
+            onSyncMaps={hasPermission(PERMISSIONS.MAPS_SYNC) ? handleSyncMaps : undefined}
             onMoved={() => Promise.all([loadRobots(), refreshDashboardData()])}
           />
 

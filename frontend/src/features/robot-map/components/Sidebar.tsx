@@ -4,7 +4,6 @@ import type { Robot } from '../../../types/robot';
 import { MissionActions } from './Sidebar/MissionActions';
 import { RobotDetails } from './Sidebar/RobotDetails';
 import { RobotList } from './Sidebar/RobotList';
-import { SidebarAccount } from './Sidebar/SidebarAccount';
 import { SidebarHeader } from './Sidebar/SidebarHeader';
 
 interface SidebarProps {
@@ -79,8 +78,6 @@ export function Sidebar({
           />
         ) : null}
       </div>
-
-      <SidebarAccount isOpen={isOpen} />
     </div>
   );
 }

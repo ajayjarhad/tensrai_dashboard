@@ -6,14 +6,26 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-type ManifestChunk = { file: string; src?: string; isEntry?: boolean; imports?: string[] };
+type ManifestChunk = {
+  file: string;
+  name?: string;
+  src?: string;
+  isEntry?: boolean;
+  isDynamicEntry?: boolean;
+  imports?: string[];
+};
 
 const FRONTEND = resolve(import.meta.dir, '../../frontend');
-const PAGES: Record<string, string | null> = {
-  '/auth/login': 'src/features/auth/components/login-form.tsx',
-  '/': 'src/features/robot-map/components/Dashboard.tsx',
-  '/admin/robots': 'src/features/admin/components/index.ts',
-  '/staff/organizations': 'src/features/staff/components/OrganizationsPage.tsx',
+// A signed-in page also downloads the app shell (header, fleet E-stop) around it.
+const SHELL = 'src/app/AppShell.tsx';
+const PAGES: Record<string, string[]> = {
+  '/auth/login': ['src/features/auth/components/login-form.tsx'],
+  '/': [SHELL, 'src/features/robot-map/components/Dashboard.tsx'],
+  '/admin/robots': [SHELL, 'src/features/admin/components/RobotManagement.tsx'],
+  '/staff/organizations': [SHELL, 'src/features/staff/components/OrganizationsPage.tsx'],
+  '/maps': [SHELL, 'src/features/maps/MapListPage.tsx'],
+  '/maps/$mapId/edit': [SHELL, 'src/features/maps/editor/MapEditorPage.tsx'],
+  '/maps/merge': [SHELL, 'src/features/maps/merge/MergePage.tsx'],
 };
 
 const outDir = mkdtempSync(join(tmpdir(), 'dashboard-bundle-'));
@@ -40,13 +52,28 @@ try {
     for (const next of manifest[key]?.imports ?? []) withStaticImports(next, seen);
     return seen;
   };
+  // A page's chunk is keyed by its source, unless it also exports modules for chunks it imports
+  // dynamically (the shell does, for every signed-in page): then by its file, so match it by name.
+  const chunkKeyOf = (source: string) => {
+    if (manifest[source]) return source;
+    const name = source
+      .split('/')
+      .at(-1)
+      ?.replace(/\.[^.]+$/, '');
+    return Object.keys(manifest).find(
+      key => manifest[key]?.isDynamicEntry && manifest[key]?.name === name
+    );
+  };
   const entryKey = Object.keys(manifest).find(key => manifest[key]?.isEntry);
   if (!entryKey) throw new Error('No entry chunk in the Vite manifest');
 
-  for (const [page, source] of Object.entries(PAGES)) {
+  for (const [page, sources] of Object.entries(PAGES)) {
     const chunks = withStaticImports(entryKey, new Set());
     // Before a page is split out, its module lives in the entry chunk and has no manifest key.
-    if (source && manifest[source]) withStaticImports(source, chunks);
+    for (const source of sources) {
+      const key = chunkKeyOf(source);
+      if (key) withStaticImports(key, chunks);
+    }
     const value = [...chunks]
       .map(key => manifest[key]?.file)
       .filter((file): file is string => Boolean(file?.endsWith('.js')))

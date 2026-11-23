@@ -9,6 +9,8 @@ import { appErrorHandler } from './plugins/errorHandler.js';
 import observabilityPlugin from './plugins/observability.js';
 import securityPlugin, { TRUSTED_PROXIES } from './plugins/security.js';
 import tenantPlugin from './plugins/tenant.js';
+import mapAssignmentRoutes from './routes/mapAssignments.js';
+import mapManagementRoutes from './routes/mapManagement.js';
 import mapRoutes from './routes/maps.js';
 import missionRunRoutes from './routes/missionRuns.js';
 import robotRoutes from './routes/robots.js';
@@ -102,6 +104,8 @@ const registerPlugins = async () => {
   await server.register(robotRoutes, { prefix: '/api' });
   await server.register(missionRunRoutes, { prefix: '/api' });
   await server.register(mapRoutes, { prefix: '/api' });
+  await server.register(mapManagementRoutes, { prefix: '/api' });
+  await server.register(mapAssignmentRoutes, { prefix: '/api' });
   await server.register(staffRoutes, { prefix: '/api' });
 
   server.log.info('All plugins and routes registered successfully');

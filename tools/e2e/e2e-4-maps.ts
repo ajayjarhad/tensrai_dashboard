@@ -18,7 +18,15 @@ import {
   waitFor,
 } from './e2e-lib';
 
-const { acme, acmeOp, beta, a1, a2, b1, acmeOrg, betaOrg } = state;
+const { acme, acmeOp, beta, acmeOrg, betaOrg } = state;
+// By name: later suites move and re-create robots, so the ids saved at setup can be stale on a rerun.
+const robotIdOf = async (cookie: string, name: string, saved: string): Promise<string> =>
+  ((await call('/api/robots', { cookie })).json?.data ?? []).find(
+    (robot: { id: string; name: string }) => robot.name === name
+  )?.id ?? saved;
+const a1 = await robotIdOf(acmeOp.cookie, 'Forklift A1', state.a1);
+const a2 = await robotIdOf(acmeOp.cookie, 'Forklift A2', state.a2);
+const b1 = await robotIdOf(beta.cookie, 'Tugger B1', state.b1);
 
 const sync = (robotId: string, cookie: string) =>
   call(`/api/robots/${robotId}/map-sync`, { cookie, method: 'POST' });
@@ -39,6 +47,12 @@ const waitForMaps = (id: string, cookie: string, count: number, ms = 25000) =>
     const rows = await robotMaps(id, cookie);
     return rows.length >= count && rows;
   }, ms);
+// The mock's "variant" fault: the robot's own image with its last pixel flipped.
+const variantOf = (pgm: Buffer) => {
+  const copy = Buffer.from(pgm);
+  copy[copy.length - 1] = (copy[copy.length - 1] ?? 0) ^ 0xff;
+  return copy;
+};
 const pgmHash = (name: string) =>
   createHash('sha256')
     .update(readFileSync(`${REPO}/dashboard_ros/maps/${name}`))
@@ -285,7 +299,24 @@ check(
   skipSeen
 );
 
+// The manifest names each image by its sha256, with the YAML and tags: a copy that matches them is
+// already here, so it isn't downloaded even when its legacy hash differs.
 await ctl('a2', '/map?mode=chunked');
+await ctl('a2', '/reset');
+await sync(a2, acme.cookie);
+await waitFor(
+  async () =>
+    (await stats('a2')).received.mapping.filter((e: string) => e === 'MAP_SKIP').length >= 2,
+  10000
+);
+check(
+  'a copy that matches by image, YAML and tags is skipped, whatever its legacy hash',
+  !(await stats('a2')).received.mapping.includes('MAP_SEND_CHUNKS'),
+  (await stats('a2')).received.mapping
+);
+
+// A changed image is downloaded in chunks and stored as this robot's own copy.
+await ctl('a2', '/map?mode=chunked&fault=variant');
 await ctl('a2', '/reset');
 await sync(a2, acme.cookie);
 await waitFor(
@@ -296,21 +327,41 @@ await waitFor(
 );
 note(`a2 robot received: ${(await stats('a2')).received.mapping.join(' ')}`);
 check(
-  'a robot with no matching hash transfers in chunks and it is stored',
+  'a robot whose image changed transfers it in chunks and it is stored',
   (await stats('a2')).received.mapping.filter((e: string) => e === 'MAP_TRANSFER_STORED').length ===
     2,
   (await stats('a2')).received.mapping
 );
-check(
-  'no duplicate records from the transfer',
-  (await maps(acme.cookie)).length === countBefore,
-  (await maps(acme.cookie)).length
-);
 const a2DefaultId = (await robotMaps(a2, acme.cookie)).find((m: any) => m.isActive)?.id;
 const chunked = await call(`/api/maps/${a2DefaultId}/image`, { cookie: acme.cookie, raw: true });
+const variantHash = createHash('sha256')
+  .update(variantOf(readFileSync(`${REPO}/dashboard_ros/maps/map1.pgm`)))
+  .digest('hex');
 check(
-  'the chunked map is byte-identical',
-  createHash('sha256').update(chunked.bytes).digest('hex') === pgmHash('map1.pgm')
+  'the chunked map is byte-identical to what the robot sent',
+  createHash('sha256').update(chunked.bytes).digest('hex') === variantHash
+);
+const variantIds = (await robotMaps(a2, acme.cookie)).map((row: any) => row.id ?? row.mapId);
+check(
+  'the changed copies split off, leaving the robots that share the old ones alone',
+  variantIds.every((id: string) => !chunkMaps.some((row: any) => (row.id ?? row.mapId) === id)),
+  variantIds
+);
+
+// Back to the shared copies for the rest of the suite; the split-off records go with them.
+await ctl('a2', '/map?mode=chunked');
+await ctl('a2', '/reset');
+await sync(a2, acme.cookie);
+await syncEnded(a2, acme.cookie, 15000);
+for (const id of variantIds) {
+  if (!(await robotMaps(a2, acme.cookie)).some((row: any) => (row.id ?? row.mapId) === id)) {
+    await call(`/api/maps/${id}`, { cookie: acme.cookie, method: 'DELETE' });
+  }
+}
+check(
+  'back on the shared copies, with no records left over',
+  (await maps(acme.cookie)).length === countBefore,
+  (await maps(acme.cookie)).length
 );
 
 const faultSync = async (fault: string, mode = 'chunked') => {

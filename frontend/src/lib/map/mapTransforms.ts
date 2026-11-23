@@ -103,6 +103,11 @@ export function worldAngle(p1: WorldPoint, p2: WorldPoint): number {
   return Math.atan2(p2.y - p1.y, p2.x - p1.x);
 }
 
+// World headings turn counter-clockwise from +x; the screen's y points down, so Konva turns the
+// other way. A shape drawn pointing along +x then faces the heading.
+export const headingToRotation = (theta: number, originYaw = 0) =>
+  (-(theta - originYaw) * 180) / Math.PI;
+
 /**
  * Clamp pixel point to map bounds
  */

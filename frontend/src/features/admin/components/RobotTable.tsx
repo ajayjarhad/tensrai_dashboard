@@ -1,4 +1,4 @@
-import { Save, Trash2 } from 'lucide-react';
+import { Save, Send, Trash2 } from 'lucide-react';
 import { MoveRobotControl } from '@/features/staff/components/MoveRobotControl';
 import { getRobotDisplayStatusLabel } from '@/lib/robotStatus';
 import type { Robot } from '@/types/robot';
@@ -15,6 +15,7 @@ type RobotTableProps = {
   currentOrgId: string | undefined;
   onEdit: (robot: Robot) => void;
   onDelete: (robotId: string) => void;
+  onSyncMaps?: ((robot: Robot) => void) | undefined;
   onMoved: () => Promise<unknown>;
 };
 
@@ -28,6 +29,7 @@ function RobotRow({
   currentOrgId,
   onEdit,
   onDelete,
+  onSyncMaps,
   onMoved,
 }: RobotRowProps) {
   const addressStatus = robot.ipAddress ? addressStatusByIp[robot.ipAddress] : undefined;
@@ -76,6 +78,16 @@ function RobotRow({
             <Save className="h-4 w-4 rotate-90" />
             Edit
           </button>
+          {onSyncMaps && (robot.maps?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => onSyncMaps(robot)}
+              className="text-link hover:text-link/80 focus-ring inline-flex items-center gap-1"
+            >
+              <Send className="h-4 w-4" />
+              Sync maps
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onDelete(robot.id)}

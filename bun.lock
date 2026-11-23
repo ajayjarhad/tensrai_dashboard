@@ -74,6 +74,7 @@
         "@tensrai/shared": "workspace:*",
         "class-variance-authority": "^0.7.0",
         "clsx": "^2.0.0",
+        "js-yaml": "^4.1.1",
         "konva": "^10.0.9",
         "ky": "^1.14.0",
         "lucide-react": "^0.553.0",
@@ -91,6 +92,7 @@
       },
       "devDependencies": {
         "@tailwindcss/typography": "^0.5.0",
+        "@types/js-yaml": "^4.0.9",
         "@types/node": "^24.10.1",
         "@types/react": "^19.2.2",
         "@types/react-dom": "^19.2.2",

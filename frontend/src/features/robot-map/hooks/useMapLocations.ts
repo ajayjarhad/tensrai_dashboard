@@ -1,6 +1,10 @@
 import type { ProcessedMapData } from '@tensrai/shared';
 import { useMemo } from 'react';
-import { createMapTransforms, worldToMapPixel } from '../../../lib/map/mapTransforms';
+import {
+  createMapTransforms,
+  headingToRotation,
+  worldToMapPixel,
+} from '../../../lib/map/mapTransforms';
 
 export interface TempLocation {
   id: string;
@@ -25,8 +29,8 @@ export function useMapLocations({ mapData }: { mapData: ProcessedMapData | null 
         name: tag.name,
         x: pixelPos.x,
         y: pixelPos.y,
-        // Konva takes degrees. This ignores the map origin's yaw, which pins haven't needed so far.
-        rotation: tag.theta * (180 / Math.PI),
+        // The pin is drawn pointing along +x, so it takes the same turn as the editor's tags.
+        rotation: headingToRotation(tag.theta, transforms.origin[2]),
         worldX: tag.x,
         worldY: tag.y,
         thetaRad: tag.theta,

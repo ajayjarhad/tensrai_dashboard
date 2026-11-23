@@ -1,12 +1,11 @@
 import { useEffect, useRef } from 'react';
-import { useRobotEmergencyStore } from '@/stores/robotEmergency';
 import { useRobotMissionStore } from '@/stores/robotMission';
 import type { Robot } from '@/types/robot';
 
+// Mission bridges only; the e-stop bridges belong to the app shell and outlive this page.
 export const useRobotConnections = (robots: Robot[]) => {
   const connectMission = useRobotMissionStore(state => state.connect);
   const disconnectMission = useRobotMissionStore(state => state.disconnect);
-  const disconnectEmergencyRobots = useRobotEmergencyStore(state => state.disconnectAll);
   const missionConnectionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -31,8 +30,7 @@ export const useRobotConnections = (robots: Robot[]) => {
         disconnectMission(id);
       }
       missionConnectionsRef.current.clear();
-      disconnectEmergencyRobots();
     },
-    [disconnectEmergencyRobots, disconnectMission]
+    [disconnectMission]
   );
 };

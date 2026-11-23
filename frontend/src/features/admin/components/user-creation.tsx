@@ -53,7 +53,7 @@ export function UserCreation() {
   // Check if user has permission
   if (!hasPermission(PERMISSIONS.USER_MANAGEMENT)) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="min-h-full flex items-center justify-center bg-background">
         <div className="text-center">
           <h1 className="text-2xl font-bold text-foreground mb-4">Access Denied</h1>
           <p className="text-muted-foreground">You don't have permission to create users.</p>
@@ -88,7 +88,7 @@ export function UserCreation() {
 
   if (createdUser) {
     return (
-      <div className="min-h-screen bg-card py-12 px-4 sm:px-6 lg:px-8">
+      <div className="min-h-full bg-card py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-2xl mx-auto space-y-8">
           <div className="space-y-3">
             <button
@@ -187,7 +187,7 @@ export function UserCreation() {
   }
 
   return (
-    <div className="min-h-screen bg-card py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-full bg-card py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-2xl mx-auto space-y-8">
         <div className="space-y-3">
           <button

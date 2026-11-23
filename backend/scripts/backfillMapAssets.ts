@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { generateMapAssets } from '../src/services/mapAssets.js';
+import { pgmOf } from '../src/services/mapImage.js';
 
 const prisma = new PrismaClient() as any;
 
@@ -30,7 +31,7 @@ async function main() {
         continue;
       }
 
-      const image = Buffer.from(map.image);
+      const image = pgmOf(map.image);
       const assets = await generateMapAssets(image, map.metadata ?? {});
       await prisma.map.update({
         where: { id: map.id },

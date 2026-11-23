@@ -3,9 +3,16 @@ import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { load } from 'js-yaml';
 import { generateMapAssets } from '../src/services/mapAssets.js';
+import { mapRevision, sha256 } from '../src/services/mapRevision.js';
 import { ensureDefaultOrg } from './defaultOrg.js';
 
 const prisma = new PrismaClient() as any;
+
+// The unique key includes the revision, so the seed computes it like an import would.
+const identity = (pgm: Buffer, metadata: Record<string, unknown>, features: unknown) => {
+  const imageSha256 = sha256(pgm);
+  return { imageSha256, revision: mapRevision({ imageSha256, yaml: metadata, features }) };
+};
 
 async function main() {
   console.log('Seeding database...');
@@ -79,14 +86,18 @@ async function main() {
       },
     ],
   };
+  const map1Identity = identity(map1Pgm, map1Metadata, map1Features);
+  const map2Identity = identity(map2Pgm, map2Metadata, map2Features);
+  const map3Identity = identity(map3Pgm, map3Metadata, map3Features);
   // Create Maps
   console.log('Creating maps...');
   const map1 = await prisma.map.upsert({
     where: {
-      orgId_filename_contentHash: {
+      orgId_filename_contentHash_revision: {
         orgId: org.id,
         filename: 'map.yaml',
         contentHash: map1Assets.contentHash,
+        revision: map1Identity.revision,
       },
     },
     update: {
@@ -94,6 +105,7 @@ async function main() {
       metadata: map1Metadata,
       features: map1Features,
       ...map1Assets,
+      ...map1Identity,
     },
     create: {
       orgId: org.id,
@@ -103,15 +115,17 @@ async function main() {
       metadata: map1Metadata,
       features: map1Features,
       ...map1Assets,
+      ...map1Identity,
     },
   });
 
   const map2 = await prisma.map.upsert({
     where: {
-      orgId_filename_contentHash: {
+      orgId_filename_contentHash_revision: {
         orgId: org.id,
         filename: 'map2.yaml',
         contentHash: map2Assets.contentHash,
+        revision: map2Identity.revision,
       },
     },
     update: {
@@ -119,6 +133,7 @@ async function main() {
       metadata: map2Metadata,
       features: map2Features,
       ...map2Assets,
+      ...map2Identity,
     },
     create: {
       orgId: org.id,
@@ -128,14 +143,16 @@ async function main() {
       metadata: map2Metadata,
       features: map2Features,
       ...map2Assets,
+      ...map2Identity,
     },
   });
   const map3 = await prisma.map.upsert({
     where: {
-      orgId_filename_contentHash: {
+      orgId_filename_contentHash_revision: {
         orgId: org.id,
         filename: 'gas_station_map.yaml',
         contentHash: map3Assets.contentHash,
+        revision: map3Identity.revision,
       },
     },
     update: {
@@ -143,6 +160,7 @@ async function main() {
       metadata: map3Metadata,
       features: map3Features,
       ...map3Assets,
+      ...map3Identity,
     },
     create: {
       orgId: org.id,
@@ -152,6 +170,7 @@ async function main() {
       metadata: map3Metadata,
       features: map3Features,
       ...map3Assets,
+      ...map3Identity,
     },
   });
 

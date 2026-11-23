@@ -33,6 +33,19 @@ are used, and logs and generated logins go to `tools/e2e/.out/`, which git ignor
 | `e2e-5-break` | Garbage, robot and backend restarts, revoked access, moved robots, staff flows |
 | `e2e-6-edge` | Hostile input, role boundaries, cookies and CORS, deleting things in use |
 | `e2e-7-real-robot` | The real robot Python through the whole stack |
+| `e2e-8-map-management` | Upload, assign, edit and sync with zones and the keepout mask, conflicts, robots that can't receive maps, unassign and delete |
+
+## In a browser
+
+These drive the UI in headless Chrome against a running stack (`run.sh --keep`), signing in through the
+API. Screenshots go to `.out/`.
+
+```bash
+bun tools/e2e/check-shell.ts    # header tabs per role, E-stop and release from any page
+bun tools/e2e/check-maps.ts     # upload, assign, a conflict resolved in its dialog, the phone layout, delete
+bun tools/e2e/check-editor.ts   # draw, undo, save, crop, YAML, zones, paths, tags, layers, conflicts
+bun tools/e2e/check-merge.ts    # line two maps up by two points and merge them
+```
 
 ## Real Nav2
 
@@ -42,10 +55,16 @@ robot's own map. It checks that an e-stop pauses a mission, that the robot then 
 release resumes it to completion, both mid-mission and with the e-stop sent as the goal goes out. The
 first run builds a ~5 GB image.
 
+`tools/e2e/nav2/run-keepout.sh` loads keepout masks made by the dashboard's own generator into Nav2's
+KeepoutFilter and asks its planner for a path. With an empty mask the path goes straight through a
+no-go square; with the square's mask the costmap gains exactly its cells as lethal, the right way up,
+and the path goes around it.
+
 ## What this can't tell you
 
 - Real rosbridge and hardware behaviour: those are stubbed or simulated here. Nav2 runs for real only
   in `nav2/run.sh`, on a simulated base.
 - The chunked map transfer has no robot-side code in `dashboard_ros`, so the mock's version comes from
   what the backend expects.
-- The UI: these drive the same HTTP and WebSocket routes the browser uses. Click through by hand too.
+- The UI beyond the browser checks above: the suites drive the same HTTP and WebSocket routes the
+  browser uses. Click through by hand too.

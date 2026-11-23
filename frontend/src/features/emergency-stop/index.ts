@@ -1,3 +1,4 @@
-export type { EmergencyHeaderProps } from './emergency-header';
-export { EmergencyHeader } from './emergency-header';
-export type { FleetEmergencySummary } from './types';
+export {
+  FleetEmergencyControls,
+  type FleetEmergencyControlsProps,
+} from './FleetEmergencyControls';

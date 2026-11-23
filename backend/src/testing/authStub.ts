@@ -1,4 +1,5 @@
 import fastify from 'fastify';
+import { scopeArgs } from '../services/orgScope.js';
 
 export const ORG_A = '64b000000000000000000a01';
 export const ORG_B = '64b000000000000000000b02';
@@ -40,11 +41,31 @@ export const asStaffIn = (orgId: string) => ({ ...asUser('staff'), 'x-test-activ
 // Same cast as index.ts: fastify's default export has no call signature under NodeNext.
 const createFastify = fastify as unknown as () => any;
 
+// The production org scoping (orgScope.ts) applied to in-memory fakes, so a test sees another
+// organization's ids as missing exactly as a route would.
+const scopeFake = (prisma: any, orgId: string | null) =>
+  new Proxy(prisma, {
+    get(target, model) {
+      const delegate = target[model];
+      if (typeof model !== 'string' || model.startsWith('$') || !delegate || !orgId)
+        return delegate;
+      const name = `${model[0]?.toUpperCase()}${model.slice(1)}`;
+      return new Proxy(delegate, {
+        get(methods, operation) {
+          const method = methods[operation];
+          return typeof method === 'function' && typeof operation === 'string'
+            ? (args: unknown) => method(scopeArgs(name, operation, args, orgId))
+            : method;
+        },
+      });
+    },
+  });
+
 // A Fastify app whose session comes from the x-test-user header (none means logged out),
-// standing in for the auth plugin. request.db passes straight through to app.prisma: org
-// scoping of queries is covered by orgScope.test.ts, so the fakes below filter by org themselves
-// where a test needs ownership to matter.
-export const createTestApp = () => {
+// standing in for the auth plugin. By default request.db passes straight through to app.prisma
+// (org scoping is covered by orgScope.test.ts and the fakes filter by org themselves); with
+// scopeDb it goes through the same scoping as production.
+export const createTestApp = ({ scopeDb = false }: { scopeDb?: boolean } = {}) => {
   const app = createFastify();
   const readSession = (request: any) => {
     const user = TEST_USERS[request.headers['x-test-user'] as TestUserKey];
@@ -71,7 +92,7 @@ export const createTestApp = () => {
   app.decorateRequest('orgId', null);
   app.decorateRequest('db', {
     getter(this: any) {
-      return this.server.prisma;
+      return scopeDb ? scopeFake(this.server.prisma, this.orgId) : this.server.prisma;
     },
   });
   return app;

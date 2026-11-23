@@ -140,6 +140,8 @@ services:
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' node --loader ts-node/esm scripts/seed.ts || echo '⚠️ User seeding failed or already completed';
         cd .. && echo '🗺️ Backfilling map display assets if needed...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillMapAssets.ts || echo '⚠️ Map asset backfill failed or already completed';
+        cd .. && echo '🗺️ Backfilling map revisions if needed...';
+        cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bunx tsx scripts/backfillMapRevisions.ts || echo '⚠️ Map revision backfill failed';
         cd .. && echo '🚀 Starting backend server...';
         cd backend && DATABASE_URL='mongodb://mongo:27017/tensrai_dashboard?replicaSet=rs0' bun src/index.ts
       "

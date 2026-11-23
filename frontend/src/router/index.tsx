@@ -7,22 +7,36 @@ import {
   Outlet,
   redirect,
 } from '@tanstack/react-router';
-import { PERMISSIONS } from '@tensrai/shared';
+import { PERMISSIONS, type Permission } from '@tensrai/shared';
 import { ArrowLeft, Home } from 'lucide-react';
 import { Suspense, useEffect } from 'react';
-import { StaffOrgBanner } from '@/features/staff/components/StaffOrgBanner';
 import type { NavigationService } from '@/lib/navigation';
 import { setNavigationService } from '@/lib/navigation';
 import { queryClient } from '@/lib/query-client';
 import { useAuth, useAuthStore } from '@/stores/auth';
+import { signedInGate } from './signedInGate';
 
 // Each page is its own chunk, so sign-in doesn't download the map renderer or the admin screens.
+// The shell (header, fleet E-stop) is one too, fetched only once someone is signed in, and the
+// signed-in pages load through it (app/pages.ts says why).
+const AppShell = lazyRouteComponent(() => import('@/app/AppShell'), 'AppShell');
+const shellPages = () => import('@/app/AppShell').then(shell => shell.pages);
 const Dashboard = lazyRouteComponent(
-  () => import('@/features/robot-map/components/Dashboard'),
+  () => shellPages().then(pages => pages.dashboard()),
   'Dashboard'
 );
-const adminPage = (name: 'RobotManagement' | 'UserCreation' | 'UserManagement') =>
-  lazyRouteComponent(() => import('@/features/admin/components'), name);
+const RobotManagement = lazyRouteComponent(
+  () => shellPages().then(pages => pages.robots()),
+  'RobotManagement'
+);
+const UserManagement = lazyRouteComponent(
+  () => shellPages().then(pages => pages.users()),
+  'UserManagement'
+);
+const UserCreation = lazyRouteComponent(
+  () => shellPages().then(pages => pages.newUser()),
+  'UserCreation'
+);
 // Separate chunks: the password-setup form brings zod and react-hook-form, the login form doesn't.
 const LoginForm = lazyRouteComponent(
   () => import('@/features/auth/components/login-form'),
@@ -31,6 +45,19 @@ const LoginForm = lazyRouteComponent(
 const FirstTimePasswordForm = lazyRouteComponent(
   () => import('@/features/auth/components/first-time-password-form'),
   'FirstTimePasswordForm'
+);
+
+const MapListPage = lazyRouteComponent(
+  () => shellPages().then(pages => pages.mapList()),
+  'MapListPage'
+);
+const MapEditorPage = lazyRouteComponent(
+  () => shellPages().then(pages => pages.mapEditor()),
+  'MapEditorPage'
+);
+const MergePage = lazyRouteComponent(
+  () => shellPages().then(pages => pages.mapMerge()),
+  'MergePage'
 );
 
 const PageLoading = ({ message }: { message: string }) => (
@@ -42,12 +69,18 @@ const PageLoading = ({ message }: { message: string }) => (
   </div>
 );
 
+// The same permission table as the backend; a page the role can't use sends it to /unauthorized.
+const requirePermission = (permission: Permission) => () => {
+  const { hasPermission, isAuthenticated } = useAuthStore.getState();
+  if (!isAuthenticated) throw redirect({ to: '/auth/login' });
+  if (!hasPermission(permission)) throw redirect({ to: '/unauthorized' });
+};
+
 // Root Route
 const rootRoute = createRootRoute({
   component: () => {
     return (
       <div className="h-screen flex flex-col bg-background text-foreground">
-        <StaffOrgBanner />
         <div className="flex-1 min-h-0 overflow-auto">
           <Outlet />
         </div>
@@ -56,9 +89,36 @@ const rootRoute = createRootRoute({
   },
 });
 
+// Every signed-in page, under one header and fleet E-stop.
+const appRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: 'app',
+  component: () => {
+    const { user, isAuthenticated, isLoading, hasHydrated } = useAuth();
+    const gate = signedInGate({
+      hasHydrated,
+      isLoading,
+      isAuthenticated,
+      mustResetPassword: Boolean(user?.mustResetPassword),
+    });
+
+    if (gate === 'loading') {
+      return <PageLoading message={hasHydrated ? 'Loading...' : 'Restoring session...'} />;
+    }
+    if (gate === 'login') return <Navigate to="/auth/login" replace />;
+    if (gate === 'password-reset') return <Navigate to="/auth/first-time-setup" replace />;
+
+    return (
+      <Suspense fallback={<PageLoading message="Loading..." />}>
+        <AppShell />
+      </Suspense>
+    );
+  },
+});
+
 // Index Route (Dashboard)
 const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appRoute,
   path: '/',
   loader: () => {
     if (!useAuthStore.getState().isAuthenticated) return;
@@ -66,29 +126,15 @@ const indexRoute = createRoute({
     import('@/features/robot-map/queries')
       .then(({ prefetchDashboard }) => prefetchDashboard(queryClient))
       .catch(() => undefined);
+    // Its code loads through the shell's chunk; left to the Suspense boundary below, that extra step
+    // costs a frame of "Loading...". Never rejects: a failed load still surfaces when it renders.
+    return Dashboard.preload?.();
   },
-  component: () => {
-    const { user, isAuthenticated, isLoading, hasHydrated } = useAuth();
-
-    // Show loading while Zustand is rehydrating or checking auth state
-    if (!hasHydrated || isLoading) {
-      return <PageLoading message={hasHydrated ? 'Loading...' : 'Restoring session...'} />;
-    }
-
-    if (!isAuthenticated) {
-      return <Navigate to="/auth/login" replace />;
-    }
-
-    if (user?.mustResetPassword) {
-      return <Navigate to="/auth/first-time-setup" replace />;
-    }
-
-    return (
-      <Suspense fallback={<PageLoading message="Loading..." />}>
-        <Dashboard />
-      </Suspense>
-    );
-  },
+  component: () => (
+    <Suspense fallback={<PageLoading message="Loading..." />}>
+      <Dashboard />
+    </Suspense>
+  ),
 });
 
 // Auth Routes
@@ -103,9 +149,19 @@ const loginRoute = createRoute({
   component: () => {
     const { isAuthenticated } = useAuth();
 
-    // Fetched while the operator types, so signing in doesn't wait for it.
+    // Fetched while the operator types, so signing in doesn't wait for it. Only after the page has
+    // loaded: on a slow link these downloads would otherwise hold back the form's first paint.
     useEffect(() => {
-      void Dashboard.preload?.();
+      const preload = () => {
+        void AppShell.preload?.();
+        void Dashboard.preload?.();
+      };
+      if (document.readyState === 'complete') {
+        preload();
+        return;
+      }
+      window.addEventListener('load', preload, { once: true });
+      return () => window.removeEventListener('load', preload);
     }, []);
 
     if (isAuthenticated) {
@@ -142,66 +198,65 @@ const firstTimeSetupRoute = createRoute({
   },
 });
 
+// Maps
+const mapsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/maps',
+  beforeLoad: requirePermission(PERMISSIONS.MAPS_VIEW),
+});
+
+const mapListRoute = createRoute({
+  getParentRoute: () => mapsRoute,
+  path: '/',
+  component: MapListPage,
+});
+
+const mapMergeRoute = createRoute({
+  getParentRoute: () => mapsRoute,
+  path: 'merge',
+  beforeLoad: requirePermission(PERMISSIONS.MAPS_EDIT),
+  component: MergePage,
+});
+
+const mapEditorRoute = createRoute({
+  getParentRoute: () => mapsRoute,
+  path: '$mapId/edit',
+  beforeLoad: requirePermission(PERMISSIONS.MAPS_EDIT),
+  component: MapEditorPage,
+});
+
 // Admin Routes
 const adminRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appRoute,
   path: '/admin',
-  beforeLoad: () => {
-    const { hasPermission, isAuthenticated } = useAuthStore.getState();
-
-    if (!isAuthenticated) {
-      throw redirect({
-        to: '/auth/login',
-      });
-    }
-
-    if (!hasPermission(PERMISSIONS.USER_MANAGEMENT)) {
-      throw redirect({
-        to: '/unauthorized',
-      });
-    }
-  },
+  beforeLoad: requirePermission(PERMISSIONS.USER_MANAGEMENT),
 });
 
 const userManagementRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/users',
-  component: adminPage('UserManagement'),
+  component: UserManagement,
 });
 
 const createTempUserRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/create-temporary-user',
-  component: adminPage('UserCreation'),
+  component: UserCreation,
 });
 
 const robotManagementRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/robots',
-  component: adminPage('RobotManagement'),
+  component: RobotManagement,
 });
 
 // Staff Route
 const staffRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appRoute,
   path: '/staff',
-  beforeLoad: () => {
-    const { hasPermission, isAuthenticated } = useAuthStore.getState();
-
-    if (!isAuthenticated) {
-      throw redirect({
-        to: '/auth/login',
-      });
-    }
-
-    if (!hasPermission(PERMISSIONS.STAFF_CONSOLE)) {
-      throw redirect({
-        to: '/unauthorized',
-      });
-    }
-  },
+  beforeLoad: requirePermission(PERMISSIONS.STAFF_CONSOLE),
   component: lazyRouteComponent(
-    () => import('@/features/staff/components/OrganizationsPage'),
+    () => shellPages().then(pages => pages.organizations()),
     'OrganizationsPage'
   ),
 });
@@ -261,10 +316,13 @@ const unauthorizedRoute = createRoute({
 
 // Route Tree
 const routeTree = rootRoute.addChildren([
-  indexRoute,
+  appRoute.addChildren([
+    indexRoute,
+    mapsRoute.addChildren([mapListRoute, mapMergeRoute, mapEditorRoute]),
+    adminRoute.addChildren([userManagementRoute, createTempUserRoute, robotManagementRoute]),
+    staffRoute,
+  ]),
   authRoute.addChildren([loginRoute, firstTimeSetupRoute]),
-  adminRoute.addChildren([userManagementRoute, createTempUserRoute, robotManagementRoute]),
-  staffRoute,
   unauthorizedRoute,
 ]);
 

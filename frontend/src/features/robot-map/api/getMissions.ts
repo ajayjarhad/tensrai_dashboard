@@ -32,8 +32,11 @@ const missionsOfMap = (
 };
 
 export const getMissions = async (): Promise<MissionWithContext[]> => {
-  const mapsRes = await apiClient.get<{ data: { id: string; name: string }[] }>('maps');
-  const maps = mapsRes?.data ?? [];
+  const mapsRes = await apiClient.get<{ data: { id: string; name: string; robots?: unknown[] }[] }>(
+    'maps'
+  );
+  // A map no robot holds can't run a mission, so a draft doesn't slow the dashboard's start.
+  const maps = (mapsRes?.data ?? []).filter(map => map.robots?.length !== 0);
 
   // Fetched together rather than one after another; a map that fails is skipped.
   const perMap = await Promise.all(

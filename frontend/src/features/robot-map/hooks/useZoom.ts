@@ -4,9 +4,11 @@ import { useCallback } from 'react';
 interface UseZoomProps {
   enableZooming: boolean;
   onZoom?: (zoom: number, pan: { x: number; y: number }) => void;
+  minScale?: number;
+  maxScale?: number;
 }
 
-export function useZoom({ enableZooming, onZoom }: UseZoomProps) {
+export function useZoom({ enableZooming, onZoom, minScale = 0.1, maxScale = 10 }: UseZoomProps) {
   const handleWheel = useCallback(
     (e: Konva.KonvaEventObject<WheelEvent>) => {
       if (!enableZooming) return;
@@ -24,7 +26,7 @@ export function useZoom({ enableZooming, onZoom }: UseZoomProps) {
       const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
 
       // Limit zoom range
-      const clampedScale = Math.max(0.1, Math.min(10, newScale));
+      const clampedScale = Math.max(minScale, Math.min(maxScale, newScale));
 
       // Calculate new position to zoom towards pointer
       const newPos = {
@@ -40,7 +42,7 @@ export function useZoom({ enableZooming, onZoom }: UseZoomProps) {
         onZoom(clampedScale, newPos);
       }
     },
-    [enableZooming, onZoom]
+    [enableZooming, onZoom, minScale, maxScale]
   );
 
   return handleWheel;

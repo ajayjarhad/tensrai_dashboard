@@ -1,8 +1,11 @@
-import { createHash } from 'node:crypto';
 import { trace } from '@opentelemetry/api';
-import type { Map as MapRecord } from '@prisma/client';
+import type { Map as MapRecord, PrismaClient } from '@prisma/client';
 import { databaseMetrics, mapMetrics } from '../metrics/index.js';
 import { requireActiveSession } from '../middleware/auth.js';
+import { isGzipped, pgmOf } from '../services/mapImage.js';
+import { canonicalJson, sha256 } from '../services/mapRevision.js';
+import { yamlTextOf } from '../services/mapUpload.js';
+import { assignmentsInFlight, robotMapOutcome, robotStateFor } from '../services/robotMapJobs.js';
 import type { AppFastifyInstance, AppFastifyReply, IdParams } from '../types/app.js';
 
 const sendBinaryAsset = (
@@ -42,27 +45,62 @@ const displayFieldsForMap = (
   error: map.displayGenerationError ?? null,
 });
 
-const stableStringify = (value: unknown): string => {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
+const hashJson = (value: unknown) => sha256(canonicalJson(value ?? null));
 
-  if (Array.isArray(value)) {
-    return `[${value.map(item => stableStringify(item)).join(',')}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-    left.localeCompare(right)
-  );
-  return `{${entries
-    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
-    .join(',')}}`;
+// Each robot holding the map, with its sync state. Links are read with their own scoped query: the
+// scoped client does not filter nested includes.
+const robotsHolding = async (
+  prisma: PrismaClient,
+  maps: { id: string; revision: string | null; editedAt: Date | null }[]
+) => {
+  // In parallel: an org has few robots, so fetching all of them saves a round trip.
+  const [links, robots] = await Promise.all([
+    prisma.robotMap.findMany({
+      where: { mapId: { in: maps.map(map => map.id) } },
+      select: {
+        robotId: true,
+        mapId: true,
+        isActive: true,
+        filename: true,
+        syncedAt: true,
+        pushedRevision: true,
+        conflictRevision: true,
+      },
+    }),
+    prisma.robot.findMany({ select: { id: true, name: true } }),
+  ]);
+  const inFlight = new Map(maps.map(map => [map.id, assignmentsInFlight(map.id)]));
+  const nameOf = new Map(robots.map(robot => [robot.id, robot.name]));
+  return (mapId: string) => {
+    const map = maps.find(candidate => candidate.id === mapId);
+    const held = links
+      .filter(link => link.mapId === mapId && nameOf.has(link.robotId))
+      .map(link => ({
+        robotId: link.robotId,
+        name: nameOf.get(link.robotId) as string,
+        isActive: link.isActive,
+        filename: link.filename,
+        syncedAt: link.syncedAt,
+        ...(map ? robotStateFor(link, map) : { state: 'needs_sync' as const }),
+        failedAt: robotMapOutcome(link.robotId, mapId)?.at ?? null,
+      }));
+    // An assignment still on its way, or one the robot refused: not held yet, shown all the same.
+    const arriving = (inFlight.get(mapId) ?? [])
+      .filter(
+        entry => nameOf.has(entry.robotId) && !held.some(robot => robot.robotId === entry.robotId)
+      )
+      .map(entry => ({
+        ...entry,
+        name: nameOf.get(entry.robotId) as string,
+        isActive: false,
+        filename: null,
+        syncedAt: null,
+        assigning: true,
+        failedAt: robotMapOutcome(entry.robotId, mapId)?.at ?? null,
+      }));
+    return [...held, ...arriving];
+  };
 };
-
-const hashJson = (value: unknown) =>
-  createHash('sha256')
-    .update(stableStringify(value ?? null))
-    .digest('hex');
 
 type MapAssetParams = { Params: { id: string; format: 'webp' | 'png' } };
 
@@ -96,6 +134,11 @@ const mapRoutes = async (server: AppFastifyInstance) => {
         select: {
           id: true,
           name: true,
+          filename: true,
+          editedAt: true,
+          editedBy: true,
+          revision: true,
+          metadata: true,
           contentHash: true,
           pixelWidth: true,
           pixelHeight: true,
@@ -125,9 +168,10 @@ const mapRoutes = async (server: AppFastifyInstance) => {
       });
       span.end();
 
+      const robotsFor = await robotsHolding(prisma, maps);
       return {
         success: true,
-        data: maps,
+        data: maps.map(map => ({ ...map, robots: robotsFor(map.id) })),
       };
     } catch (error) {
       databaseMetrics.queryDuration.record(Date.now() - startTime, {
@@ -152,6 +196,10 @@ const mapRoutes = async (server: AppFastifyInstance) => {
       select: {
         id: true,
         name: true,
+        filename: true,
+        editedAt: true,
+        editedBy: true,
+        revision: true,
         metadata: true,
         features: true,
         contentHash: true,
@@ -175,10 +223,13 @@ const mapRoutes = async (server: AppFastifyInstance) => {
       });
     }
 
+    const robotsFor = await robotsHolding(prisma, [map]);
     return {
       success: true,
       data: {
         ...map,
+        yamlText: yamlTextOf(map.metadata),
+        robots: robotsFor(map.id),
         featuresHash: hashJson(map.features),
         displayAssets: displayFieldsForMap(map),
         previewWebp: undefined,
@@ -278,18 +329,25 @@ const mapRoutes = async (server: AppFastifyInstance) => {
 
       span.setAttributes({
         'map.download.success': true,
-        'map.image.size_bytes': map.image ? map.image.length : 0,
+        'map.image.size_bytes': map.image.length,
         'db.query.duration_ms': Date.now() - startTime,
       });
       span.end();
 
+      // Stored gzipped (services/mapImage.ts): sent as it is to clients that take gzip, which every
+      // browser does, and unpacked for the rest.
+      const asGzip =
+        isGzipped(map.image) && /\bgzip\b/.test(String(request.headers['accept-encoding'] ?? ''));
+      const body = asGzip ? Buffer.from(map.image) : pgmOf(map.image);
       reply.header('Content-Type', 'image/x-portable-graymap');
-      reply.header('Content-Length', String(map.image ? map.image.length : 0));
+      reply.header('Vary', 'Accept-Encoding');
+      if (asGzip) reply.header('Content-Encoding', 'gzip');
+      reply.header('Content-Length', String(body.length));
       if (map.contentHash) {
-        reply.header('ETag', `"${map.contentHash}"`);
+        reply.header('ETag', `"${map.contentHash}${asGzip ? '-gzip' : ''}"`);
       }
       reply.header('Cache-Control', 'private, max-age=31536000, immutable');
-      return reply.send(map.image);
+      return reply.send(body);
     } catch (error) {
       databaseMetrics.queryDuration.record(Date.now() - startTime, {
         'db.operation': 'findUnique',

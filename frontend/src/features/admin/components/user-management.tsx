@@ -1,10 +1,9 @@
 import { useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/stores/auth';
 import type { ResetUserPasswordResult } from '../api/resetUserPassword';
 import { useDeleteUser, useResetUserPassword, useUpdateUser, useUsers } from '../hooks';
-import { AdminNav } from './AdminNav';
 import { TemporaryPassword } from './TemporaryPassword';
 import { UserRow } from './UserRow';
 
@@ -53,20 +52,10 @@ export function UserManagement() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-full bg-background">
       <div className="container mx-auto px-4 py-10 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => navigate({ to: '/' })}
-              className="px-3 py-2 bg-accent text-accent-foreground rounded-md text-sm font-medium focus-ring inline-flex items-center gap-2"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back to Dashboard
-            </button>
-            <AdminNav />
-          </div>
+          <h1 className="text-3xl font-bold text-foreground">User Management</h1>
           <button
             type="button"
             onClick={() => navigate({ to: '/admin/create-temporary-user' })}
@@ -76,7 +65,6 @@ export function UserManagement() {
             Create User
           </button>
         </div>
-        <h1 className="text-3xl font-bold text-foreground">User Management</h1>
 
         {(error ||
           deleteUserMutation.error ||

@@ -73,7 +73,8 @@ const resolveActiveMapFromStatus = async (
 
     if (currentMap) {
       const candidates = stemToFilenames(currentMap);
-      const match = rows.find(row => candidates.includes(row.map?.filename));
+      // A robot may hold a shared map under its own filename.
+      const match = rows.find(row => candidates.includes(row.filename ?? row.map?.filename));
       targetMapId = match?.mapId ?? null;
     }
 

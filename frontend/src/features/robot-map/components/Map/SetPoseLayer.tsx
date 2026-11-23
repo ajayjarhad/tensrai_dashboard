@@ -165,6 +165,7 @@ export function SetPoseLayer({
             shadowBlur={4}
             shadowOpacity={0.22}
             shadowOffset={{ x: 1, y: 2 }}
+            perfectDrawEnabled={false}
           />
           <Text
             text="⟳"
@@ -235,7 +236,14 @@ export function SetPoseLayer({
                 cancelPose();
               }}
             >
-              <Rect width={96} height={36} fill="#1f2937" cornerRadius={8} stroke="#334155" />
+              <Rect
+                width={96}
+                height={36}
+                fill="#1f2937"
+                cornerRadius={8}
+                stroke="#334155"
+                perfectDrawEnabled={false}
+              />
               <Text
                 x={18}
                 y={11}

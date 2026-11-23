@@ -7,7 +7,7 @@
   "scripts": {
     "predev": "bun run --cwd ../shared build",
     "dev": "./scripts/mongoReplica.sh && bun --watch src/index.ts",
-    "db:prepare": "./scripts/mongoReplica.sh && prisma db push --skip-generate && tsx scripts/backfillOrg.ts && (tsx scripts/seed.ts || echo 'Seeding skipped')",
+    "db:prepare": "./scripts/mongoReplica.sh && prisma db push --skip-generate && tsx scripts/backfillOrg.ts && (tsx scripts/seed.ts || echo 'Seeding skipped') && (tsx scripts/backfillMapRevisions.ts || echo 'Map revision backfill skipped')",
     "build": "tsc -p tsconfig.build.json",
     "prestart": "bun run --cwd ../shared build",
     "start": "./scripts/mongoReplica.sh && node dist/index.js",
@@ -18,6 +18,7 @@
     "seed:all": "./scripts/mongoReplica.sh && tsx scripts/seed.ts && tsx scripts/seedMaps.ts",
     "backfill:map-assets": "./scripts/mongoReplica.sh && tsx scripts/backfillMapAssets.ts",
     "backfill:org": "./scripts/mongoReplica.sh && tsx scripts/backfillOrg.ts",
+    "backfill:map-revisions": "./scripts/mongoReplica.sh && tsx scripts/backfillMapRevisions.ts",
     "org:create": "./scripts/mongoReplica.sh && tsx scripts/createOrg.ts",
     "staff:create": "./scripts/mongoReplica.sh && tsx scripts/createStaff.ts",
     "staff:default-password": "tsx scripts/setDefaultStaffPassword.ts",

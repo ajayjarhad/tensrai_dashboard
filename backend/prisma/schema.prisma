@@ -37,30 +37,30 @@ model User {
 
 model Session {
   // Use string IDs because auth sessions are not Mongo ObjectIds
-  id         String   @id @map("_id") @db.String
-  token      String   @unique @map("sessionToken")
-  userId     String   @db.ObjectId
-  expiresAt  DateTime
+  id          String   @id @map("_id") @db.String
+  token       String   @unique @map("sessionToken")
+  userId      String   @db.ObjectId
+  expiresAt   DateTime
   // The organization a STAFF user has entered; everyone else acts in User.orgId.
-  activeOrgId String? @db.ObjectId
-  ipAddress  String?
-  userAgent  String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  activeOrgId String?  @db.ObjectId
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model AuditLog {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  orgId     String?  @db.ObjectId
-  userId    String   @db.ObjectId
-  role      String
-  action    String
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId        String?  @db.ObjectId
+  userId       String   @db.ObjectId
+  role         String
+  action       String
   // Whom the action was done to, when it was done to another user.
-  targetUserId String? @db.ObjectId
-  timestamp DateTime @default(now())
-  metadata  Json?
+  targetUserId String?  @db.ObjectId
+  timestamp    DateTime @default(now())
+  metadata     Json?
 
   @@index([userId])
   @@index([action])
@@ -75,46 +75,46 @@ enum Role {
 }
 
 model Robot {
-  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
-  orgId               String    @db.ObjectId
-  name                String
-  status              RobotMode @default(UNKNOWN)
+  id                    String     @id @default(auto()) @map("_id") @db.ObjectId
+  orgId                 String     @db.ObjectId
+  name                  String
+  status                RobotMode  @default(UNKNOWN)
   statusBeforeEmergency RobotMode?
-  battery             Float?    // Battery percentage (0-100)
-  bridgePort          Int?
-  mappingBridgePort   Int?
-  missionBridgePort   Int?
-  emergencyBridgePort Int?
-  channels            Json?
-  
-  // Location info
-  mapId               String?   @db.ObjectId // ID of the map the robot is on
-  map                 Map?      @relation(fields: [mapId], references: [id])
-  x                   Float?    // X coordinate
-  y                   Float?    // Y coordinate
-  theta               Float?    // Orientation in radians
-  
-  ipAddress           String?   // For direct communication if needed
-  lastSeen            DateTime  @default(now())
-  
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  battery               Float? // Battery percentage (0-100)
+  bridgePort            Int?
+  mappingBridgePort     Int?
+  missionBridgePort     Int?
+  emergencyBridgePort   Int?
+  channels              Json?
 
-  missionRuns         MissionRun[]
-  robotMaps           RobotMap[]
+  // Location info
+  mapId String? @db.ObjectId // ID of the map the robot is on
+  map   Map?    @relation(fields: [mapId], references: [id])
+  x     Float? // X coordinate
+  y     Float? // Y coordinate
+  theta Float? // Orientation in radians
+
+  ipAddress String? // For direct communication if needed
+  lastSeen  DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  missionRuns MissionRun[]
+  robotMaps   RobotMap[]
 
   @@unique([orgId, name])
   @@index([orgId])
 }
 
 model Map {
-  id                     String    @id @default(auto()) @map("_id") @db.ObjectId
-  orgId                  String    @db.ObjectId
+  id                     String     @id @default(auto()) @map("_id") @db.ObjectId
+  orgId                  String     @db.ObjectId
   name                   String
   filename               String
-  image                  Bytes     // Binary PGM data
-  metadata               Json      // YAML metadata (resolution, origin)
-  features               Json      // Location tags, missions
+  image                  Bytes // Binary PGM data
+  metadata               Json // YAML metadata (resolution, origin)
+  features               Json // Location tags, missions
   contentHash            String?
   pixelWidth             Int?
   pixelHeight            Int?
@@ -129,23 +129,41 @@ model Map {
   previewPng             Bytes?
   previewSizeBytes       Int?
   displayGenerationError String?
+  // Set by the first edit in the dashboard; until then the map follows its robots' copies.
+  editedAt               DateTime?
+  // Who made that edit, as the Maps page names them.
+  editedBy               String?
+  imageSha256            String?
+  // sha256 over the image hash, the YAML minus `image`, and the features (services/mapRevision.ts).
+  // A robot's copy is this map exactly when its revision matches.
+  revision               String?
   robots                 Robot[]
   robotMaps              RobotMap[]
 
   // Robots name their files independently, so only identical content under one filename is one map.
-  @@unique([orgId, filename, contentHash])
+  @@unique([orgId, filename, contentHash, revision])
   @@index([orgId])
+  @@index([orgId, revision])
 }
 
 model RobotMap {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  orgId     String   @db.ObjectId
-  robotId   String   @db.ObjectId
-  mapId     String   @db.ObjectId
-  isActive  Boolean  @default(false) // map currently shown / localized for this robot
-  isPinned  Boolean  @default(false) // user manually overrode auto-follow
-  syncedAt  DateTime @default(now())
-  createdAt DateTime @default(now())
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  orgId            String   @db.ObjectId
+  robotId          String   @db.ObjectId
+  mapId            String   @db.ObjectId
+  isActive         Boolean  @default(false) // map currently shown / localized for this robot
+  isPinned         Boolean  @default(false) // user manually overrode auto-follow
+  syncedAt         DateTime @default(now())
+  createdAt        DateTime @default(now())
+  // The map's file on this robot (map4.yaml), which may differ from the map's own filename.
+  filename         String?
+  // The revision the robot last confirmed holding, by a sync ack or an import.
+  pushedRevision   String?
+  // The robot's revision when both it and the dashboard changed the map; cleared once resolved.
+  conflictRevision String?
+  // The robot's copy when the conflict was found (features, image hash, YAML), so the choice can
+  // show what differs. Only read while conflictRevision is set.
+  conflictCopy     Json?
 
   robot Robot @relation(fields: [robotId], references: [id], onDelete: Cascade)
   map   Map   @relation(fields: [mapId], references: [id], onDelete: Cascade)
@@ -193,7 +211,7 @@ model MissionRun {
   id                  String           @id @default(auto()) @map("_id") @db.ObjectId
   orgId               String           @db.ObjectId
   robotId             String           @db.ObjectId
-  robot               Robot             @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  robot               Robot            @relation(fields: [robotId], references: [id], onDelete: Cascade)
   robotNameSnapshot   String
   missionId           String?
   missionNameSnapshot String?

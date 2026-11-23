@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { pgmOf } from './mapImage.js';
 
 // Runs against a real Mongo replica set with the current schema pushed:
 //   TEST_DATABASE_URL='mongodb://localhost:27117/tenancy_test?replicaSet=rs0&directConnection=true' bun test integration
@@ -102,8 +103,8 @@ if (url) {
     expect([mapsA.length, mapsB.length]).toEqual([1, 1]);
     expect(mapsA[0]?.filename).toBe(mapsB[0]?.filename ?? '');
     expect(mapsA[0]?.id).not.toBe(mapsB[0]?.id);
-    expect(mapsA[0]?.image.at(-1)).toBe(11);
-    expect(mapsB[0]?.image.at(-1)).toBe(200);
+    expect(pgmOf(mapsA[0]?.image ?? new Uint8Array()).at(-1)).toBe(11);
+    expect(pgmOf(mapsB[0]?.image ?? new Uint8Array()).at(-1)).toBe(200);
     expect(await dbA.map.findUnique({ where: { id: mapsB[0]?.id ?? '' } })).toBeNull();
   });
 
@@ -116,7 +117,7 @@ if (url) {
         where: { robotId, isActive: true },
         include: { map: { select: { image: true } } },
       });
-      return link?.map.image.at(-1);
+      return link && pgmOf(link.map.image).at(-1);
     };
 
     const first = await robotNamed('First');

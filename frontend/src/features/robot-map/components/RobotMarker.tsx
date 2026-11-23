@@ -17,7 +17,8 @@ const markerColorForStatus = (status: RobotMode) => {
     return '#EF4444';
   }
   if (status === RobotMode.MISSION) {
-    return '#22C55E';
+    // --status-active, the blue the robot list and details use for a mission.
+    return '#2085E9';
   }
   if (status === RobotMode.TELEOP) {
     return '#F59E0B';
@@ -107,6 +108,7 @@ export const RobotMarker = React.memo(
           shadowBlur={isEmergency ? 10 : 5}
           shadowOpacity={isEmergency ? 0.45 : 0.3}
           shadowOffset={{ x: 2, y: 2 }}
+          perfectDrawEnabled={false}
         />
 
         <RegularPolygon

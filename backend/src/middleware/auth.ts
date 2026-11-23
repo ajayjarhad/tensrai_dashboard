@@ -1,5 +1,5 @@
 import { trace } from '@opentelemetry/api';
-import { ROLE } from '@tensrai/shared';
+import { type Permission, ROLE, ROLE_PERMISSIONS, type Role } from '@tensrai/shared';
 import type { AppFastifyReply, AppFastifyRequest, AppSession } from '../types/app.js';
 
 // Staff act in the organization they entered; everyone else acts in their own.
@@ -162,3 +162,30 @@ export const requireAdmin = async (request: AppFastifyRequest, reply: AppFastify
     },
   });
 };
+
+export const roleHasPermission = (role: string | undefined, permission: Permission) =>
+  Boolean(
+    role &&
+      (ROLE_PERMISSIONS[role as Role] as readonly Permission[] | undefined)?.includes(permission)
+  );
+
+// The same table the frontend hides buttons with, enforced here. Runs after requireActiveSession.
+// Only denials are audited, so a busy page doesn't write a row per request.
+export const requirePermission =
+  (permission: Permission) => async (request: AppFastifyRequest, reply: AppFastifyReply) => {
+    const user = await request.getCurrentUser();
+    if (roleHasPermission(user?.role, permission)) return undefined;
+
+    await request.audit?.({
+      ...(request.orgId ? { orgId: request.orgId } : {}),
+      userId: user?.id || 'unknown',
+      role: user?.role || 'unknown',
+      action: 'PERMISSION_DENIED',
+      metadata: { permission, url: request.url, method: request.method },
+    });
+    return reply.code(403).send({
+      success: false,
+      error: 'You do not have permission to do this',
+      code: 'INSUFFICIENT_PERMISSIONS',
+    });
+  };

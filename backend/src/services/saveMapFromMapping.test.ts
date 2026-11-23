@@ -2,14 +2,17 @@ import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { createServer, type Socket } from 'node:net';
 import { gzipSync } from 'node:zlib';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { asUser, createTestApp, ORG_A as ORG } from '../testing/authStub.js';
+import { pgmOf } from './mapImage.js';
 
 const { fetchMapViaMappingBridge } = await import('./saveMapFromMapping.js');
 const { getMapSyncStatus } = await import('./mapSyncStatus.js');
 const { upsertMapFromResponse } = await import('./mapRecords.js');
+const { mapRevision } = await import('./mapRevision.js');
+const { normalizeFeatures } = await import('./mapSyncPayload.js');
 const { default: robotRoutes } = await import('../routes/robots.js');
 
 type TestMappingServer = {
@@ -34,7 +37,7 @@ const createLogger = () =>
   ({
     info: () => {},
     warn: () => {},
-    error: () => {},
+    error: (...args: any[]) => process.env['DEBUG_IMPORT'] && console.error(...args),
     debug: () => {},
   }) as any;
 
@@ -69,12 +72,13 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
   const prisma: any = {
     map: {
       findUnique: async ({ where }: any) => findMap(where),
+      // By revision, leaving out maps the robot already holds under another filename.
       findFirst: async ({ where }: any) =>
         maps.find(
           m =>
             m.orgId === where.orgId &&
-            m.filename === where.filename &&
-            where.contentHash.in.includes(m.contentHash)
+            m.revision === where.revision &&
+            !robotMaps.some(r => r.mapId === m.id && r.robotId === where.robotMaps?.none?.robotId)
         ) ?? null,
       create: async ({ data }: any) => {
         mapSeq += 1;
@@ -111,12 +115,30 @@ const createFakePrisma = (opts: { maps?: any[]; robotMaps?: any[]; robots?: any[
     },
     robotMap: {
       findUnique: async ({ where }: any) => findRobotMap(where.robotId_mapId),
-      findFirst: async ({ where }: any) =>
-        robotMaps.find(
+      // The robot's link under a filename: its own, or the map's for links from before filenames.
+      findFirst: async ({ where }: any) => {
+        const filename = where.OR[0].filename;
+        const row = robotMaps.find(
           r =>
             r.robotId === where.robotId &&
-            maps.find(m => m.id === r.mapId)?.filename === where.map.filename
-        ) ?? null,
+            (r.filename ?? maps.find(m => m.id === r.mapId)?.filename) === filename
+        );
+        if (!row) return null;
+        const map = maps.find(m => m.id === row.mapId);
+        return {
+          pushedRevision: null,
+          conflictRevision: null,
+          ...row,
+          map: map
+            ? {
+                revision: map.revision ?? null,
+                editedAt: map.editedAt ?? null,
+                imageSha256: map.imageSha256 ?? null,
+                metadata: map.metadata ?? null,
+              }
+            : null,
+        };
+      },
       count: async ({ where }: any) =>
         robotMaps.filter(r => r.mapId === where.mapId && r.robotId !== where.robotId.not).length,
       upsert: async ({ where, update, create }: any) => {
@@ -244,7 +266,8 @@ afterEach(async () => {
   }
 });
 
-test('updates map features from an unchanged manifest without downloading chunks', async () => {
+test('a robot that only changed its tags updates its map from the manifest, without downloading', async () => {
+  const yamlText = 'image: map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n';
   const server = await startMappingServer((socket, parsed) => {
     if (parsed.event !== 'GET_MAP_DATA') return;
     socket.send(
@@ -255,6 +278,7 @@ test('updates map features from an unchanged manifest without downloading chunks
           name: 'map',
           map_yaml: 'map.yaml',
           map_pgm: 'map.pgm',
+          map_yaml_content: yamlText,
           sha256: 'raw-image-hash',
           contentHash: 'stored-content-hash',
           total_chunks: 3,
@@ -270,8 +294,21 @@ test('updates map features from an unchanged manifest without downloading chunks
   });
 
   const { prisma, robotMaps, robotUpdates, mapUpdates } = createFakePrisma({
-    maps: [{ id: 'map-1', orgId: ORG, filename: 'map.yaml', contentHash: 'stored-content-hash' }],
+    maps: [
+      {
+        id: 'map-1',
+        orgId: ORG,
+        filename: 'map.yaml',
+        contentHash: 'stored-content-hash',
+        imageSha256: 'raw-image-hash',
+        metadata: { image: 'map.pgm', resolution: 0.05, origin: [0, 0, 0] },
+        revision: 'before-the-robot-changed-it',
+      },
+    ],
     robots: [{ id: 'robot-metadata-refresh', orgId: ORG }],
+    robotMaps: [
+      { robotId: 'robot-metadata-refresh', mapId: 'map-1', isActive: false, isPinned: false },
+    ],
   });
 
   await fetchMapViaMappingBridge(
@@ -287,16 +324,16 @@ test('updates map features from an unchanged manifest without downloading chunks
   await waitFor(() => server.messages.includes('MAP_SKIP'));
 
   expect(server.messages).toContain('GET_MAP_DATA');
-  expect(server.messages).toContain('MAP_SKIP');
   expect(server.messages).not.toContain('MAP_SEND_CHUNKS');
-  // Unchanged map is still linked via RobotMap and made active (was the only/first map).
+  // The robot's copy is recorded as what it holds, and its map made active (the only one).
   expect(robotMaps).toHaveLength(1);
   expect(robotMaps[0]).toMatchObject({
     robotId: 'robot-metadata-refresh',
     mapId: 'map-1',
     isActive: true,
+    filename: 'map.yaml',
   });
-  // Legacy mapId dual-write happens once via designateActiveAfterSync.
+  expect(robotMaps[0].pushedRevision).toBe(mapUpdates[0]?.data.revision);
   expect(robotUpdates).toHaveLength(1);
   expect(robotUpdates[0]).toMatchObject({ data: { mapId: 'map-1' } });
   expect(mapUpdates).toHaveLength(1);
@@ -305,14 +342,7 @@ test('updates map features from an unchanged manifest without downloading chunks
     data: {
       features: {
         locationTags: [{ id: '2', name: 'Dock', x: 1, y: 2, theta: 0 }],
-        missions: [
-          {
-            id: '7',
-            name: 'Patrol',
-            locationTagId: ['2'],
-            steps: ['2'],
-          },
-        ],
+        missions: [{ id: '7', name: 'Patrol', locationTagId: ['2'], steps: ['2'] }],
       },
     },
   });
@@ -320,6 +350,66 @@ test('updates map features from an unchanged manifest without downloading chunks
     phase: 'skipped',
     mapId: 'map-1',
   });
+});
+
+test('an edit made in the dashboard survives an import of the older robot copy', async () => {
+  const yamlText = 'image: map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n';
+  const metadata = { image: 'map.pgm', resolution: 0.05, origin: [0, 0, 0] };
+  const robotRevision = mapRevision({
+    imageSha256: 'raw-image-hash',
+    yaml: metadata,
+    features: normalizeFeatures({}),
+  });
+  const server = await startMappingServer((socket, parsed) => {
+    if (parsed.event !== 'GET_MAP_DATA') return;
+    socket.send(
+      JSON.stringify({
+        event: 'MAP_MANIFEST',
+        payload: {
+          transferId: 'transfer-edit',
+          name: 'map',
+          map_yaml: 'map.yaml',
+          map_pgm: 'map.pgm',
+          map_yaml_content: yamlText,
+          sha256: 'raw-image-hash',
+          total_chunks: 1,
+          is_default: true,
+        },
+      })
+    );
+  });
+  const { prisma, robotMaps, mapUpdates } = createFakePrisma({
+    maps: [
+      {
+        id: 'edited',
+        orgId: ORG,
+        filename: 'map.yaml',
+        revision: 'edited-here',
+        editedAt: new Date(),
+      },
+    ],
+    robots: [{ id: 'robot-behind', orgId: ORG }],
+    robotMaps: [
+      {
+        robotId: 'robot-behind',
+        mapId: 'edited',
+        filename: 'map.yaml',
+        pushedRevision: robotRevision,
+        isActive: true,
+        isPinned: false,
+      },
+    ],
+  });
+
+  await fetchMapViaMappingBridge(
+    { log: createLogger(), prisma },
+    { id: 'robot-behind', orgId: ORG, ipAddress: '127.0.0.1', mappingBridgePort: server.port }
+  );
+  await waitFor(() => server.messages.includes('MAP_SKIP'));
+
+  expect(mapUpdates).toHaveLength(0);
+  expect(robotMaps[0]?.pushedRevision).toBe(robotRevision);
+  expect(robotMaps[0]?.conflictRevision ?? null).toBeNull();
 });
 
 test('reuses the active map sync status instead of opening a duplicate socket', async () => {
@@ -576,6 +666,11 @@ const activeMapOf = ({ maps, robotMaps }: ReturnType<typeof createFakePrisma>, r
   const link = robotMaps.find(r => r.robotId === robotId && r.isActive);
   return maps.find(m => m.id === link?.mapId);
 };
+// The decoded image of a robot's active map: stored gzipped, or raw in rows from before that.
+const imageOf = (state: ReturnType<typeof createFakePrisma>, robotId: string) => {
+  const image = activeMapOf(state, robotId)?.image;
+  return image && pgmOf(image);
+};
 
 const FLOOR_ONE = makePgm(2, 2);
 const FLOOR_TWO = makePgm(3, 3);
@@ -588,9 +683,9 @@ test('robots syncing different floors under one filename keep separate maps', as
   await upsertMapFromResponse(fastify, 'r2', floorFiles(FLOOR_TWO, [{ id: 2, name: 'Floor two' }]));
 
   expect(state.maps).toHaveLength(2);
-  expect(activeMapOf(state, 'r1')?.image).toEqual(FLOOR_ONE);
+  expect(imageOf(state, 'r1')).toEqual(FLOOR_ONE);
   expect(activeMapOf(state, 'r1')?.features.missions[0].name).toBe('Floor one');
-  expect(activeMapOf(state, 'r2')?.image).toEqual(FLOOR_TWO);
+  expect(imageOf(state, 'r2')).toEqual(FLOOR_TWO);
   expect(activeMapOf(state, 'r2')?.features.missions[0].name).toBe('Floor two');
 });
 
@@ -694,8 +789,9 @@ test('a re-mapped floor updates only that robot’s map, keeping its id', async 
   await upsertMapFromResponse(fastify, 'r2', floorFiles(remapped));
 
   expect(state.maps).toHaveLength(2);
-  expect(activeMapOf(state, 'r2')).toMatchObject({ id: r2MapId, image: remapped });
-  expect(activeMapOf(state, 'r1')?.image).toEqual(FLOOR_ONE);
+  expect(activeMapOf(state, 'r2')?.id).toBe(r2MapId);
+  expect(imageOf(state, 'r2')).toEqual(remapped);
+  expect(imageOf(state, 'r1')).toEqual(FLOOR_ONE);
 });
 
 test('robots syncing identical content share one map record', async () => {
@@ -727,8 +823,9 @@ test('a robot whose shared map changes splits off, keeping its active and pinned
   await upsertMapFromResponse(fastify, 'r1', floorFiles(FLOOR_TWO));
 
   expect(state.maps).toHaveLength(2);
-  expect(activeMapOf(state, 'r2')).toMatchObject({ id: sharedId, image: FLOOR_ONE });
-  expect(activeMapOf(state, 'r1')?.image).toEqual(FLOOR_TWO);
+  expect(activeMapOf(state, 'r2')?.id).toBe(sharedId);
+  expect(imageOf(state, 'r2')).toEqual(FLOOR_ONE);
+  expect(imageOf(state, 'r1')).toEqual(FLOOR_TWO);
   expect(activeMapOf(state, 'r1')?.id).not.toBe(sharedId);
 
   const r1Links = state.robotMaps.filter(r => r.robotId === 'r1');
@@ -763,6 +860,7 @@ test('a manifest matching another robot’s map links it without downloading', a
           name: 'map',
           map_yaml: 'map.yaml',
           map_pgm: 'map.pgm',
+          map_yaml_content: inlineYaml('map.pgm'),
           sha256: 'raw-image-hash',
           contentHash: 'floor-hash',
           total_chunks: 1,
@@ -771,8 +869,21 @@ test('a manifest matching another robot’s map links it without downloading', a
       })
     );
   });
+  const floorRevision = mapRevision({
+    imageSha256: 'raw-image-hash',
+    yaml: { image: 'map.pgm', resolution: 0.05, origin: [0, 0, 0] },
+    features: normalizeFeatures({}),
+  });
   const { prisma, robotMaps } = createFakePrisma({
-    maps: [{ id: 'floor', orgId: ORG, filename: 'map.yaml', contentHash: 'floor-hash' }],
+    maps: [
+      {
+        id: 'floor',
+        orgId: ORG,
+        filename: 'map.yaml',
+        contentHash: 'floor-hash',
+        revision: floorRevision,
+      },
+    ],
     robots: [
       { id: 'r1', orgId: ORG },
       { id: 'r2', orgId: ORG },
@@ -837,8 +948,9 @@ test('a transfer under another robot’s filename stores a new map instead of ov
   await waitFor(() => getMapSyncStatus('r2').phase === 'complete');
 
   expect(state.maps).toHaveLength(2);
-  expect(activeMapOf(state, 'r1')).toMatchObject({ id: 'floor', image: FLOOR_ONE });
-  expect(activeMapOf(state, 'r2')?.image).toEqual(FLOOR_TWO);
+  expect(activeMapOf(state, 'r1')?.id).toBe('floor');
+  expect(imageOf(state, 'r1')).toEqual(FLOOR_ONE);
+  expect(imageOf(state, 'r2')).toEqual(FLOOR_TWO);
 });
 
 const registerRobotApp = async (prisma: any) => {
@@ -925,6 +1037,68 @@ test('POST /active-map/auto clears the pin on a robot’s maps', async () => {
     isActive: true,
   });
 });
+
+const robotWithOneMap = () =>
+  createFakePrisma({
+    robots: [{ id: 'r1', name: 'R1', orgId: ORG }],
+    maps: [{ id: 'm1', name: 'Map One' }],
+    robotMaps: [{ robotId: 'r1', mapId: 'm1', isActive: true, isPinned: true }],
+  });
+
+const postActiveMap = async (prisma: any, url: string, payload?: object) => {
+  const app = await registerRobotApp(prisma);
+  const response = await app.inject({
+    method: 'POST',
+    url,
+    headers: asUser('user'),
+    ...(payload ? { payload } : {}),
+  });
+  await app.close();
+  return response;
+};
+
+for (const [model, error] of [
+  ['robot', 'Robot not found'],
+  ['robotMap', 'Map is not assigned to this robot'],
+] as const) {
+  test(`POST /active-map returns 404 when the ${model} is deleted before the write`, async () => {
+    const state = robotWithOneMap();
+    state.prisma[model].update = async () => {
+      (model === 'robot' ? state.robots : state.robotMaps).length = 0;
+      throw new Prisma.PrismaClientKnownRequestError('Record to update not found.', {
+        code: 'P2025',
+        clientVersion: Prisma.prismaVersion.client,
+      });
+    };
+
+    const response = await postActiveMap(state.prisma, '/api/robots/r1/active-map', {
+      mapId: 'm1',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ success: false, error });
+  });
+}
+
+for (const [url, payload] of [
+  ['/api/robots/r1/active-map', { mapId: 'm1' }],
+  ['/api/robots/r1/active-map/auto', undefined],
+] as const) {
+  test(`POST ${url} returns 404 when the robot is deleted before the reply`, async () => {
+    const { prisma, robots } = robotWithOneMap();
+    const clearPins = prisma.robotMap.updateMany;
+    prisma.robotMap.updateMany = async (args: any) => {
+      const result = await clearPins(args);
+      robots.length = 0;
+      return result;
+    };
+
+    const response = await postActiveMap(prisma, url, payload);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ success: false, error: 'Robot not found' });
+  });
+}
 
 // What a real Prisma client reports with errorFormat 'pretty' and the database unreachable.
 const PRISMA_ERROR = `

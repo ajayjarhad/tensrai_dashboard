@@ -16,8 +16,9 @@ export const appErrorHandler = (
     });
   }
 
-  // On MongoDB, an id that isn't a valid ObjectId can't name anything.
-  if (error.code === 'P2023') {
+  // On MongoDB, an id that isn't a valid ObjectId can't name anything (P2023). A record deleted
+  // between a route's lookup and its write, or outside the caller's organization, is gone (P2025).
+  if (error.code === 'P2023' || error.code === 'P2025') {
     return reply.status(404).send({ success: false, error: 'Not found', code: 'NOT_FOUND' });
   }
   if (error.name === 'PrismaClientValidationError') {

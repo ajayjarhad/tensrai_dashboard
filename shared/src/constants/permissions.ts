@@ -12,15 +12,23 @@ export const PERMISSIONS = {
   ROBOT_CONTROL: 'robot:control',
   EMERGENCY_STOP: 'robot:emergency_stop',
   STAFF_CONSOLE: 'staff:console',
+  MAPS_VIEW: 'maps:view',
+  MAPS_EDIT: 'maps:edit',
+  MAPS_SYNC: 'maps:sync',
+  MAPS_DELETE: 'maps:delete',
 } as const;
 
-// Anyone in the organization that owns a robot may operate it. Admins also manage the
-// organization's users and robot records; staff work across organizations.
+// Anyone in the organization that owns a robot may operate it, and edit and sync its maps.
+// Admins also manage the organization's users, robot records and map deletion; staff work across
+// organizations.
 const ROBOT_OPERATION_PERMISSIONS = [
   PERMISSIONS.DASHBOARD_VIEW,
   PERMISSIONS.ROBOT_STATUS_READ,
   PERMISSIONS.ROBOT_CONTROL,
   PERMISSIONS.EMERGENCY_STOP,
+  PERMISSIONS.MAPS_VIEW,
+  PERMISSIONS.MAPS_EDIT,
+  PERMISSIONS.MAPS_SYNC,
 ] as const;
 
 export const ROLE_PERMISSIONS = {
@@ -28,6 +36,7 @@ export const ROLE_PERMISSIONS = {
     ...ROBOT_OPERATION_PERMISSIONS,
     PERMISSIONS.USER_MANAGEMENT,
     PERMISSIONS.SYSTEM_CONFIG,
+    PERMISSIONS.MAPS_DELETE,
   ],
   [ROLE.USER]: ROBOT_OPERATION_PERMISSIONS,
   [ROLE.STAFF]: Object.values(PERMISSIONS),

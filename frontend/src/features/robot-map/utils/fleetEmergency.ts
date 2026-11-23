@@ -1,11 +1,28 @@
 import type { FleetEmergencyDispatchResult } from '@tensrai/shared';
 import { toast } from 'sonner';
+import { isRobotEmergencyActive } from '@/lib/robotStatus';
 import type { Robot } from '@/types/robot';
 
 const formatRobotNames = (names: string[]) => {
   if (names.length === 0) return '';
   if (names.length <= 3) return names.join(', ');
   return `${names.slice(0, 3).join(', ')} +${names.length - 3} more`;
+};
+
+// The header's fleet line: quiet while all is well, the stopped robots by name otherwise.
+export const describeFleet = (robots: Robot[]) => {
+  const { connectedRobots } = summarizeEmergency(robots);
+  const stopped = robots.filter(isRobotEmergencyActive).map(robot => robot.name);
+  if (stopped.length === 0) {
+    return {
+      online: `${connectedRobots} robot${connectedRobots === 1 ? '' : 's'} online`,
+      stopped: null,
+    };
+  }
+  return {
+    online: `${connectedRobots} online`,
+    stopped: `${stopped.length} stopped: ${formatRobotNames(stopped)}`,
+  };
 };
 
 export const summarizeEmergency = (robots: Robot[]) => {

@@ -1,12 +1,13 @@
 import { QueryClient } from '@tanstack/react-query';
+import { HTTPError } from 'ky';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: (failureCount, error) => {
-        const status = (error as { status?: unknown } | null)?.status;
+        const status = error instanceof HTTPError ? error.response.status : undefined;
         if (
-          typeof status === 'number' &&
+          status !== undefined &&
           status >= 400 &&
           status < 500 &&
           status !== 408 &&

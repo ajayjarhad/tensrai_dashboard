@@ -3,6 +3,8 @@ import cors from '@fastify/cors';
 import bcrypt from 'bcryptjs';
 import { asStaffIn, asUser, createTestApp, fakeRobotModel, ORG_A } from '../testing/authStub.js';
 
+const { default: mapManagementRoutes } = await import('./mapManagement.js');
+const { default: mapAssignmentRoutes } = await import('./mapAssignments.js');
 const { default: mapRoutes } = await import('./maps.js');
 const { default: missionRunRoutes } = await import('./missionRuns.js');
 const { default: robotRoutes } = await import('./robots.js');
@@ -38,7 +40,13 @@ const prisma = {
     create: async ({ data }: any) => ({ id: 'new-robot', orgId: ORG_A, ...data }),
     groupBy: async () => [],
   },
-  map: { findMany: async () => [], findUnique: async () => null },
+  map: {
+    findMany: async () => [],
+    findUnique: async () => null,
+    findFirst: async () => null,
+    count: async () => 0,
+  },
+  robotMap: { findMany: async () => [], findFirst: async () => null, count: async () => 0 },
   user: {
     findMany: async () => [],
     groupBy: async () => [],
@@ -75,7 +83,15 @@ const buildApp = async () => {
   });
   app.decorate('prisma', prisma);
   await app.register(cors, { origin: true, credentials: true });
-  for (const plugin of [robotRoutes, mapRoutes, missionRunRoutes, userRoutes, staffRoutes]) {
+  for (const plugin of [
+    robotRoutes,
+    mapRoutes,
+    mapManagementRoutes,
+    mapAssignmentRoutes,
+    missionRunRoutes,
+    userRoutes,
+    staffRoutes,
+  ]) {
     await app.register(plugin, { prefix: '/api' });
   }
   await app.ready();
@@ -346,6 +362,35 @@ test('an unknown user is a 404 with no database detail in the response', async (
     });
     expect([method, url, res.statusCode]).toEqual([method, url, 404]);
     expect(res.body).not.toMatch(/prisma|invocation/i);
+  }
+});
+
+test('a user deleted after the lookup is still a 404', async () => {
+  const deleted = async () => {
+    throw Object.assign(new Error('Record to update not found.'), { code: 'P2025' });
+  };
+  const user: Record<string, unknown> = prisma.user;
+  const { update } = prisma.user;
+  user['update'] = deleted;
+  user['delete'] = deleted;
+  try {
+    for (const [method, url, headers, payload] of [
+      ['PUT', '/api/users/colleague', asUser('admin'), { displayName: 'x' }],
+      ['DELETE', '/api/users/colleague', asUser('admin'), undefined],
+      ['POST', '/api/users/colleague/reset-password', asUser('admin'), undefined],
+      ['POST', SELF_GUARDED, asUser('needsReset'), setupPayload()],
+    ] as const) {
+      const res = await app.inject({ method, url, headers, ...(payload && { payload }) });
+      expect([method, url, res.statusCode, res.json().error]).toEqual([
+        method,
+        url,
+        404,
+        'User not found',
+      ]);
+    }
+  } finally {
+    user['update'] = update;
+    delete user['delete'];
   }
 });
 

@@ -74,10 +74,10 @@ function PortField({
 }
 
 const mapSyncMessage = (status: MapSyncStatus) => {
-  if (status.phase === 'failed') return status.lastError ?? 'Map refresh failed';
+  if (status.phase === 'failed') return status.lastError ?? 'Import failed';
   if (status.phase === 'skipped') return 'Image unchanged; metadata checked';
-  if (status.phase === 'complete') return 'Map refresh complete';
-  return `Refreshing map${
+  if (status.phase === 'complete') return 'Import complete';
+  return `Importing from robot${
     typeof status.percent === 'number' ? ` (${Math.round(status.percent)}%)` : ''
   }`;
 };
@@ -116,10 +116,10 @@ function MapField({
             disabled={isRefreshingMap || !canReachRobot}
             title={
               canReachRobot
-                ? 'Refresh map and metadata from robot'
+                ? 'Import maps and metadata from robot'
                 : 'Saved robot needs IP address and mapping bridge port'
             }
-            aria-label="Refresh map and metadata from robot"
+            aria-label="Import maps and metadata from robot"
             className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCcw className={`h-3.5 w-3.5 ${isRefreshingMap ? 'animate-spin' : ''}`} />

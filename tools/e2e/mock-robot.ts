@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 const NAME = process.env.ROBOT_NAME ?? 'robot';
 const MAP_DIR = process.env.MAP_DIR ?? '/maps';
@@ -42,6 +42,8 @@ const faults = {
   mapMode: process.env.MAP_CHUNKED === '1' ? 'chunked' : 'legacy',
   mapFault: 'none',
   mapHashes: {} as Record<string, string>,
+  // How the robot answers PUT_MAP and DELETE_MAP: none, unsupported (today's robots), reject, silent.
+  mapPut: 'none',
 };
 
 const broadcast = (port: number, message: unknown) => {
@@ -60,7 +62,7 @@ type MapSet = {
 };
 const stemFor = (stem: string) =>
   SWAP_MAPS ? (stem === 'map' ? 'map1' : stem === 'map1' ? 'map' : stem) : stem;
-const loadMapSets = (): MapSet[] => {
+const loadDiskMapSets = (): MapSet[] => {
   const stems = readdirSync(MAP_DIR)
     .filter(file => file.endsWith('.yaml'))
     .map(file => file.replace(/\.yaml$/, ''))
@@ -83,7 +85,79 @@ const loadMapSets = (): MapSet[] => {
   });
 };
 
+// ---- maps the dashboard delivers (docs/robot-map-protocol.md), kept in memory: /maps is read-only ----
+type PushedMap = MapSet & { keepout_yaml_content: string; keepout_pgm: Buffer | null };
+const pushed = new Map<string, PushedMap>();
+const deletedStems = new Set<string>();
+const loadMapSets = (): MapSet[] => {
+  const disk = loadDiskMapSets().filter(
+    set => !deletedStems.has(set.name) && !pushed.has(set.name)
+  );
+  return [...disk, ...pushed.values()].sort((a, b) => a.name.localeCompare(b.name));
+};
+
 const mainMapSet = (sets: MapSet[]) => sets.find(set => set.name === 'map') ?? sets[0];
+// The map the robot runs on; a robot refuses to delete it.
+const LOADED_STEM = 'map';
+// Width × height from a P5 header, so tests can read the pixels after it.
+const pixelCount = (pgm: Buffer) => {
+  const [, width, height] = pgm.subarray(0, 64).toString('latin1').split(/\s+/);
+  return Number(width) * Number(height);
+};
+
+const mapAck = (ws: Sock, event: string, payload: any, status: string, message?: string) =>
+  ws.send(
+    JSON.stringify({
+      event,
+      payload: { transferId: payload?.transferId, status, ...(message ? { message } : {}) },
+    })
+  );
+const unknownEvent = (ws: Sock, event: string) =>
+  ws.send(JSON.stringify({ event: 'ERROR', payload: { message: `Unknown event: ${event}` } }));
+const gunzipBase64 = (value: unknown) => gunzipSync(Buffer.from(String(value ?? ''), 'base64'));
+
+const putMap = (ws: Sock, payload: any) => {
+  if (faults.mapPut === 'unsupported') return unknownEvent(ws, 'PUT_MAP');
+  if (faults.mapPut === 'silent') return;
+  if (faults.mapPut === 'reject') return mapAck(ws, 'PUT_MAP_ACK', payload, 'error', 'Disk full');
+  const stem = String(payload?.stem ?? '');
+  if (!/^map[\w-]*$/.test(stem)) return mapAck(ws, 'PUT_MAP_ACK', payload, 'error', 'Invalid stem');
+  let pgm: Buffer;
+  try {
+    pgm = gunzipBase64(payload.map_pgm_gzip);
+  } catch {
+    return mapAck(ws, 'PUT_MAP_ACK', payload, 'error', 'Map image is not gzip');
+  }
+  if (createHash('sha256').update(pgm).digest('hex') !== payload.sha256) {
+    return mapAck(ws, 'PUT_MAP_ACK', payload, 'error', 'sha256 mismatch');
+  }
+  if (payload.mode === 'create' && loadMapSets().some(set => set.name === stem)) {
+    return mapAck(ws, 'PUT_MAP_ACK', payload, 'exists');
+  }
+  pushed.set(stem, {
+    name: stem,
+    map_yaml: `${stem}.yaml`,
+    map_pgm: `${stem}.pgm`,
+    map_yaml_content: String(payload.map_yaml_content ?? ''),
+    map_pgm_content: pgm.toString('base64'),
+    metadata_json: payload.metadata_json ?? {},
+    keepout_yaml_content: String(payload.keepout_yaml_content ?? ''),
+    keepout_pgm: payload.keepout_pgm_gzip ? gunzipBase64(payload.keepout_pgm_gzip) : null,
+  });
+  deletedStems.delete(stem);
+  return mapAck(ws, 'PUT_MAP_ACK', payload, 'stored');
+};
+
+const deleteMap = (ws: Sock, payload: any) => {
+  if (faults.mapPut === 'unsupported') return unknownEvent(ws, 'DELETE_MAP');
+  const stem = String(payload?.stem ?? '');
+  if (stem === LOADED_STEM) {
+    return mapAck(ws, 'DELETE_MAP_ACK', payload, 'error', 'That map is loaded');
+  }
+  pushed.delete(stem);
+  deletedStems.add(stem);
+  return mapAck(ws, 'DELETE_MAP_ACK', payload, 'deleted');
+};
 
 const handleMappingLegacy = (ws: Sock) => {
   const sets = loadMapSets();
@@ -163,18 +237,31 @@ const sendNextManifest = (ws: Sock) => {
     })
   );
 };
+// The robot's own copy with one pixel changed: a valid map the dashboard doesn't have yet.
+const variantOf = (pgm: Buffer) => {
+  const copy = Buffer.from(pgm);
+  copy[copy.length - 1] = (copy[copy.length - 1] ?? 0) ^ 0xff;
+  return copy;
+};
 const handleMappingChunked = (ws: Sock) => {
   transfers.set(
     ws,
     loadMapSets().map(set => {
       const raw = Buffer.from(set.map_pgm_content, 'base64');
-      const gz =
+      const content =
         faults.mapFault === 'bomb'
-          ? gzipSync(Buffer.alloc(300 * 1024 * 1024))
-          : gzipSync(faults.mapFault === 'badgzip' ? Buffer.from('nope') : raw);
+          ? Buffer.alloc(300 * 1024 * 1024)
+          : faults.mapFault === 'badgzip'
+            ? Buffer.from('nope')
+            : faults.mapFault === 'variant'
+              ? variantOf(raw)
+              : raw;
+      // The manifest names the image about to be sent; only the checksum fault lies about it.
       const sha =
-        faults.mapFault === 'sha' ? '0'.repeat(64) : createHash('sha256').update(raw).digest('hex');
-      return { set, gz, sha, id: `${NAME}-${set.name}-${Date.now()}` };
+        faults.mapFault === 'sha'
+          ? '0'.repeat(64)
+          : createHash('sha256').update(content).digest('hex');
+      return { set, gz: gzipSync(content), sha, id: `${NAME}-${set.name}-${Date.now()}` };
     })
   );
   sendNextManifest(ws);
@@ -217,6 +304,12 @@ const handleMappingMessage = (ws: Sock, text: string) => {
     case 'MAP_TRANSFER_ERROR':
       queue?.shift();
       sendNextManifest(ws);
+      return;
+    case 'PUT_MAP':
+      putMap(ws, data.payload);
+      return;
+    case 'DELETE_MAP':
+      deleteMap(ws, data.payload);
       return;
     default:
       ws.send(
@@ -1121,6 +1214,53 @@ const CONTROL: Record<string, ControlRoute> = {
     faults.mapMode = arg('mode') ?? faults.mapMode;
     faults.mapFault = arg('fault') ?? 'none';
     faults.mapHashes = JSON.parse(arg('hashes') ?? '{}');
+    return ok();
+  },
+  // What the robot holds now, for tests to compare against the dashboard.
+  '/maps': () =>
+    Response.json(
+      loadMapSets().map(set => {
+        const keepout = pushed.get(set.name)?.keepout_pgm ?? null;
+        const pixels = keepout ? keepout.subarray(keepout.length - pixelCount(keepout)) : null;
+        return {
+          name: set.name,
+          sha256: createHash('sha256')
+            .update(Buffer.from(set.map_pgm_content, 'base64'))
+            .digest('hex'),
+          map_yaml_content: set.map_yaml_content,
+          metadata_json: set.metadata_json,
+          pushed: pushed.has(set.name),
+          keepout: pixels
+            ? {
+                yaml: pushed.get(set.name)?.keepout_yaml_content,
+                lethal: pixels.filter(value => value === 100).length,
+                noEffect: pixels.filter(value => value === 255).length,
+              }
+            : null,
+        };
+      })
+    ),
+  '/map-put': arg => {
+    faults.mapPut = arg('mode') ?? 'none';
+    return ok();
+  },
+  // A change made on the robot itself: new metadata for one of its maps.
+  '/map-edit': async (arg, req) => {
+    const stem = arg('stem') ?? 'map';
+    const set = loadMapSets().find(candidate => candidate.name === stem);
+    if (!set) return new Response('no such map', { status: 404 });
+    pushed.set(stem, {
+      ...set,
+      metadata_json: await req.json(),
+      keepout_yaml_content: pushed.get(stem)?.keepout_yaml_content ?? '',
+      keepout_pgm: pushed.get(stem)?.keepout_pgm ?? null,
+    });
+    return ok();
+  },
+  '/map-reset': () => {
+    pushed.clear();
+    deletedStems.clear();
+    faults.mapPut = 'none';
     return ok();
   },
   '/battery': arg => {

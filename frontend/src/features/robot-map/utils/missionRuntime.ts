@@ -1,4 +1,5 @@
 import { isMissionActivePhase, isPreviewLikePhase, type MissionStatus } from '@tensrai/shared';
+import { mergeEmergencyRuntimeIntoRobot } from '@/lib/robotStatus';
 import { type Robot, RobotMode } from '@/types/robot';
 
 const MISSION_STALE_MS = 120_000;
@@ -95,3 +96,18 @@ export const mergeMissionRuntimeIntoRobot = (
 
   return merged;
 };
+
+// What every page shows for a robot: a fresh mission status first, then the e-stop bridge's reading.
+// The app header and the dashboard both build their robots with this, so they agree on fallbacks.
+export const mergeFleetRobots = (
+  robots: Robot[],
+  missionStatusByRobot: Record<string, MissionStatus>,
+  emergencyByRobot: Record<string, Robot['emergency']>,
+  nowMs = Date.now()
+): Robot[] =>
+  robots.map(robot =>
+    mergeEmergencyRuntimeIntoRobot(
+      mergeMissionRuntimeIntoRobot(robot, missionStatusByRobot[robot.id], nowMs),
+      emergencyByRobot[robot.id]
+    )
+  );

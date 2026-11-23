@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient, Role, User } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { errorCode } from '../utils/errorCode.js';
 import { generateTemporaryPassword } from '../utils/password-generator.js';
 import { AuthTracer } from '../utils/tracing.js';
 
@@ -15,6 +16,13 @@ export class ServiceError extends Error {
     this.name = 'ServiceError';
   }
 }
+
+// The user routes answer their own errors, so a user deleted between the lookup and the write
+// becomes the lookup's 404 here rather than in the app's error handler.
+const userGone = (error: unknown): never => {
+  if (errorCode(error) === 'P2025') throw new ServiceError(404, 'User not found');
+  throw error;
+};
 
 export interface CreateUserInput {
   username: string;
@@ -189,17 +197,19 @@ export async function resetPasswordWithTemp(
 
   const newPasswordHash = await bcrypt.hash(resetData.newPassword, 12);
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      passwordHash: newPasswordHash,
-      tempPasswordHash: null,
-      tempPasswordExpiry: null,
-      mustResetPassword: false,
-      displayName: resetData.displayName || user.displayName,
-      updatedAt: new Date(),
-    },
-  });
+  await prisma.user
+    .update({
+      where: { id: userId },
+      data: {
+        passwordHash: newPasswordHash,
+        tempPasswordHash: null,
+        tempPasswordExpiry: null,
+        mustResetPassword: false,
+        displayName: resetData.displayName || user.displayName,
+        updatedAt: new Date(),
+      },
+    })
+    .catch(userGone);
   // Everyone signed in with the old credentials goes, including the device doing this.
   await prisma.session.deleteMany({ where: { userId } });
 
@@ -319,7 +329,7 @@ export async function updateUser(
       if (error.code === 'P2002') {
         throw new ServiceError(409, 'A user with this username or email already exists');
       }
-      throw error;
+      return userGone(error);
     });
 
   if (updateData.role && updateData.role !== currentUser.role) {
@@ -349,9 +359,7 @@ export async function deleteUser(
 ): Promise<void> {
   const user = await findManageableUser(prisma, userId, adminRole);
 
-  await prisma.user.delete({
-    where: { id: userId },
-  });
+  await prisma.user.delete({ where: { id: userId } }).catch(userGone);
 
   await logAuditEvent(prisma, {
     userId: adminUserId,
@@ -377,16 +385,18 @@ export async function resetUserPassword(
   const user = await findManageableUser(prisma, userId, adminRole);
 
   const tempPassword = generateTemporaryPassword();
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      tempPasswordHash: await bcrypt.hash(tempPassword, 12),
-      tempPasswordExpiry: new Date(Date.now() + TEMP_PASSWORD_TTL_MS),
-      mustResetPassword: true,
-      passwordHash: '',
-      updatedAt: new Date(),
-    },
-  });
+  await prisma.user
+    .update({
+      where: { id: userId },
+      data: {
+        tempPasswordHash: await bcrypt.hash(tempPassword, 12),
+        tempPasswordExpiry: new Date(Date.now() + TEMP_PASSWORD_TTL_MS),
+        mustResetPassword: true,
+        passwordHash: '',
+        updatedAt: new Date(),
+      },
+    })
+    .catch(userGone);
   await prisma.session.deleteMany({ where: { userId } });
 
   await logAuditEvent(prisma, {

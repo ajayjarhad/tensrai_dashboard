@@ -2,20 +2,20 @@ import { createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import {
   designateActiveAfterSync,
-  findLinkedMapId,
-  findMapByContent,
-  linkMapToRobot,
+  type ImportOptions,
   type MapSyncHost,
-  orgIdOfRobot,
+  robotCopyOf,
+  settleRobotCopy,
   upsertMapFromResponse,
   upsertSingleMap,
 } from './mapRecords.js';
 import {
   getFeaturePayload,
+  getMapDetails,
   gunzipMapImage,
-  hasFeaturePayload,
   MapSyncFailure,
-  normalizeFeatures,
+  type MapSyncLogger,
+  parseMapMetadata,
   UNREADABLE_MAP_FILES,
 } from './mapSyncPayload.js';
 import {
@@ -89,15 +89,50 @@ const bridgeErrorMessage = (payload: BridgeJson) =>
 const syncFailureMessage = (error: unknown) =>
   error instanceof MapSyncFailure ? error.message : MAP_SYNC_FAILED;
 
+type BridgeRobot = {
+  id: string;
+  orgId?: string;
+  ipAddress?: string | null;
+  mappingBridgePort?: number | null;
+};
+
+// One import session per robot, settled when its socket is done, so a sync can wait for it.
+const importSessions = new Map<string, Promise<void>>();
+
+// A manifest carries the image hash, the YAML and the features, so the robot's copy can be
+// compared, and often settled, without downloading the image.
+const copyFromManifest = (manifest: BridgeJson, logger: MapSyncLogger, robotId: string) => {
+  if (typeof manifest.map_yaml_content !== 'string' || typeof manifest.sha256 !== 'string')
+    return null;
+  const yaml = parseMapMetadata(manifest.map_yaml_content, logger, robotId);
+  if (!yaml) return null;
+  const { features, filename, name } = getMapDetails({
+    map_yaml: manifest.map_yaml,
+    metadata_json: getFeaturePayload(manifest),
+  });
+  return robotCopyOf(
+    { filename, name: String(manifest.name ?? name), yaml, features },
+    manifest.sha256
+  );
+};
+
+// Imports a robot's maps and resolves once the session has ended, with how it ended.
+export const importFromRobot = async (
+  fastify: MapSyncOptions,
+  robot: BridgeRobot,
+  options: ImportOptions = {}
+) => {
+  await importSessions.get(robot.id);
+  await fetchMapViaMappingBridge(fastify, robot, options);
+  await importSessions.get(robot.id);
+  return getMapSyncStatus(robot.id);
+};
+
 // Connects to the mapping bridge, requests map data, and upserts it.
 export const fetchMapViaMappingBridge = async (
   fastify: MapSyncOptions,
-  robot: {
-    id: string;
-    orgId?: string;
-    ipAddress?: string | null;
-    mappingBridgePort?: number | null;
-  }
+  robot: BridgeRobot,
+  options: ImportOptions = {}
 ) => {
   const logger = fastify.log;
   const { prisma } = fastify;
@@ -132,6 +167,14 @@ export const fetchMapViaMappingBridge = async (
   });
 
   const socket = new WebSocket(targetUrl);
+  let endSession = () => {};
+  const session = new Promise<void>(resolve => {
+    endSession = () => {
+      if (importSessions.get(robotId) === session) importSessions.delete(robotId);
+      resolve();
+    };
+  });
+  importSessions.set(robotId, session);
   const connectTimeout = setTimeout(() => {
     const current = peekMapSyncStatus(robotId);
     if (current?.phase === 'connecting') {
@@ -150,6 +193,7 @@ export const fetchMapViaMappingBridge = async (
       socket.close();
     } catch {}
     if (reason) logger.info({ robotId, reason }, 'Mapping fetch socket closed');
+    endSession();
   };
 
   const markFailed = (reason: string) => {
@@ -177,19 +221,6 @@ export const fetchMapViaMappingBridge = async (
     socket.send(JSON.stringify({ event, payload }));
   };
 
-  // Always links: the record may be another robot's, which this robot has never been linked to.
-  const linkExistingMapToRobot = async (mapId: string, filename: string, isDefault: boolean) => {
-    await linkMapToRobot(prisma, robotId, mapId, await findLinkedMapId(prisma, robotId, filename));
-    if (isDefault) await designateActiveAfterSync(prisma, robotId, mapId);
-  };
-
-  const updateExistingMapFeatures = async (mapId: string, manifest: unknown) => {
-    if (!hasFeaturePayload(manifest)) return false;
-    const features = normalizeFeatures(getFeaturePayload(manifest));
-    await prisma.map.update({ where: { id: mapId }, data: { features } });
-    return true;
-  };
-
   const storeChunkedMap = async (transferId: string, transfer: ChunkedTransfer) => {
     const { manifest } = transfer;
     const gzipBytes = Buffer.concat(transfer.chunks);
@@ -199,14 +230,19 @@ export const fetchMapViaMappingBridge = async (
       throw new MapSyncFailure(`sha256 mismatch: expected ${manifest.sha256}, got ${actualHash}`);
     }
 
-    const storedMap = await upsertSingleMap(fastify, robotId, {
-      name: manifest.name,
-      map_yaml: manifest.map_yaml,
-      map_pgm: manifest.map_pgm,
-      map_yaml_content: manifest.map_yaml_content,
-      map_pgm_content: pgmBytes,
-      metadata_json: manifest.metadata_json,
-    });
+    const storedMap = await upsertSingleMap(
+      fastify,
+      robotId,
+      {
+        name: manifest.name,
+        map_yaml: manifest.map_yaml,
+        map_pgm: manifest.map_pgm,
+        map_yaml_content: manifest.map_yaml_content,
+        map_pgm_content: pgmBytes,
+        metadata_json: manifest.metadata_json,
+      },
+      options
+    );
     if (!storedMap) {
       throw new MapSyncFailure('Map upsert failed');
     }
@@ -265,6 +301,34 @@ export const fetchMapViaMappingBridge = async (
     }
   };
 
+  // The robot's copy was settled from its manifest alone, so its image is not needed.
+  const skipSettledManifest = async (
+    manifest: BridgeJson,
+    transferId: string,
+    filename: string,
+    mapId: string
+  ) => {
+    if (manifest.is_default ?? manifest.isDefault ?? true) {
+      await designateActiveAfterSync(prisma, robotId, mapId);
+    }
+    const settled = await prisma.map.findUnique({
+      where: { id: mapId },
+      select: { contentHash: true },
+    });
+    updateMapSyncStatus(robotId, {
+      phase: 'skipped',
+      mapId,
+      filename,
+      mapName: manifest.name,
+      ...(settled?.contentHash ? { contentHash: settled.contentHash } : {}),
+      bytesReceived: 0,
+      totalBytes: Number(manifest.gzip_size ?? 0),
+      percent: 100,
+      lastError: undefined,
+    });
+    sendEvent('MAP_SKIP', { transferId, reason: 'unchanged', contentHash: settled?.contentHash });
+  };
+
   const handleManifest = async (manifest: BridgeJson) => {
     const { transferId, filename, totalChunks, rawHash, expectedContentHash } =
       manifestFields(manifest);
@@ -276,39 +340,12 @@ export const fetchMapViaMappingBridge = async (
       markFailed('invalid map transfer manifest');
       return;
     }
-    const existing = await findMapByContent(
-      prisma,
-      await orgIdOfRobot(prisma, robotId),
-      filename,
-      [expectedContentHash, rawHash].filter(Boolean)
-    );
-    // The sync can fail while that lookup runs; a late status here would read as still active.
+    const copy = copyFromManifest(manifest, logger, robotId);
+    const settledMapId = copy ? await settleRobotCopy(fastify, robotId, copy, options) : null;
+    // The sync can fail while that runs; a late status here would read as still active.
     if (ended) return;
-    if (existing) {
-      const featuresUpdated = await updateExistingMapFeatures(existing.id, manifest);
-      await linkExistingMapToRobot(
-        existing.id,
-        filename,
-        manifest.is_default ?? manifest.isDefault ?? true
-      );
-      updateMapSyncStatus(robotId, {
-        phase: 'skipped',
-        mapId: existing.id,
-        filename,
-        mapName: manifest.name,
-        // Found by contentHash, so never null here.
-        ...(existing.contentHash ? { contentHash: existing.contentHash } : {}),
-        bytesReceived: 0,
-        totalBytes: Number(manifest.gzip_size ?? 0),
-        percent: 100,
-        lastError: undefined,
-      });
-      sendEvent('MAP_SKIP', {
-        transferId,
-        reason: 'unchanged',
-        contentHash: existing.contentHash,
-        featuresUpdated,
-      });
+    if (settledMapId) {
+      await skipSettledManifest(manifest, transferId, filename, settledMapId);
       return;
     }
 
@@ -397,7 +434,7 @@ export const fetchMapViaMappingBridge = async (
       percent: undefined,
       lastError: undefined,
     });
-    const storedMap = await upsertMapFromResponse(fastify, robotId, payload.files);
+    const storedMap = await upsertMapFromResponse(fastify, robotId, payload.files, options);
     if (!storedMap) {
       markFailed(UNREADABLE_MAP_FILES);
       return;
@@ -480,6 +517,7 @@ export const fetchMapViaMappingBridge = async (
   socket.on('close', () => {
     clearTimeout(connectTimeout);
     if (activityTimeout) clearTimeout(activityTimeout);
+    endSession();
     const current = peekMapSyncStatus(robotId);
     if (isMapSyncActive(current)) {
       updateMapSyncStatus(robotId, {
