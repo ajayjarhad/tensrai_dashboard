@@ -154,6 +154,9 @@ logs
 # Claude Code worktrees; Biome rejects their biome.json as a nested root config unless ignored here
 .claude/worktrees/
 
+# The impeccable design plugin's hook cache; Biome lints anything not ignored here
+.impeccable/
+
 # Bun
 .bun-cache/
 
