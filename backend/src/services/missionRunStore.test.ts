@@ -5,7 +5,16 @@ const log = { error: () => {}, warn: () => {} };
 const meta = { robotId: 'robot-1', robotName: 'R1' };
 const at = () => new Date().toISOString();
 
-const createStore = () => {
+const defaultRobotMaps = [
+  { mapId: 'map-a', isActive: true, map: { features: { missions: [] } } },
+  {
+    mapId: 'map-b',
+    isActive: false,
+    map: { features: { missions: [{ id: '1', name: ' Trial ' }] } },
+  },
+];
+
+const createStore = (robotMaps: any[] = defaultRobotMaps) => {
   const runs: any[] = [];
   const matches = (run: any, where: any) =>
     Object.entries(where).every(([key, value]: [string, any]) =>
@@ -14,16 +23,7 @@ const createStore = () => {
   const latest = (rows: any[]) => rows[rows.length - 1] ?? null;
   const prisma: any = {
     robot: { findUnique: async () => ({ orgId: 'org-1' }) },
-    robotMap: {
-      findMany: async () => [
-        { mapId: 'map-a', isActive: true, map: { features: { missions: [] } } },
-        {
-          mapId: 'map-b',
-          isActive: false,
-          map: { features: { missions: [{ id: '1', name: ' Trial ' }] } },
-        },
-      ],
-    },
+    robotMap: { findMany: async () => robotMaps },
     missionRun: {
       findUnique: async ({ where }: any) => runs.find(run => run.id === where.id) ?? null,
       findFirst: async ({ where }: any) => latest(runs.filter(run => matches(run, where))),
@@ -161,6 +161,27 @@ test('a run names its mission from whichever of the robot’s maps holds it', as
   const { store, runs } = createStore();
   await preview(store);
   expect(runs[0]).toMatchObject({ mapId: 'map-b', missionNameSnapshot: 'Trial' });
+});
+
+test('a run of a mission copied from another map is recorded on that map', async () => {
+  const smpToFactory = { id: '1', name: 'smp to factory' };
+  const { store, runs } = createStore([
+    {
+      mapId: 'map-20',
+      isActive: true,
+      map: {
+        filename: 'map20.yaml',
+        features: { missions: [{ ...smpToFactory, metadataFile: 'map7' }] },
+      },
+    },
+    {
+      mapId: 'map-7',
+      isActive: false,
+      map: { filename: 'map7.yaml', features: { missions: [smpToFactory] } },
+    },
+  ]);
+  await preview(store);
+  expect(runs[0]).toMatchObject({ mapId: 'map-7', missionNameSnapshot: 'smp to factory' });
 });
 
 test('a robot reporting IDLE still closes a run it has silently dropped', async () => {

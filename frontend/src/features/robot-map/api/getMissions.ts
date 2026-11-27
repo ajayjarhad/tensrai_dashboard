@@ -1,4 +1,4 @@
-import type { ProcessedMapData } from '@tensrai/shared';
+import { isMissionFromOtherMap, type ProcessedMapData } from '@tensrai/shared';
 import { apiClient } from '@/lib/api';
 import type { MissionWithContext } from '../components/MissionDialog';
 
@@ -6,7 +6,9 @@ export const getMissions = async (): Promise<MissionWithContext[]> => {
   const missions: MissionWithContext[] = [];
 
   // First get all maps
-  const mapsRes = await apiClient.get<{ data: { id: string; name: string }[] }>('maps');
+  const mapsRes = await apiClient.get<{ data: { id: string; name: string; filename?: string }[] }>(
+    'maps'
+  );
   const maps = mapsRes?.data ?? [];
 
   // Then get missions for each map
@@ -19,7 +21,10 @@ export const getMissions = async (): Promise<MissionWithContext[]> => {
       const features = mapDetail?.data?.features;
       if (features?.missions?.length) {
         const locationTags = features.locationTags ?? [];
-        features.missions.forEach(mission => {
+        const own = features.missions.filter(
+          mission => !isMissionFromOtherMap(mission, [map.filename])
+        );
+        own.forEach(mission => {
           const steps = Array.isArray((mission as any).steps)
             ? (mission as any).steps
             : Array.isArray((mission as any).locationTagId)

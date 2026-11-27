@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { isMissionFromOtherMap } from '@tensrai/shared';
 import { z } from 'zod';
 
 const LAST_SEEN_STALE_MS = 90_000;
@@ -15,7 +16,7 @@ const statusUpdateSchema = z.object({
   currentMap: z.string().nullable().optional(),
   mission: z
     .object({
-      status: z.enum(['ACTIVE', 'PAUSED', 'IDLE']).optional(),
+      status: z.enum(['ACTIVE', 'PAUSED', 'IDLE', 'AWAITING_ACK']).optional(),
       currentMissionId: z.union([z.string(), z.number(), z.null()]).optional(),
     })
     .optional(),
@@ -80,7 +81,13 @@ const resolveActiveMapFromStatus = async (
       const missionKey = String(currentMissionId);
       const match = rows.find((row: any) => {
         const missions = row.map?.features?.missions;
-        return Array.isArray(missions) && missions.some((m: any) => String(m?.id) === missionKey);
+        return (
+          Array.isArray(missions) &&
+          missions.some(
+            (m: any) =>
+              String(m?.id) === missionKey && !isMissionFromOtherMap(m, [row.map?.filename])
+          )
+        );
       });
       targetMapId = match?.mapId ?? null;
     }

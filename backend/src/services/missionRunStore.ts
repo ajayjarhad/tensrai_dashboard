@@ -1,4 +1,5 @@
 import type { MissionRunStatus, PrismaClient } from '@prisma/client';
+import { isMissionFromOtherMap } from '@tensrai/shared';
 import { normalizeRequestType } from './missionStatus.js';
 
 const ACTIVE_STATUSES: MissionRunStatus[] = [
@@ -627,18 +628,29 @@ export class MissionRunStore {
     try {
       const rows = await (this.prisma as any).robotMap.findMany({
         where: { robotId },
-        select: { mapId: true, isActive: true, map: { select: { features: true } } },
+        select: {
+          mapId: true,
+          isActive: true,
+          map: { select: { filename: true, features: true } },
+        },
       });
       const active = rows.find((row: any) => row.isActive);
-      for (const row of active ? [active, ...rows] : rows) {
+      const found = (active ? [active, ...rows] : rows).flatMap((row: any) => {
         const missions = row.map?.features?.missions;
         const match = Array.isArray(missions)
           ? missions.find((mission: any) => String(mission?.id ?? mission?.missionId) === missionId)
           : undefined;
-        if (match) {
-          const name = typeof match.name === 'string' ? match.name.trim() : '';
-          return { mapId: row.mapId, missionNameSnapshot: name || null };
-        }
+        return match ? [{ row, mission: match }] : [];
+      });
+      // A copy of a mission in another map's metadata only counts when the robot doesn't hold the
+      // map it came from.
+      const own =
+        found.find(
+          ({ row, mission }: any) => !isMissionFromOtherMap(mission, [row.map?.filename])
+        ) ?? found[0];
+      if (own) {
+        const name = typeof own.mission.name === 'string' ? own.mission.name.trim() : '';
+        return { mapId: own.row.mapId, missionNameSnapshot: name || null };
       }
       return { mapId: active?.mapId ?? undefined, missionNameSnapshot: null };
     } catch (error) {

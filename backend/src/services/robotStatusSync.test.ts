@@ -91,6 +91,45 @@ test('falls back to currentMissionId when currentMap is absent', async () => {
   expect(robotMaps.find(r => r.mapId === 'mA')).toMatchObject({ isActive: false });
 });
 
+test('the mission fallback follows the map a mission belongs to, not a copy of it', async () => {
+  const { prisma, robotMaps } = createPrisma({
+    maps: [
+      {
+        id: 'm20',
+        filename: 'map20.yaml',
+        features: { missions: [{ id: '6', metadataFile: 'map7' }] },
+      },
+      { id: 'm7', filename: 'map7.yaml', features: { missions: [{ id: '6' }] } },
+    ],
+    robotMaps: [
+      { robotId: 'r1', mapId: 'm20', isActive: true, isPinned: false },
+      { robotId: 'r1', mapId: 'm7', isActive: false, isPinned: false },
+    ],
+  });
+
+  await syncRobotStatusUpdate(deps(prisma), 'r1', {
+    mode: 'autonomous',
+    mission: { currentMissionId: 6 },
+  });
+
+  expect(robotMaps.find(r => r.mapId === 'm7')).toMatchObject({ isActive: true });
+});
+
+test('a robot waiting for a stop to be confirmed still syncs its status', async () => {
+  const { prisma, robotUpdates } = createPrisma({
+    robot: { battery: 50, status: 'AUTONOMOUS', lastSeen: new Date() },
+  });
+
+  const result = await syncRobotStatusUpdate(deps(prisma), 'r1', {
+    mode: 'autonomous',
+    batteryPercentage: 70,
+    mission: { status: 'AWAITING_ACK', currentMissionId: 6 },
+  });
+
+  expect(result.ok).toBe(true);
+  expect(robotUpdates.some(u => u.data?.battery === 70)).toBe(true);
+});
+
 test('does not change the active map when a row is pinned', async () => {
   const { prisma, robotMaps } = createPrisma({
     maps: [
