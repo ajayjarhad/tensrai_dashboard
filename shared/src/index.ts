@@ -13,3 +13,4 @@ export {
 } from './types/robot-ws';
 export * from './types/user';
 export * from './utils/env';
+export { isMissionFromOtherMap } from './utils/missionLinks';

@@ -134,7 +134,7 @@ const normalizeRequestType = (value: unknown): string | undefined => {
 
 const missionPhaseFromRuntime = (value: unknown): MissionStatePhase | undefined => {
   const status = String(value ?? '').toUpperCase();
-  if (status === 'ACTIVE') return 'running';
+  if (status === 'ACTIVE' || status === 'AWAITING_ACK') return 'running';
   if (status === 'PAUSED') return 'paused';
   if (status === 'IDLE') return 'idle';
   return undefined;

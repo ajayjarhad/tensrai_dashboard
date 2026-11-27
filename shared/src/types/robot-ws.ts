@@ -22,7 +22,8 @@ export const ROBOT_MISSION_STATUS_EVENTS = [
 export type RobotMissionStatusEvent = (typeof ROBOT_MISSION_STATUS_EVENTS)[number];
 
 export type RobotRuntimeMode = 'teleop' | 'autonomous';
-export type RobotMissionRuntimeStatus = 'ACTIVE' | 'PAUSED' | 'IDLE';
+// AWAITING_ACK: mid-mission, stopped until someone at the robot confirms the stop.
+export type RobotMissionRuntimeStatus = 'ACTIVE' | 'PAUSED' | 'IDLE' | 'AWAITING_ACK';
 
 export type RobotStatusUpdatePayload = {
   robotId?: string | number | null;

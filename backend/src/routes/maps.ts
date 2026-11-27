@@ -65,6 +65,7 @@ const mapRoutes: any = async (server: AppFastifyInstance) => {
         select: {
           id: true,
           name: true,
+          filename: true,
           contentHash: true,
           pixelWidth: true,
           pixelHeight: true,

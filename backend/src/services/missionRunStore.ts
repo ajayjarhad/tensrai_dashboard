@@ -1,4 +1,5 @@
 import type { MissionRunStatus, PrismaClient } from '@prisma/client';
+import { isMissionFromOtherMap } from '@tensrai/shared';
 
 const ACTIVE_STATUSES: MissionRunStatus[] = [
   'PREVIEW_PENDING',
@@ -222,13 +223,13 @@ export class MissionRunStore {
         return null;
       }
 
-      const missionNameSnapshot = await this.resolveMissionName(meta.mapId, missionId);
+      const { mapId, missionNameSnapshot } = await this.missionSnapshot(meta, missionId);
       const data = {
         robotId: meta.robotId,
         robotNameSnapshot: meta.robotName,
         missionId,
         missionNameSnapshot,
-        mapId: meta.mapId ?? undefined,
+        mapId,
         status: 'PREVIEW_PENDING' as MissionRunStatus,
         phase: 'PREVIEW_PENDING' as MissionRunStatus,
         requestIdLast: requestId,
@@ -319,13 +320,13 @@ export class MissionRunStore {
 
         if (requestType === 'SHOW_UP') {
           const baseId = targetRun?.id;
-          const missionNameSnapshot = await this.resolveMissionName(meta.mapId, missionId);
+          const { mapId, missionNameSnapshot } = await this.missionSnapshot(meta, missionId);
           const data = {
             robotId: meta.robotId,
             robotNameSnapshot: meta.robotName,
             missionId,
             missionNameSnapshot,
-            mapId: meta.mapId ?? undefined,
+            mapId,
             status: isSuccess ? 'SHOWING' : 'FAILED',
             phase: isSuccess ? 'SHOWING' : 'FAILED',
             requestIdLast: requestId,
@@ -526,7 +527,7 @@ export class MissionRunStore {
         }
 
         if (!current && runtimeMissionId) {
-          const missionNameSnapshot = await this.resolveMissionName(meta.mapId, runtimeMissionId);
+          const { mapId, missionNameSnapshot } = await this.missionSnapshot(meta, runtimeMissionId);
           const phase: MissionRunStatus = runtimeStatus === 'PAUSED' ? 'PAUSED' : 'RUNNING';
           const created = await prisma.missionRun.create({
             data: {
@@ -534,7 +535,7 @@ export class MissionRunStore {
               robotNameSnapshot: meta.robotName,
               missionId: runtimeMissionId,
               missionNameSnapshot,
-              mapId: meta.mapId ?? undefined,
+              mapId,
               runId: runtimeRunId,
               status: phase,
               phase,
@@ -579,6 +580,50 @@ export class MissionRunStore {
     }
 
     return null;
+  }
+
+  // A robot runs a mission on the map it was made on, which needn't be its active map. A copy of it
+  // in another map's metadata only counts when the robot doesn't hold the map it came from.
+  private async missionSnapshot(meta: RobotMissionMeta, missionId: string | undefined) {
+    try {
+      const prisma = this.prisma as any;
+      const rows = missionId
+        ? await prisma.robotMap.findMany({
+            where: { robotId: meta.robotId },
+            select: {
+              mapId: true,
+              isActive: true,
+              map: { select: { filename: true, features: true } },
+            },
+          })
+        : [];
+      const activeFirst = [...rows].sort(
+        (a: any, b: any) => Number(b.isActive) - Number(a.isActive)
+      );
+      const found = activeFirst.flatMap((row: any) => {
+        const missions = Array.isArray(row.map?.features?.missions)
+          ? row.map.features.missions
+          : [];
+        const match = missions.find(
+          (mission: any) => String(mission?.id ?? mission?.missionId) === missionId
+        );
+        return match ? [{ row, mission: match }] : [];
+      });
+      const own =
+        found.find(
+          ({ row, mission }: any) => !isMissionFromOtherMap(mission, [row.map?.filename])
+        ) ?? found[0];
+      if (own) {
+        const name = typeof own.mission.name === 'string' ? own.mission.name.trim() : '';
+        return { mapId: own.row.mapId as string, missionNameSnapshot: name || null };
+      }
+    } catch (error) {
+      this.log.warn({ robotId: meta.robotId, missionId, error }, 'Failed to resolve mission map');
+    }
+    return {
+      mapId: meta.mapId ?? undefined,
+      missionNameSnapshot: await this.resolveMissionName(meta.mapId, missionId),
+    };
   }
 
   private async resolveMissionName(
